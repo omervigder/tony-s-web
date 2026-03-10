@@ -1,10 +1,8 @@
-// Import the functions you need from the SDKs you need
 import { initializeApp } from "firebase/app";
-import { getAnalytics } from "firebase/analytics";
 import { getFirestore, collection, addDoc, getDocs, doc, deleteDoc, getDoc, setDoc, query, orderBy } from "firebase/firestore";
 import { getStorage, ref, uploadBytes, getDownloadURL } from "firebase/storage";
+import { getAuth } from "firebase/auth";
 
-// Your web app's Firebase configuration
 const firebaseConfig = {
   apiKey: "AIzaSyBqmxpP-fH_Si7_XN8nQNDhLRgOHAmUnc0",
   authDomain: "my-store-app-14f06.firebaseapp.com",
@@ -16,11 +14,10 @@ const firebaseConfig = {
   measurementId: "G-3295PGXS0H"
 };
 
-// Initialize Firebase
 const app = initializeApp(firebaseConfig);
-const analytics = getAnalytics(app);
-const db = getFirestore(app);
-const storage = getStorage(app);
+export const db = getFirestore(app);
+export const storage = getStorage(app);
+export const auth = getAuth(app);
 
 // Upload image to Firebase Storage
 export async function uploadProductImage(file: File, productId: string): Promise<string> {
@@ -152,5 +149,3 @@ export async function saveSettingsToFirestore(settings: {
 }) {
   await setDoc(doc(db, "settings", "store"), settings);
 }
-
-export { db, storage, analytics };

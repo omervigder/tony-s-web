@@ -2,20 +2,9 @@ import React, { useState, useEffect } from 'react';
 import { ShoppingCart, Package, Settings as SettingsIcon, Plus, Trash2, Camera, ChevronRight, ChevronLeft, CheckCircle2, X, Menu, Loader2 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Product, Category, Order, Settings, CartItem } from './types';
-import {
-  getProductsFromFirestore,
-  getProductFromFirestore,
-  addProductToFirestore,
-  deleteProductFromFirestore,
-  getCategoriesFromFirestore,
-  addCategoryToFirestore,
-  deleteCategoryFromFirestore,
-  uploadProductImages,
-  addOrderToFirestore,
-  getOrdersFromFirestore,
-  getSettingsFromFirestore,
-  saveSettingsToFirestore
-} from './firebase';
+import { db, storage } from './firebase';
+import { collection, addDoc, getDocs, doc, deleteDoc, getDoc, setDoc, query, orderBy } from "firebase/firestore";
+import { ref, uploadBytes, getDownloadURL } from "firebase/storage";
 
 export default function App() {
   const [view, setView] = useState<'user' | 'admin' | 'checkout' | 'success' | 'product'>('user');
@@ -46,15 +35,21 @@ export default function App() {
 
   const fetchData = async () => {
     try {
-      const [productsData, categoriesData, settingsData] = await Promise.all([
-        getProductsFromFirestore(),
-        getCategoriesFromFirestore(),
-        getSettingsFromFirestore()
-      ]);
-      setProducts(productsData as Product[]);
-      setCategories(categoriesData as Category[]);
-      if (settingsData) {
-        setSettings(settingsData as Settings);
+      // Fetch products
+      const productsQuery = query(collection(db, "products"), orderBy("created_at", "desc"));
+      const productsSnapshot = await getDocs(productsQuery);
+      const productsData = productsSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })) as Product[];
+      setProducts(productsData);
+
+      // Fetch categories
+      const categoriesSnapshot = await getDocs(collection(db, "categories"));
+      const categoriesData = categoriesSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })) as Category[];
+      setCategories(categoriesData);
+
+      // Fetch settings
+      const settingsDoc = await getDoc(doc(db, "settings", "store"));
+      if (settingsDoc.exists()) {
+        setSettings(settingsDoc.data() as Settings);
       }
     } catch (err) {
       console.error("Fetch error:", err);
@@ -64,9 +59,9 @@ export default function App() {
   const fetchProductDetails = async (id: string) => {
     try {
       setIsLoadingProduct(true);
-      const data = await getProductFromFirestore(id);
-      if (!data) throw new Error("Product not found");
-      setSelectedProduct(data as Product);
+      const productDoc = await getDoc(doc(db, "products", id));
+      if (!productDoc.exists()) throw new Error("Product not found");
+      setSelectedProduct({ id: productDoc.id, ...productDoc.data() } as Product);
       setSelectedImageIndex(0);
       setProductQuantity(1);
       setView('product');
@@ -80,8 +75,10 @@ export default function App() {
   };
 
   const fetchOrders = async () => {
-    const ordersData = await getOrdersFromFirestore();
-    setOrders(ordersData as Order[]);
+    const ordersQuery = query(collection(db, "orders"), orderBy("created_at", "desc"));
+    const ordersSnapshot = await getDocs(ordersQuery);
+    const ordersData = ordersSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })) as Order[];
+    setOrders(ordersData);
   };
 
   const addToCart = (product: Product, quantity: number = 1) => {
@@ -115,14 +112,16 @@ export default function App() {
     if (!checkoutData.name || !checkoutData.phone) return alert("נא למלא את כל השדות");
 
     try {
-      const orderId = await addOrderToFirestore({
+      const orderDoc = await addDoc(collection(db, "orders"), {
         customer_name: checkoutData.name,
         customer_phone: checkoutData.phone,
         delivery_method: checkoutData.delivery,
         total_price: finalTotal,
-        items: cart.map(i => ({ id: i.id, name: i.name, price: i.price, quantity: i.quantity }))
+        items: cart.map(i => ({ id: i.id, name: i.name, price: i.price, quantity: i.quantity })),
+        status: 'חדש',
+        created_at: new Date().toISOString()
       });
-      setLastOrderId(orderId);
+      setLastOrderId(orderDoc.id);
       setCart([]);
       setView('success');
     } catch (err) {
@@ -161,25 +160,27 @@ export default function App() {
     try {
       setIsUploading(true);
 
-      // Generate temp ID for storage folder
-      const tempId = Date.now().toString();
-
-      // Upload images to Firebase Storage
-      let imageUrls: string[] = [];
-      if (newProduct.imageFiles.length > 0) {
-        imageUrls = await uploadProductImages(newProduct.imageFiles, tempId);
+      // 1. Upload images to Firebase Storage
+      const imageUrls: string[] = [];
+      for (const file of newProduct.imageFiles) {
+        const storageRef = ref(storage, `products/${Date.now()}_${file.name}`);
+        await uploadBytes(storageRef, file);
+        const imageUrl = await getDownloadURL(storageRef);
+        imageUrls.push(imageUrl);
       }
 
-      // Add product to Firestore
-      await addProductToFirestore({
+      // 2. Save product to Firestore
+      await addDoc(collection(db, "products"), {
         name: newProduct.name,
         description: newProduct.description,
         price: newProduct.price,
         category_id: newProduct.category_id,
         images: imageUrls,
-        main_image_index: newProduct.main_image_index
+        main_image: imageUrls[newProduct.main_image_index] || imageUrls[0] || null,
+        created_at: new Date()
       });
 
+      alert("המוצר נשמר בהצלחה!");
       await fetchData();
       setNewProduct({ name: '', description: '', price: 0, category_id: '', imageFiles: [], imagePreviews: [], main_image_index: 0 });
     } catch (err) {
@@ -193,7 +194,7 @@ export default function App() {
   const handleDeleteProduct = async (id: string) => {
     if (!confirm("האם אתה בטוח שברצונך למחוק מוצר זה?")) return;
     try {
-      await deleteProductFromFirestore(id);
+      await deleteDoc(doc(db, "products", id));
       await fetchData();
     } catch (err) {
       console.error("Error deleting product:", err);
@@ -204,7 +205,10 @@ export default function App() {
   const handleAddCategory = async () => {
     if (!newCategoryName.trim()) return;
     try {
-      await addCategoryToFirestore(newCategoryName);
+      await addDoc(collection(db, "categories"), {
+        name: newCategoryName,
+        created_at: new Date()
+      });
       await fetchData();
       setNewCategoryName('');
     } catch (err) {
@@ -215,7 +219,7 @@ export default function App() {
 
   const handleDeleteCategory = async (id: string) => {
     try {
-      await deleteCategoryFromFirestore(id);
+      await deleteDoc(doc(db, "categories", id));
       await fetchData();
     } catch (err) {
       console.error("Error deleting category:", err);
@@ -253,7 +257,7 @@ export default function App() {
 
   const handleSaveSettings = async () => {
     try {
-      await saveSettingsToFirestore(settings);
+      await setDoc(doc(db, "settings", "store"), settings);
       alert("הגדרות נשמרו");
     } catch (err) {
       console.error("Error saving settings:", err);
