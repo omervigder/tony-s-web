@@ -1,15 +1,15 @@
 import React, { useState, useEffect } from 'react';
-import { ShoppingCart, Package, Settings as SettingsIcon, Plus, Trash2, Camera, ChevronRight, ChevronLeft, CheckCircle2, X, Menu, Loader2 } from 'lucide-react';
+import { ShoppingCart, Package, Settings as SettingsIcon, Plus, Trash2, Camera, ChevronRight, ChevronLeft, CheckCircle2, X, Menu, Loader2, Pencil } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
-import { Product, Category, Order, Settings, CartItem } from './types';
+import { Product, Category, Order, Settings, CartItem, Coupon, SiteContent } from './types';
 import { db, storage } from './firebase';
-import { collection, addDoc, getDocs, doc, deleteDoc, getDoc, setDoc, query, orderBy } from "firebase/firestore";
+import { collection, addDoc, getDocs, doc, deleteDoc, getDoc, setDoc, updateDoc, query, orderBy, where } from "firebase/firestore";
 import { ref, uploadBytes, getDownloadURL } from "firebase/storage";
 
 export default function App() {
   const [view, setView] = useState<'user' | 'admin' | 'checkout' | 'success' | 'product'>('user');
   const [isAdmin, setIsAdmin] = useState(false);
-  const [adminTab, setAdminTab] = useState<'products' | 'orders' | 'settings'>('products');
+  const [adminTab, setAdminTab] = useState<'products' | 'orders' | 'settings' | 'coupons' | 'content'>('products');
   const [products, setProducts] = useState<Product[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
   const [orders, setOrders] = useState<Order[]>([]);
@@ -25,6 +25,51 @@ export default function App() {
   const [selectedProduct, setSelectedProduct] = useState<Product | null>(null);
   const [selectedImageIndex, setSelectedImageIndex] = useState(0);
   const [productQuantity, setProductQuantity] = useState(1);
+
+  // Toast
+  const [toast, setToast] = useState<string | null>(null);
+
+  // Edit product
+  const [editingProduct, setEditingProduct] = useState<Product | null>(null);
+  const [editProductData, setEditProductData] = useState<{
+    name: string; description: string; price: number; category_id: string;
+    newImageFiles: File[]; newImagePreviews: string[];
+  }>({ name: '', description: '', price: 0, category_id: '', newImageFiles: [], newImagePreviews: [] });
+
+  // Edit category
+  const [editingCategoryId, setEditingCategoryId] = useState<string | null>(null);
+  const [editingCategoryName, setEditingCategoryName] = useState('');
+
+  // Coupon — storefront
+  const [couponInput, setCouponInput] = useState('');
+  const [appliedCoupon, setAppliedCoupon] = useState<Coupon | null>(null);
+  const [couponError, setCouponError] = useState<string | null>(null);
+  const [isValidatingCoupon, setIsValidatingCoupon] = useState(false);
+
+  // Coupon — admin
+  const [coupons, setCoupons] = useState<Coupon[]>([]);
+  const [newCoupon, setNewCoupon] = useState<{ code: string; type: 'percent' | 'fixed'; value: number; expiryDate: string }>({
+    code: '', type: 'percent', value: 0, expiryDate: ''
+  });
+
+  // Site content (CMS)
+  const DEFAULT_CONTENT: SiteContent = {
+    storeName: 'Tony',
+    announcementBar: 'משלוח חינם בהזמנות מעל ₪200 ✨',
+    heroTitle: 'Tony — אמנות המיתוג במארז אחד',
+    heroSubtitle: 'מארזי מתנה יוקרתיים עם מיתוג אישי. לאירועים, לעסקים ולכל רגע מיוחד.',
+    collectionsTitle: 'הקולקציות שלנו',
+    aboutTitle: 'אודות',
+    contactTitle: 'צור קשר',
+    seoDescription: 'מארזי מתנה יוקרתיים עם מיתוג אישי. לאירועים, לעסקים ולכל רגע מיוחד.',
+  };
+  const [siteContent, setSiteContent] = useState<SiteContent>(DEFAULT_CONTENT);
+  const [isContentLoading, setIsContentLoading] = useState(true);
+
+  const showToast = (message: string) => {
+    setToast(message);
+    setTimeout(() => setToast(null), 3000);
+  };
 
   // Admin Login State
   const [loginData, setLoginData] = useState({ username: '', password: '' });
@@ -51,10 +96,31 @@ export default function App() {
       if (settingsDoc.exists()) {
         setSettings(settingsDoc.data() as Settings);
       }
+
+      // Fetch site content
+      const contentDoc = await getDoc(doc(db, "settings", "content"));
+      if (contentDoc.exists()) {
+        setSiteContent(prev => ({ ...prev, ...contentDoc.data() as SiteContent }));
+      }
     } catch (err) {
       console.error("Fetch error:", err);
+    } finally {
+      setIsContentLoading(false);
     }
   };
+
+  // SEO: sync document.title and meta description whenever content changes
+  React.useEffect(() => {
+    document.title = siteContent.storeName
+      ? `${siteContent.storeName} — ${siteContent.heroTitle || 'חנות מקוונת'}`
+      : 'Tony — אמנות המיתוג במארז אחד';
+    const metaDesc = document.querySelector<HTMLMetaElement>('meta[name="description"]');
+    if (metaDesc && siteContent.seoDescription) metaDesc.content = siteContent.seoDescription;
+    const ogTitle = document.querySelector<HTMLMetaElement>('meta[property="og:title"]');
+    if (ogTitle) ogTitle.content = document.title;
+    const ogDesc = document.querySelector<HTMLMetaElement>('meta[property="og:description"]');
+    if (ogDesc && siteContent.seoDescription) ogDesc.content = siteContent.seoDescription;
+  }, [siteContent.storeName, siteContent.heroTitle, siteContent.seoDescription]);
 
   const fetchProductDetails = async (id: string) => {
     try {
@@ -106,28 +172,180 @@ export default function App() {
   };
 
   const cartTotal = cart.reduce((sum, item) => sum + (item.price * item.quantity), 0);
-  const finalTotal = cartTotal + (checkoutData.delivery === 'delivery' ? Number(settings.delivery_cost) : 0);
+  const discountAmount = appliedCoupon
+    ? appliedCoupon.type === 'percent'
+      ? Math.round(cartTotal * appliedCoupon.value / 100)
+      : Math.min(appliedCoupon.value, cartTotal)
+    : 0;
+  const finalTotal = Math.max(0, cartTotal - discountAmount + (checkoutData.delivery === 'delivery' ? Number(settings.delivery_cost) : 0));
+
+  const sendTelegramNotification = async (order: {
+    orderId: string;
+    name: string;
+    phone: string;
+    deliveryMethod: 'pickup' | 'delivery';
+    items: { name: string; price: number; quantity: number }[];
+    total: number;
+    pickupAddress: string;
+  }) => {
+    const botToken = import.meta.env.VITE_TELEGRAM_BOT_TOKEN;
+    const chatId = import.meta.env.VITE_TELEGRAM_CHAT_ID;
+    if (!botToken || !chatId) return;
+
+    const whatsappPhone = order.phone.replace(/^0/, '');
+    const whatsappLink = `https://wa.me/972${whatsappPhone}`;
+    const deliveryLine = order.deliveryMethod === 'delivery'
+      ? '🚚 משלוח עד הבית'
+      : `📍 איסוף עצמי: ${order.pickupAddress}`;
+    const itemsList = order.items
+      .map(i => `• ${i.name} x${i.quantity} — ₪${(i.price * i.quantity).toFixed(2)}`)
+      .join('\n');
+
+    const message =
+`📦 *הזמנה חדשה! #${order.orderId.slice(-6)}*
+
+👤 *שם:* ${order.name}
+📞 *טלפון:* ${order.phone}
+${deliveryLine}
+
+🛒 *פריטים:*
+${itemsList}
+
+💰 *סה"כ לתשלום: ₪${order.total.toFixed(2)}*
+
+💬 [שלח WhatsApp ללקוח](${whatsappLink})`;
+
+    const body = {
+      chat_id: chatId,
+      text: message,
+      parse_mode: 'Markdown',
+      reply_markup: {
+        inline_keyboard: [
+          [
+            { text: '📞 התקשר ללקוח', url: `tel:${order.phone}` },
+            { text: '✅ סמן כבוצע', callback_data: `complete_order:${order.orderId}` }
+          ]
+        ]
+      }
+    };
+
+    await fetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    });
+  };
 
   const handleCheckout = async () => {
     if (!checkoutData.name || !checkoutData.phone) return alert("נא למלא את כל השדות");
 
     try {
+      const orderItems = cart.map(i => ({ id: i.id, name: i.name, price: i.price, quantity: i.quantity }));
       const orderDoc = await addDoc(collection(db, "orders"), {
         customer_name: checkoutData.name,
         customer_phone: checkoutData.phone,
         delivery_method: checkoutData.delivery,
         total_price: finalTotal,
-        items: cart.map(i => ({ id: i.id, name: i.name, price: i.price, quantity: i.quantity })),
+        items: orderItems,
         status: 'חדש',
-        created_at: new Date().toISOString()
+        created_at: new Date().toISOString(),
+        ...(appliedCoupon && {
+          coupon_code: appliedCoupon.code,
+          discount_amount: discountAmount,
+        }),
       });
       setLastOrderId(orderDoc.id);
       setCart([]);
+      setAppliedCoupon(null);
+      setCouponInput('');
       setView('success');
+
+      // Fire-and-forget — notification failure must not affect UX
+      sendTelegramNotification({
+        orderId: orderDoc.id,
+        name: checkoutData.name,
+        phone: checkoutData.phone,
+        deliveryMethod: checkoutData.delivery,
+        items: orderItems,
+        total: finalTotal,
+        pickupAddress: settings.pickup_address
+      }).catch(err => console.error("Telegram notification error:", err));
     } catch (err) {
       console.error("Checkout error:", err);
       alert("שגיאה בשליחת ההזמנה");
     }
+  };
+
+  // ── Coupon: storefront ──────────────────────────────────────────────────────
+  const handleApplyCoupon = async () => {
+    const code = couponInput.trim().toUpperCase();
+    if (!code) return;
+    setIsValidatingCoupon(true);
+    setCouponError(null);
+    setAppliedCoupon(null);
+    try {
+      const q = query(collection(db, "coupons"), where("code", "==", code));
+      const snap = await getDocs(q);
+      if (snap.empty) {
+        setCouponError("קוד קופון לא קיים");
+        return;
+      }
+      const coupon = { id: snap.docs[0].id, ...snap.docs[0].data() } as Coupon;
+      if (!coupon.isActive) { setCouponError("קוד קופון אינו פעיל"); return; }
+      if (coupon.expiryDate && new Date(coupon.expiryDate) < new Date()) {
+        setCouponError("קוד הקופון פג תוקף"); return;
+      }
+      setAppliedCoupon(coupon);
+      setCouponInput('');
+    } catch (err) {
+      console.error("Coupon validation error:", err);
+      setCouponError("שגיאה בבדיקת הקופון");
+    } finally {
+      setIsValidatingCoupon(false);
+    }
+  };
+
+  const removeAppliedCoupon = () => {
+    setAppliedCoupon(null);
+    setCouponError(null);
+    setCouponInput('');
+  };
+
+  // ── Coupon: admin ────────────────────────────────────────────────────────────
+  const fetchCoupons = async () => {
+    const snap = await getDocs(query(collection(db, "coupons"), orderBy("code")));
+    setCoupons(snap.docs.map(d => ({ id: d.id, ...d.data() })) as Coupon[]);
+  };
+
+  const handleCreateCoupon = async () => {
+    const code = newCoupon.code.trim().toUpperCase();
+    if (!code || newCoupon.value <= 0) return alert("נא למלא קוד וערך תקינים");
+    try {
+      await addDoc(collection(db, "coupons"), {
+        code,
+        type: newCoupon.type,
+        value: Number(newCoupon.value),
+        expiryDate: newCoupon.expiryDate,
+        isActive: true,
+      });
+      setNewCoupon({ code: '', type: 'percent', value: 0, expiryDate: '' });
+      fetchCoupons();
+      showToast("קופון נוצר בהצלחה");
+    } catch (err) {
+      console.error(err);
+      alert("שגיאה ביצירת הקופון");
+    }
+  };
+
+  const handleToggleCoupon = async (coupon: Coupon) => {
+    await updateDoc(doc(db, "coupons", coupon.id), { isActive: !coupon.isActive });
+    fetchCoupons();
+  };
+
+  const handleDeleteCoupon = async (id: string) => {
+    if (!confirm("למחוק קופון זה?")) return;
+    await deleteDoc(doc(db, "coupons", id));
+    fetchCoupons();
   };
 
   const handleAdminLogin = (e: React.FormEvent) => {
@@ -137,6 +355,52 @@ export default function App() {
       fetchOrders();
     } else {
       alert("שם משתמש או סיסמה שגויים");
+    }
+  };
+
+  const handleEditProduct = async () => {
+    if (!editingProduct || !editProductData.name || !editProductData.price) return;
+    if (!confirm("האם לשמור את השינויים במוצר?")) return;
+    try {
+      setIsUploading(true);
+      const newImageUrls: string[] = [];
+      for (const file of editProductData.newImageFiles) {
+        const storageRef = ref(storage, `products/${Date.now()}_${file.name}`);
+        await uploadBytes(storageRef, file);
+        const url = await getDownloadURL(storageRef);
+        newImageUrls.push(url);
+      }
+      const allImages = [...(editingProduct.images || []), ...newImageUrls];
+      await updateDoc(doc(db, "products", editingProduct.id), {
+        name: editProductData.name,
+        description: editProductData.description,
+        price: editProductData.price,
+        category_id: editProductData.category_id,
+        images: allImages,
+        main_image: allImages[0] || editingProduct.main_image,
+      });
+      showToast("המוצר עודכן בהצלחה!");
+      setEditingProduct(null);
+      await fetchData();
+    } catch (err) {
+      console.error(err);
+      showToast("שגיאה בעדכון המוצר");
+    } finally {
+      setIsUploading(false);
+    }
+  };
+
+  const handleEditCategory = async (id: string) => {
+    if (!editingCategoryName.trim()) return;
+    if (!confirm("האם לשמור את שינוי הקטגוריה?")) return;
+    try {
+      await updateDoc(doc(db, "categories", id), { name: editingCategoryName });
+      showToast("הקטגוריה עודכנה בהצלחה!");
+      setEditingCategoryId(null);
+      setEditingCategoryName('');
+      await fetchData();
+    } catch (err) {
+      console.error(err);
     }
   };
 
@@ -180,7 +444,7 @@ export default function App() {
         created_at: new Date()
       });
 
-      alert("המוצר נשמר בהצלחה!");
+      showToast("המוצר נוסף בהצלחה!");
       await fetchData();
       setNewProduct({ name: '', description: '', price: 0, category_id: '', imageFiles: [], imagePreviews: [], main_image_index: 0 });
     } catch (err) {
@@ -209,17 +473,20 @@ export default function App() {
         name: newCategoryName,
         created_at: new Date()
       });
+      showToast("הקטגוריה נוספה בהצלחה!");
       await fetchData();
       setNewCategoryName('');
     } catch (err) {
       console.error("Error adding category:", err);
-      alert("שגיאה בהוספת הקטגוריה");
+      showToast("שגיאה בהוספת הקטגוריה");
     }
   };
 
   const handleDeleteCategory = async (id: string) => {
+    if (!confirm("האם אתה בטוח שברצונך למחוק קטגוריה זו?")) return;
     try {
       await deleteDoc(doc(db, "categories", id));
+      showToast("הקטגוריה נמחקה");
       await fetchData();
     } catch (err) {
       console.error("Error deleting category:", err);
@@ -258,10 +525,20 @@ export default function App() {
   const handleSaveSettings = async () => {
     try {
       await setDoc(doc(db, "settings", "store"), settings);
-      alert("הגדרות נשמרו");
+      showToast("הגדרות נשמרו בהצלחה");
     } catch (err) {
       console.error("Error saving settings:", err);
       alert("שגיאה בשמירת ההגדרות");
+    }
+  };
+
+  const handleSaveContent = async () => {
+    try {
+      await setDoc(doc(db, "settings", "content"), siteContent);
+      showToast("תוכן האתר עודכן בהצלחה");
+    } catch (err) {
+      console.error("Error saving content:", err);
+      alert("שגיאה בשמירת התוכן");
     }
   };
 
@@ -271,6 +548,29 @@ export default function App() {
 
   return (
     <div className="min-h-screen pb-20">
+      {/* Toast */}
+      <AnimatePresence>
+        {toast && (
+          <motion.div
+            initial={{ opacity: 0, y: -40 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -40 }}
+            className="fixed top-6 left-1/2 -translate-x-1/2 z-[200] bg-green-500 text-white px-6 py-3 rounded-2xl shadow-xl font-bold text-sm"
+          >
+            {toast}
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Announcement Bar */}
+      {(isContentLoading || siteContent.announcementBar) && (
+        <div className="bg-gradient-to-r from-[#ff9a9e] to-[#a1c4fd] text-white text-center py-2 px-4 text-sm font-medium">
+          {isContentLoading
+            ? <span className="inline-block w-64 h-4 bg-white/30 rounded animate-pulse" />
+            : siteContent.announcementBar}
+        </div>
+      )}
+
       {/* Header */}
       <header className="bg-white/80 backdrop-blur-md sticky top-0 z-50 px-6 py-4 flex justify-between items-center shadow-sm">
         <div className="flex items-center gap-4">
@@ -285,7 +585,9 @@ export default function App() {
               <Package size={24} />
             </div>
             <h1 className="text-xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-[#ff9a9e] to-[#a1c4fd]">
-              החנות שלי
+              {isContentLoading
+                ? <span className="inline-block w-16 h-5 bg-gradient-to-r from-gray-200 to-gray-100 rounded animate-pulse" />
+                : siteContent.storeName}
             </h1>
           </div>
         </div>
@@ -321,7 +623,39 @@ export default function App() {
         )}
 
         {view === 'user' && (
-          <div className="space-y-8">
+          <div className="space-y-12">
+            {/* Hero Section */}
+            <div className="text-center py-10 space-y-4">
+              {isContentLoading ? (
+                <div className="space-y-3 flex flex-col items-center">
+                  <div className="h-10 w-80 bg-gradient-to-r from-gray-100 to-gray-200 rounded-2xl animate-pulse" />
+                  <div className="h-5 w-96 bg-gradient-to-r from-gray-100 to-gray-200 rounded-xl animate-pulse" />
+                  <div className="h-5 w-72 bg-gradient-to-r from-gray-100 to-gray-200 rounded-xl animate-pulse" />
+                </div>
+              ) : (
+                <>
+                  {siteContent.heroTitle && (
+                    <h2 className="text-4xl md:text-5xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-[#ff9a9e] via-[#fecfef] to-[#a1c4fd] leading-tight">
+                      {siteContent.heroTitle}
+                    </h2>
+                  )}
+                  {siteContent.heroSubtitle && (
+                    <p className="text-gray-500 text-lg max-w-xl mx-auto leading-relaxed">
+                      {siteContent.heroSubtitle}
+                    </p>
+                  )}
+                </>
+              )}
+            </div>
+
+            {/* Collections Title */}
+            <div className="flex items-center gap-4">
+              {isContentLoading
+                ? <div className="h-7 w-40 bg-gradient-to-r from-gray-100 to-gray-200 rounded-lg animate-pulse" />
+                : <h3 className="text-2xl font-bold text-gray-800">{siteContent.collectionsTitle}</h3>}
+              <div className="flex-1 h-px bg-gradient-to-r from-[#ff9a9e]/30 to-transparent" />
+            </div>
+
             {/* Products Grid */}
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-8">
               {filteredProducts.map(product => (
@@ -480,11 +814,51 @@ export default function App() {
                 </div>
               </div>
 
+              {/* Coupon input */}
+              <div className="space-y-2">
+                <label className="block text-sm font-medium text-gray-700">קוד קופון</label>
+                {appliedCoupon ? (
+                  <div className="flex items-center justify-between bg-green-50 border border-green-200 rounded-xl px-4 py-3">
+                    <span className="text-green-700 font-semibold">
+                      ✅ {appliedCoupon.code} — {appliedCoupon.type === 'percent' ? `${appliedCoupon.value}% הנחה` : `₪${appliedCoupon.value} הנחה`}
+                    </span>
+                    <button onClick={removeAppliedCoupon} className="text-gray-400 hover:text-red-500 mr-2">
+                      <X size={16} />
+                    </button>
+                  </div>
+                ) : (
+                  <div className="flex gap-2">
+                    <input
+                      type="text"
+                      placeholder="הזן קוד קופון"
+                      className="flex-1 p-3 rounded-xl border border-gray-200 focus:ring-2 focus:ring-[#ff9a9e] focus:border-transparent outline-none uppercase"
+                      value={couponInput}
+                      onChange={e => { setCouponInput(e.target.value); setCouponError(null); }}
+                      onKeyDown={e => e.key === 'Enter' && handleApplyCoupon()}
+                    />
+                    <button
+                      onClick={handleApplyCoupon}
+                      disabled={isValidatingCoupon || !couponInput.trim()}
+                      className="px-4 py-3 bg-[#a1c4fd] text-white rounded-xl font-medium disabled:opacity-50 hover:bg-[#7fb3fc] transition-colors"
+                    >
+                      {isValidatingCoupon ? <Loader2 size={18} className="animate-spin" /> : 'החל'}
+                    </button>
+                  </div>
+                )}
+                {couponError && <p className="text-red-500 text-sm">{couponError}</p>}
+              </div>
+
               <div className="border-t pt-6 space-y-2">
                 <div className="flex justify-between text-gray-500">
                   <span>סיכום מוצרים:</span>
                   <span>₪{cartTotal}</span>
                 </div>
+                {appliedCoupon && (
+                  <div className="flex justify-between text-green-600 font-medium">
+                    <span>הנחת קופון ({appliedCoupon.code}):</span>
+                    <span>-₪{discountAmount}</span>
+                  </div>
+                )}
                 {checkoutData.delivery === 'delivery' && (
                   <div className="flex justify-between text-gray-500">
                     <span>דמי משלוח:</span>
@@ -582,6 +956,18 @@ export default function App() {
               >
                 הגדרות
               </button>
+              <button
+                onClick={() => { setAdminTab('coupons'); fetchCoupons(); }}
+                className={`pb-4 px-4 transition-all ${adminTab === 'coupons' ? 'border-b-2 border-[#ff9a9e] text-[#ff9a9e] font-bold' : 'text-gray-400'}`}
+              >
+                קופונים
+              </button>
+              <button
+                onClick={() => setAdminTab('content')}
+                className={`pb-4 px-4 transition-all ${adminTab === 'content' ? 'border-b-2 border-[#ff9a9e] text-[#ff9a9e] font-bold' : 'text-gray-400'}`}
+              >
+                תוכן אתר
+              </button>
             </div>
 
             {adminTab === 'products' && (
@@ -601,9 +987,32 @@ export default function App() {
                     </div>
                     <div className="space-y-2 max-h-40 overflow-y-auto">
                       {categories.map(c => (
-                        <div key={c.id} className="flex justify-between items-center p-2 bg-gray-50 rounded-lg">
-                          <span>{c.name}</span>
-                          <button onClick={() => handleDeleteCategory(c.id)} className="text-red-400"><Trash2 size={16} /></button>
+                        <div key={c.id} className="flex justify-between items-center p-2 bg-gray-50 rounded-lg gap-2">
+                          {editingCategoryId === c.id ? (
+                            <input
+                              className="flex-1 p-1 rounded border text-sm outline-none focus:ring-1 focus:ring-[#a1c4fd]"
+                              value={editingCategoryName}
+                              onChange={e => setEditingCategoryName(e.target.value)}
+                              onKeyDown={e => e.key === 'Enter' && handleEditCategory(c.id)}
+                              autoFocus
+                            />
+                          ) : (
+                            <span className="flex-1">{c.name}</span>
+                          )}
+                          <div className="flex gap-1 flex-shrink-0">
+                            {editingCategoryId === c.id ? (
+                              <button onClick={() => handleEditCategory(c.id)} className="text-green-500 hover:text-green-700">
+                                <CheckCircle2 size={16} />
+                              </button>
+                            ) : (
+                              <button onClick={() => { setEditingCategoryId(c.id); setEditingCategoryName(c.name); }} className="text-blue-400 hover:text-blue-600">
+                                <Pencil size={14} />
+                              </button>
+                            )}
+                            <button onClick={() => handleDeleteCategory(c.id)} className="text-red-400 hover:text-red-600">
+                              <Trash2 size={16} />
+                            </button>
+                          </div>
                         </div>
                       ))}
                     </div>
@@ -690,6 +1099,15 @@ export default function App() {
                           <h4 className="font-bold">{p.name}</h4>
                           <p className="text-xs text-gray-400">₪{p.price}</p>
                         </div>
+                        <button
+                          onClick={() => {
+                            setEditingProduct(p);
+                            setEditProductData({ name: p.name, description: p.description, price: p.price, category_id: p.category_id, newImageFiles: [], newImagePreviews: [] });
+                          }}
+                          className="text-blue-400 p-2 hover:bg-blue-50 rounded-full transition-colors"
+                        >
+                          <Pencil size={18} />
+                        </button>
                         <button onClick={() => handleDeleteProduct(p.id)} className="text-red-400 p-2 hover:bg-red-50 rounded-full transition-colors">
                           <Trash2 size={18} />
                         </button>
@@ -711,6 +1129,7 @@ export default function App() {
                         <th className="p-4 font-bold">טלפון</th>
                         <th className="p-4 font-bold">פריטים</th>
                         <th className="p-4 font-bold">סה"כ</th>
+                        <th className="p-4 font-bold">קופון</th>
                         <th className="p-4 font-bold">שיטה</th>
                         <th className="p-4 font-bold">תאריך</th>
                       </tr>
@@ -725,12 +1144,254 @@ export default function App() {
                             {order.items.map(i => `${i.name} (x${i.quantity})`).join(', ')}
                           </td>
                           <td className="p-4 font-bold text-[#ff9a9e]">₪{order.total_price}</td>
+                          <td className="p-4 text-xs">
+                            {order.coupon_code
+                              ? <span className="bg-green-100 text-green-700 px-2 py-1 rounded-full font-mono">{order.coupon_code} (-₪{order.discount_amount})</span>
+                              : <span className="text-gray-300">—</span>}
+                          </td>
                           <td className="p-4">{order.delivery_method === 'delivery' ? 'משלוח' : 'איסוף'}</td>
                           <td className="p-4 text-gray-400 text-xs">{new Date(order.created_at).toLocaleString('he-IL')}</td>
                         </tr>
                       ))}
                     </tbody>
                   </table>
+                </div>
+              </div>
+            )}
+
+            {adminTab === 'content' && (
+              <div className="space-y-8 max-w-2xl">
+                {/* Brand & Identity */}
+                <div className="pastel-card p-6 space-y-5">
+                  <h3 className="font-bold text-lg border-b pb-3 flex items-center gap-2">
+                    <span className="w-2 h-5 bg-gradient-to-b from-[#ff9a9e] to-[#a1c4fd] rounded-full inline-block" />
+                    זהות המותג
+                  </h3>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">שם החנות</label>
+                    <input
+                      type="text"
+                      className="w-full p-3 rounded-xl border border-gray-200 focus:ring-2 focus:ring-[#ff9a9e] focus:border-transparent outline-none"
+                      placeholder="Tony"
+                      value={siteContent.storeName}
+                      onChange={e => setSiteContent(prev => ({ ...prev, storeName: e.target.value }))}
+                    />
+                    <p className="text-xs text-gray-400 mt-1">מופיע בכותרת הדפדפן, בלוגו ובתגי ה-SEO</p>
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">פס הודעה עליון</label>
+                    <input
+                      type="text"
+                      className="w-full p-3 rounded-xl border border-gray-200 focus:ring-2 focus:ring-[#ff9a9e] focus:border-transparent outline-none"
+                      placeholder="משלוח חינם בהזמנות מעל ₪200 ✨"
+                      value={siteContent.announcementBar}
+                      onChange={e => setSiteContent(prev => ({ ...prev, announcementBar: e.target.value }))}
+                    />
+                    <p className="text-xs text-gray-400 mt-1">השאר ריק כדי להסתיר את הפס</p>
+                  </div>
+                </div>
+
+                {/* Hero Section */}
+                <div className="pastel-card p-6 space-y-5">
+                  <h3 className="font-bold text-lg border-b pb-3 flex items-center gap-2">
+                    <span className="w-2 h-5 bg-gradient-to-b from-[#ff9a9e] to-[#a1c4fd] rounded-full inline-block" />
+                    קטע הפתיחה (Hero)
+                  </h3>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">כותרת ראשית</label>
+                    <input
+                      type="text"
+                      className="w-full p-3 rounded-xl border border-gray-200 focus:ring-2 focus:ring-[#ff9a9e] focus:border-transparent outline-none"
+                      placeholder="Tony — אמנות המיתוג במארז אחד"
+                      value={siteContent.heroTitle}
+                      onChange={e => setSiteContent(prev => ({ ...prev, heroTitle: e.target.value }))}
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">תת-כותרת / תיאור</label>
+                    <textarea
+                      rows={3}
+                      className="w-full p-3 rounded-xl border border-gray-200 focus:ring-2 focus:ring-[#ff9a9e] focus:border-transparent outline-none resize-none"
+                      placeholder="מארזי מתנה יוקרתיים עם מיתוג אישי..."
+                      value={siteContent.heroSubtitle}
+                      onChange={e => setSiteContent(prev => ({ ...prev, heroSubtitle: e.target.value }))}
+                    />
+                  </div>
+                </div>
+
+                {/* Section Titles */}
+                <div className="pastel-card p-6 space-y-5">
+                  <h3 className="font-bold text-lg border-b pb-3 flex items-center gap-2">
+                    <span className="w-2 h-5 bg-gradient-to-b from-[#ff9a9e] to-[#a1c4fd] rounded-full inline-block" />
+                    כותרות קטעים
+                  </h3>
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-1">קטגוריות / קולקציות</label>
+                      <input
+                        type="text"
+                        className="w-full p-3 rounded-xl border border-gray-200 focus:ring-2 focus:ring-[#ff9a9e] focus:border-transparent outline-none"
+                        placeholder="הקולקציות שלנו"
+                        value={siteContent.collectionsTitle}
+                        onChange={e => setSiteContent(prev => ({ ...prev, collectionsTitle: e.target.value }))}
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-1">אודות</label>
+                      <input
+                        type="text"
+                        className="w-full p-3 rounded-xl border border-gray-200 focus:ring-2 focus:ring-[#ff9a9e] focus:border-transparent outline-none"
+                        placeholder="אודות"
+                        value={siteContent.aboutTitle}
+                        onChange={e => setSiteContent(prev => ({ ...prev, aboutTitle: e.target.value }))}
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-1">צור קשר</label>
+                      <input
+                        type="text"
+                        className="w-full p-3 rounded-xl border border-gray-200 focus:ring-2 focus:ring-[#ff9a9e] focus:border-transparent outline-none"
+                        placeholder="צור קשר"
+                        value={siteContent.contactTitle}
+                        onChange={e => setSiteContent(prev => ({ ...prev, contactTitle: e.target.value }))}
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                {/* SEO */}
+                <div className="pastel-card p-6 space-y-5">
+                  <h3 className="font-bold text-lg border-b pb-3 flex items-center gap-2">
+                    <span className="w-2 h-5 bg-gradient-to-b from-[#ff9a9e] to-[#a1c4fd] rounded-full inline-block" />
+                    SEO — מנועי חיפוש
+                  </h3>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">תיאור האתר (meta description)</label>
+                    <textarea
+                      rows={3}
+                      className="w-full p-3 rounded-xl border border-gray-200 focus:ring-2 focus:ring-[#ff9a9e] focus:border-transparent outline-none resize-none"
+                      placeholder="מארזי מתנה יוקרתיים עם מיתוג אישי. לאירועים, לעסקים ולכל רגע מיוחד."
+                      value={siteContent.seoDescription}
+                      onChange={e => setSiteContent(prev => ({ ...prev, seoDescription: e.target.value }))}
+                    />
+                    <p className="text-xs text-gray-400 mt-1">מומלץ: 150–160 תווים. כרגע: {siteContent.seoDescription.length} תווים</p>
+                  </div>
+                  {/* Live preview */}
+                  <div className="bg-gray-50 rounded-xl p-4 border border-dashed border-gray-200 space-y-1">
+                    <p className="text-xs text-gray-400 font-medium mb-2">תצוגה מקדימה בגוגל:</p>
+                    <p className="text-[#1a0dab] text-base font-medium truncate">
+                      {siteContent.storeName} — {siteContent.heroTitle || 'חנות מקוונת'}
+                    </p>
+                    <p className="text-[#006621] text-xs">tony-amramy-branding.web.app</p>
+                    <p className="text-gray-500 text-sm line-clamp-2">{siteContent.seoDescription || 'אין תיאור'}</p>
+                  </div>
+                </div>
+
+                <button
+                  onClick={handleSaveContent}
+                  className="w-full btn-primary py-4 text-lg shadow-lg"
+                >
+                  שמירת כל השינויים
+                </button>
+              </div>
+            )}
+
+            {adminTab === 'coupons' && (
+              <div className="space-y-8 max-w-2xl">
+                {/* Create coupon form */}
+                <div className="pastel-card p-6 space-y-4">
+                  <h3 className="font-bold border-b pb-2">יצירת קופון חדש</h3>
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-1">קוד קופון</label>
+                      <input
+                        type="text"
+                        placeholder="SAVE20"
+                        className="w-full p-2 rounded-lg border outline-none uppercase"
+                        value={newCoupon.code}
+                        onChange={e => setNewCoupon(prev => ({ ...prev, code: e.target.value.toUpperCase() }))}
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-1">סוג הנחה</label>
+                      <select
+                        className="w-full p-2 rounded-lg border outline-none"
+                        value={newCoupon.type}
+                        onChange={e => setNewCoupon(prev => ({ ...prev, type: e.target.value as 'percent' | 'fixed' }))}
+                      >
+                        <option value="percent">אחוז (%)</option>
+                        <option value="fixed">סכום קבוע (₪)</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-1">
+                        {newCoupon.type === 'percent' ? 'אחוז הנחה' : 'סכום הנחה (₪)'}
+                      </label>
+                      <input
+                        type="number"
+                        min="1"
+                        className="w-full p-2 rounded-lg border outline-none"
+                        value={newCoupon.value || ''}
+                        onChange={e => setNewCoupon(prev => ({ ...prev, value: Number(e.target.value) }))}
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-1">תאריך תפוגה (אופציונלי)</label>
+                      <input
+                        type="date"
+                        className="w-full p-2 rounded-lg border outline-none"
+                        value={newCoupon.expiryDate}
+                        onChange={e => setNewCoupon(prev => ({ ...prev, expiryDate: e.target.value }))}
+                      />
+                    </div>
+                  </div>
+                  <button onClick={handleCreateCoupon} className="w-full btn-primary">
+                    צור קופון
+                  </button>
+                </div>
+
+                {/* Coupons list */}
+                <div className="pastel-card overflow-hidden">
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-right">
+                      <thead className="bg-gray-50 border-b">
+                        <tr>
+                          <th className="p-4 font-bold">קוד</th>
+                          <th className="p-4 font-bold">סוג</th>
+                          <th className="p-4 font-bold">ערך</th>
+                          <th className="p-4 font-bold">תפוגה</th>
+                          <th className="p-4 font-bold">סטטוס</th>
+                          <th className="p-4 font-bold">פעולות</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y">
+                        {coupons.length === 0 && (
+                          <tr><td colSpan={6} className="p-4 text-center text-gray-400">אין קופונים</td></tr>
+                        )}
+                        {coupons.map(c => (
+                          <tr key={c.id} className="hover:bg-gray-50">
+                            <td className="p-4 font-mono font-bold">{c.code}</td>
+                            <td className="p-4">{c.type === 'percent' ? 'אחוז' : 'קבוע'}</td>
+                            <td className="p-4">{c.type === 'percent' ? `${c.value}%` : `₪${c.value}`}</td>
+                            <td className="p-4 text-sm text-gray-500">{c.expiryDate || '—'}</td>
+                            <td className="p-4">
+                              <button
+                                onClick={() => handleToggleCoupon(c)}
+                                className={`px-3 py-1 rounded-full text-xs font-bold transition-colors ${c.isActive ? 'bg-green-100 text-green-700 hover:bg-green-200' : 'bg-gray-100 text-gray-500 hover:bg-gray-200'}`}
+                              >
+                                {c.isActive ? 'פעיל' : 'מושבת'}
+                              </button>
+                            </td>
+                            <td className="p-4">
+                              <button onClick={() => handleDeleteCoupon(c.id)} className="text-red-400 hover:text-red-600">
+                                <Trash2 size={16} />
+                              </button>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
                 </div>
               </div>
             )}
@@ -814,6 +1475,121 @@ export default function App() {
                     {cat.name}
                   </button>
                 ))}
+              </div>
+            </motion.div>
+          </>
+        )}
+      </AnimatePresence>
+
+      {/* Edit Product Drawer */}
+      <AnimatePresence>
+        {editingProduct && (
+          <>
+            <motion.div
+              initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+              onClick={() => setEditingProduct(null)}
+              className="fixed inset-0 bg-black/20 backdrop-blur-sm z-[60]"
+            />
+            <motion.div
+              initial={{ x: '100%' }} animate={{ x: 0 }} exit={{ x: '100%' }}
+              className="fixed inset-y-0 right-0 w-full max-w-md bg-white z-[70] shadow-2xl flex flex-col"
+            >
+              <div className="p-6 border-b flex justify-between items-center">
+                <h2 className="text-xl font-bold">עריכת מוצר</h2>
+                <button onClick={() => setEditingProduct(null)} className="p-2 hover:bg-gray-100 rounded-full"><X size={24} /></button>
+              </div>
+              <div className="flex-grow overflow-y-auto p-6 space-y-4">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">שם המוצר</label>
+                  <input
+                    type="text" className="w-full p-2 rounded-lg border outline-none focus:ring-2 focus:ring-[#ff9a9e]"
+                    value={editProductData.name}
+                    onChange={e => setEditProductData(prev => ({ ...prev, name: e.target.value }))}
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">תיאור</label>
+                  <textarea
+                    className="w-full p-2 rounded-lg border h-20 outline-none focus:ring-2 focus:ring-[#ff9a9e]"
+                    value={editProductData.description}
+                    onChange={e => setEditProductData(prev => ({ ...prev, description: e.target.value }))}
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">מחיר</label>
+                  <input
+                    type="number" className="w-full p-2 rounded-lg border outline-none focus:ring-2 focus:ring-[#ff9a9e]"
+                    value={editProductData.price || ''}
+                    onChange={e => setEditProductData(prev => ({ ...prev, price: Number(e.target.value) }))}
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">קטגוריה</label>
+                  <select
+                    className="w-full p-2 rounded-lg border outline-none focus:ring-2 focus:ring-[#ff9a9e]"
+                    value={editProductData.category_id}
+                    onChange={e => setEditProductData(prev => ({ ...prev, category_id: e.target.value }))}
+                  >
+                    <option value="">בחר קטגוריה</option>
+                    {categories.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+                  </select>
+                </div>
+                {editingProduct.images && editingProduct.images.length > 0 && (
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">תמונות קיימות</label>
+                    <div className="grid grid-cols-4 gap-2">
+                      {editingProduct.images.map((img, idx) => (
+                        <div key={idx} className="aspect-square rounded-lg overflow-hidden border">
+                          <img src={img} className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">הוספת תמונות נוספות</label>
+                  <input
+                    type="file" accept="image/*" multiple className="hidden" id="edit-image-upload"
+                    onChange={e => {
+                      const files = e.target.files;
+                      if (files) {
+                        Array.from(files).forEach((file: File) => {
+                          const reader = new FileReader();
+                          reader.onloadend = () => {
+                            setEditProductData(prev => ({
+                              ...prev,
+                              newImageFiles: [...prev.newImageFiles, file],
+                              newImagePreviews: [...prev.newImagePreviews, reader.result as string]
+                            }));
+                          };
+                          reader.readAsDataURL(file);
+                        });
+                      }
+                    }}
+                  />
+                  <label htmlFor="edit-image-upload" className="flex items-center justify-center gap-2 w-full p-3 border-2 border-dashed rounded-xl cursor-pointer hover:bg-gray-50 transition-colors">
+                    <Camera size={20} className="text-gray-400" />
+                    <span className="text-gray-500 text-sm">העלאת תמונות</span>
+                  </label>
+                  {editProductData.newImagePreviews.length > 0 && (
+                    <div className="grid grid-cols-4 gap-2 mt-2">
+                      {editProductData.newImagePreviews.map((img, idx) => (
+                        <div key={idx} className="aspect-square rounded-lg overflow-hidden border">
+                          <img src={img} className="w-full h-full object-cover" />
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+              <div className="p-6 border-t">
+                <button
+                  onClick={handleEditProduct}
+                  disabled={isUploading}
+                  className="w-full btn-primary py-4 text-lg shadow-lg flex items-center justify-center gap-2"
+                >
+                  {isUploading ? <><Loader2 size={18} className="animate-spin" /> שומר...</> : 'שמירת שינויים'}
+                </button>
               </div>
             </motion.div>
           </>

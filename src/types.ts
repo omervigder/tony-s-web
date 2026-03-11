@@ -35,6 +35,17 @@ export interface Order {
   items: OrderItem[];
   status: string;
   created_at: string;
+  coupon_code?: string;
+  discount_amount?: number;
+}
+
+export interface Coupon {
+  id: string;
+  code: string;
+  type: 'percent' | 'fixed';
+  value: number;
+  expiryDate: string;
+  isActive: boolean;
 }
 
 export interface Settings {
@@ -45,4 +56,15 @@ export interface Settings {
 
 export interface CartItem extends Product {
   quantity: number;
+}
+
+export interface SiteContent {
+  storeName: string;
+  announcementBar: string;
+  heroTitle: string;
+  heroSubtitle: string;
+  collectionsTitle: string;
+  aboutTitle: string;
+  contactTitle: string;
+  seoDescription: string;
 }

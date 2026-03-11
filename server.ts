@@ -53,7 +53,7 @@ db.exec(`
 const seedSettings = db.prepare("INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)");
 seedSettings.run("pickup_address", "רחוב הכלנית 5, תל אביב");
 seedSettings.run("delivery_cost", "30");
-seedSettings.run("bit_phone", "0501234567");
+seedSettings.run("bit_phone", "0525830758");
 
 // Seed initial categories and products if empty
 const categoryCount = db.prepare("SELECT COUNT(*) as count FROM categories").get() as { count: number };
