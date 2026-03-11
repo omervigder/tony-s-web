@@ -1,5 +1,15 @@
 {
   "projects": {
     "default": "my-store-app-14f06"
-  }
+  },
+  "targets": {
+    "my-store-app-14f06": {
+      "hosting": {
+        "tony-amramy-branding": [
+          "tony-amramy-branding"
+        ]
+      }
+    }
+  },
+  "etags": {}
 }

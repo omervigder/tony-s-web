@@ -18,3 +18,4 @@ jobs:
           firebaseServiceAccount: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_MY_STORE_APP_14F06 }}
           channelId: live
           projectId: my-store-app-14f06
+          target: tony-amramy-branding
