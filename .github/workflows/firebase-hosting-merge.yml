@@ -11,39 +11,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
-      # ── Frontend build — VITE_ vars must exist at compile time ──────────────
-      - name: Build frontend
-        env:
-          VITE_TELEGRAM_BOT_TOKEN: ${{ secrets.VITE_TELEGRAM_BOT_TOKEN }}
-          VITE_TELEGRAM_CHAT_ID: ${{ secrets.VITE_TELEGRAM_CHAT_ID }}
-        run: npm ci && npm run build
-
-      # ── Write functions runtime secrets to functions/.env ───────────────────
-      - name: Write functions/.env
-        run: |
-          printf "TELEGRAM_BOT_TOKEN=%s\nTELEGRAM_WEBHOOK_SECRET=%s\n" \
-            "${{ secrets.TELEGRAM_BOT_TOKEN }}" \
-            "${{ secrets.TELEGRAM_WEBHOOK_SECRET }}" > functions/.env
-
-      # ── Install functions dependencies ──────────────────────────────────────
-      - name: Install functions dependencies
-        run: cd functions && npm ci
-
-      # ── Deploy Cloud Functions via Firebase CLI ──────────────────────────────
-      - name: Deploy Cloud Functions
-        env:
-          GOOGLE_APPLICATION_CREDENTIALS_JSON: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_MY_STORE_APP_14F06 }}
-        run: |
-          echo "$GOOGLE_APPLICATION_CREDENTIALS_JSON" > /tmp/sa.json
-          export GOOGLE_APPLICATION_CREDENTIALS=/tmp/sa.json
-          npx firebase-tools deploy --only functions --project my-store-app-14f06 --non-interactive
-
-      # ── Deploy Hosting ───────────────────────────────────────────────────────
+      - run: npm ci && npm run build
       - uses: FirebaseExtended/action-hosting-deploy@v0
         with:
           repoToken: ${{ secrets.GITHUB_TOKEN }}
           firebaseServiceAccount: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_MY_STORE_APP_14F06 }}
           channelId: live
           projectId: my-store-app-14f06
-          target: tony-amramy-branding
