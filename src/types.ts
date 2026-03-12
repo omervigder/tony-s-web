@@ -8,6 +8,7 @@ export interface Product {
   name: string;
   description: string;
   price: number;
+  costPrice?: number;
   category_id: string;
   main_image: string;
   images: string[];
@@ -23,6 +24,7 @@ export interface OrderItem {
   id: string;
   name: string;
   price: number;
+  costPrice?: number;
   quantity: number;
 }
 
@@ -30,10 +32,14 @@ export interface Order {
   id: string;
   customer_name: string;
   customer_phone: string;
+  customer_email?: string;
   delivery_method: 'pickup' | 'delivery';
   total_price: number;
   items: OrderItem[];
   status: string;
+  orderStatus: 'Pending' | 'Processing' | 'Shipped' | 'Completed' | 'Cancelled';
+  isPaid: boolean;
+  shippingAddress?: string;
   created_at: string;
   coupon_code?: string;
   discount_amount?: number;

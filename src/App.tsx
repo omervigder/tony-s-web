@@ -9,7 +9,7 @@ import { ref, uploadBytes, getDownloadURL } from "firebase/storage";
 export default function App() {
   const [view, setView] = useState<'user' | 'admin' | 'checkout' | 'success' | 'product'>('user');
   const [isAdmin, setIsAdmin] = useState(false);
-  const [adminTab, setAdminTab] = useState<'products' | 'orders' | 'settings' | 'coupons' | 'content'>('products');
+  const [adminTab, setAdminTab] = useState<'products' | 'orders' | 'settings' | 'coupons' | 'content' | 'analytics'>('products');
   const [products, setProducts] = useState<Product[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
   const [orders, setOrders] = useState<Order[]>([]);
@@ -20,7 +20,7 @@ export default function App() {
   const [isMenuOpen, setIsMenuOpen] = useState(false);
   const [isLoadingProduct, setIsLoadingProduct] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
-  const [checkoutData, setCheckoutData] = useState({ name: '', phone: '', delivery: 'pickup' as 'pickup' | 'delivery' });
+  const [checkoutData, setCheckoutData] = useState({ name: '', phone: '', email: '', delivery: 'pickup' as 'pickup' | 'delivery', shippingAddress: '' });
   const [lastOrderId, setLastOrderId] = useState<string | null>(null);
   const [selectedProduct, setSelectedProduct] = useState<Product | null>(null);
   const [selectedImageIndex, setSelectedImageIndex] = useState(0);
@@ -32,9 +32,9 @@ export default function App() {
   // Edit product
   const [editingProduct, setEditingProduct] = useState<Product | null>(null);
   const [editProductData, setEditProductData] = useState<{
-    name: string; description: string; price: number; category_id: string;
+    name: string; description: string; price: number; costPrice: number; category_id: string;
     newImageFiles: File[]; newImagePreviews: string[];
-  }>({ name: '', description: '', price: 0, category_id: '', newImageFiles: [], newImagePreviews: [] });
+  }>({ name: '', description: '', price: 0, costPrice: 0, category_id: '', newImageFiles: [], newImagePreviews: [] });
 
   // Edit category
   const [editingCategoryId, setEditingCategoryId] = useState<string | null>(null);
@@ -80,28 +80,17 @@ export default function App() {
 
   const fetchData = async () => {
     try {
-      // Fetch products
-      const productsQuery = query(collection(db, "products"), orderBy("created_at", "desc"));
-      const productsSnapshot = await getDocs(productsQuery);
-      const productsData = productsSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })) as Product[];
-      setProducts(productsData);
+      const [productsSnapshot, categoriesSnapshot, settingsDoc, contentDoc] = await Promise.all([
+        getDocs(query(collection(db, "products"), orderBy("created_at", "desc"))),
+        getDocs(collection(db, "categories")),
+        getDoc(doc(db, "settings", "store")),
+        getDoc(doc(db, "settings", "content")),
+      ]);
 
-      // Fetch categories
-      const categoriesSnapshot = await getDocs(collection(db, "categories"));
-      const categoriesData = categoriesSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })) as Category[];
-      setCategories(categoriesData);
-
-      // Fetch settings
-      const settingsDoc = await getDoc(doc(db, "settings", "store"));
-      if (settingsDoc.exists()) {
-        setSettings(settingsDoc.data() as Settings);
-      }
-
-      // Fetch site content
-      const contentDoc = await getDoc(doc(db, "settings", "content"));
-      if (contentDoc.exists()) {
-        setSiteContent(prev => ({ ...prev, ...contentDoc.data() as SiteContent }));
-      }
+      setProducts(productsSnapshot.docs.map(d => ({ id: d.id, ...d.data() })) as Product[]);
+      setCategories(categoriesSnapshot.docs.map(d => ({ id: d.id, ...d.data() })) as Category[]);
+      if (settingsDoc.exists()) setSettings(settingsDoc.data() as Settings);
+      if (contentDoc.exists()) setSiteContent(prev => ({ ...prev, ...contentDoc.data() as SiteContent }));
     } catch (err) {
       console.error("Fetch error:", err);
     } finally {
@@ -122,22 +111,14 @@ export default function App() {
     if (ogDesc && siteContent.seoDescription) ogDesc.content = siteContent.seoDescription;
   }, [siteContent.storeName, siteContent.heroTitle, siteContent.seoDescription]);
 
-  const fetchProductDetails = async (id: string) => {
-    try {
-      setIsLoadingProduct(true);
-      const productDoc = await getDoc(doc(db, "products", id));
-      if (!productDoc.exists()) throw new Error("Product not found");
-      setSelectedProduct({ id: productDoc.id, ...productDoc.data() } as Product);
-      setSelectedImageIndex(0);
-      setProductQuantity(1);
-      setView('product');
-      window.scrollTo(0, 0);
-    } catch (err) {
-      console.error("Error fetching product:", err);
-      alert("שגיאה בטעינת פרטי המוצר");
-    } finally {
-      setIsLoadingProduct(false);
-    }
+  const fetchProductDetails = (id: string) => {
+    const product = products.find(p => p.id === id);
+    if (!product) return;
+    setSelectedProduct(product);
+    setSelectedImageIndex(0);
+    setProductQuantity(1);
+    setView('product');
+    window.scrollTo(0, 0);
   };
 
   const fetchOrders = async () => {
@@ -183,7 +164,9 @@ export default function App() {
     orderId: string;
     name: string;
     phone: string;
+    email: string;
     deliveryMethod: 'pickup' | 'delivery';
+    shippingAddress: string;
     items: { name: string; price: number; quantity: number }[];
     total: number;
     pickupAddress: string;
@@ -195,7 +178,7 @@ export default function App() {
     const whatsappPhone = order.phone.replace(/^0/, '');
     const whatsappLink = `https://wa.me/972${whatsappPhone}`;
     const deliveryLine = order.deliveryMethod === 'delivery'
-      ? '🚚 משלוח עד הבית'
+      ? `🚚 משלוח — ${order.shippingAddress}`
       : `📍 איסוף עצמי: ${order.pickupAddress}`;
     const itemsList = order.items
       .map(i => `• ${i.name} x${i.quantity} — ₪${(i.price * i.quantity).toFixed(2)}`)
@@ -205,13 +188,14 @@ export default function App() {
 `📦 *הזמנה חדשה! #${order.orderId.slice(-6)}*
 
 👤 *שם:* ${order.name}
-📞 *טלפון:* ${order.phone}
+📞 *טלפון:* ${order.phone}${order.email ? `\n📧 *אימייל:* ${order.email}` : ''}
 ${deliveryLine}
 
 🛒 *פריטים:*
 ${itemsList}
 
 💰 *סה"כ לתשלום: ₪${order.total.toFixed(2)}*
+💳 *סטטוס תשלום:* ממתין לאישור
 
 💬 [שלח WhatsApp ללקוח](${whatsappLink})`;
 
@@ -222,8 +206,12 @@ ${itemsList}
       reply_markup: {
         inline_keyboard: [
           [
+            { text: '✅ אשר תשלום', callback_data: `confirm_payment:${order.orderId}` },
+            { text: '🚚 סמן כנשלח', callback_data: `mark_shipped:${order.orderId}` },
+          ],
+          [
             { text: '📞 התקשר ללקוח', url: `tel:${order.phone}` },
-            { text: '✅ סמן כבוצע', callback_data: `complete_order:${order.orderId}` }
+            { text: '💬 WhatsApp', url: whatsappLink },
           ]
         ]
       }
@@ -238,16 +226,21 @@ ${itemsList}
 
   const handleCheckout = async () => {
     if (!checkoutData.name || !checkoutData.phone) return alert("נא למלא את כל השדות");
+    if (checkoutData.delivery === 'delivery' && !checkoutData.shippingAddress.trim()) return alert("נא להזין כתובת למשלוח");
 
     try {
-      const orderItems = cart.map(i => ({ id: i.id, name: i.name, price: i.price, quantity: i.quantity }));
+      const orderItems = cart.map(i => ({ id: i.id, name: i.name, price: i.price, costPrice: i.costPrice ?? 0, quantity: i.quantity }));
       const orderDoc = await addDoc(collection(db, "orders"), {
         customer_name: checkoutData.name,
         customer_phone: checkoutData.phone,
+        ...(checkoutData.email && { customer_email: checkoutData.email }),
         delivery_method: checkoutData.delivery,
         total_price: finalTotal,
         items: orderItems,
         status: 'חדש',
+        orderStatus: 'Pending',
+        isPaid: false,
+        ...(checkoutData.delivery === 'delivery' && { shippingAddress: checkoutData.shippingAddress }),
         created_at: new Date().toISOString(),
         ...(appliedCoupon && {
           coupon_code: appliedCoupon.code,
@@ -258,6 +251,7 @@ ${itemsList}
       setCart([]);
       setAppliedCoupon(null);
       setCouponInput('');
+      setCheckoutData({ name: '', phone: '', email: '', delivery: 'pickup', shippingAddress: '' });
       setView('success');
 
       // Fire-and-forget — notification failure must not affect UX
@@ -265,7 +259,9 @@ ${itemsList}
         orderId: orderDoc.id,
         name: checkoutData.name,
         phone: checkoutData.phone,
+        email: checkoutData.email,
         deliveryMethod: checkoutData.delivery,
+        shippingAddress: checkoutData.shippingAddress,
         items: orderItems,
         total: finalTotal,
         pickupAddress: settings.pickup_address
@@ -348,9 +344,35 @@ ${itemsList}
     fetchCoupons();
   };
 
+  const sendTelegramStatusUpdate = async (order: Order, newStatus: string) => {
+    const botToken = import.meta.env.VITE_TELEGRAM_BOT_TOKEN;
+    const chatId = import.meta.env.VITE_TELEGRAM_CHAT_ID;
+    if (!botToken || !chatId) return;
+    const statusEmoji: Record<string, string> = { Pending: '⏳', Processing: '🔄', Completed: '✅', Cancelled: '❌' };
+    const message = `${statusEmoji[newStatus] ?? '📋'} *עדכון סטטוס הזמנה #${order.id.slice(0, 6)}*\n\n👤 *לקוח:* ${order.customer_name}\n📞 *טלפון:* ${order.customer_phone}\n💰 *סה"כ:* ₪${order.total_price}\n\n🔁 *סטטוס חדש:* ${newStatus}`;
+    await fetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ chat_id: chatId, text: message, parse_mode: 'Markdown' })
+    });
+  };
+
+  const handleUpdateOrderStatus = async (order: Order, newStatus: Order['orderStatus']) => {
+    try {
+      await updateDoc(doc(db, "orders", order.id), { orderStatus: newStatus });
+      setOrders(prev => prev.map(o => o.id === order.id ? { ...o, orderStatus: newStatus } : o));
+      sendTelegramStatusUpdate({ ...order, orderStatus: newStatus }, newStatus)
+        .catch(err => console.error("Telegram status update error:", err));
+    } catch (err) {
+      console.error("Error updating order status:", err);
+    }
+  };
+
   const handleAdminLogin = (e: React.FormEvent) => {
     e.preventDefault();
-    if (loginData.username === 'admin' && loginData.password === 'password123') {
+    const adminUser = import.meta.env.VITE_ADMIN_USERNAME;
+    const adminPass = import.meta.env.VITE_ADMIN_PASSWORD;
+    if (loginData.username === adminUser && loginData.password === adminPass) {
       setIsAdmin(true);
       fetchOrders();
     } else {
@@ -375,6 +397,7 @@ ${itemsList}
         name: editProductData.name,
         description: editProductData.description,
         price: editProductData.price,
+        costPrice: editProductData.costPrice ?? 0,
         category_id: editProductData.category_id,
         images: allImages,
         main_image: allImages[0] || editingProduct.main_image,
@@ -409,11 +432,12 @@ ${itemsList}
     name: string;
     description: string;
     price: number;
+    costPrice: number;
     category_id: string;
     imageFiles: File[];
     imagePreviews: string[];
     main_image_index: number;
-  }>({ name: '', description: '', price: 0, category_id: '', imageFiles: [], imagePreviews: [], main_image_index: 0 });
+  }>({ name: '', description: '', price: 0, costPrice: 0, category_id: '', imageFiles: [], imagePreviews: [], main_image_index: 0 });
   const [newCategoryName, setNewCategoryName] = useState('');
 
   const handleAddProduct = async () => {
@@ -438,6 +462,7 @@ ${itemsList}
         name: newProduct.name,
         description: newProduct.description,
         price: newProduct.price,
+        costPrice: newProduct.costPrice ?? 0,
         category_id: newProduct.category_id,
         images: imageUrls,
         main_image: imageUrls[newProduct.main_image_index] || imageUrls[0] || null,
@@ -446,7 +471,7 @@ ${itemsList}
 
       showToast("המוצר נוסף בהצלחה!");
       await fetchData();
-      setNewProduct({ name: '', description: '', price: 0, category_id: '', imageFiles: [], imagePreviews: [], main_image_index: 0 });
+      setNewProduct({ name: '', description: '', price: 0, costPrice: 0, category_id: '', imageFiles: [], imagePreviews: [], main_image_index: 0 });
     } catch (err) {
       console.error("Error adding product:", err);
       alert("שגיאה בהוספת המוצר");
@@ -798,6 +823,15 @@ ${itemsList}
                     onChange={e => setCheckoutData(prev => ({ ...prev, phone: e.target.value }))}
                   />
                 </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">אימייל (אופציונלי)</label>
+                  <input
+                    type="email"
+                    className="w-full p-3 rounded-xl border-gray-200 border focus:ring-2 focus:ring-[#ff9a9e] focus:border-transparent outline-none"
+                    value={checkoutData.email}
+                    onChange={e => setCheckoutData(prev => ({ ...prev, email: e.target.value }))}
+                  />
+                </div>
                 <div className="flex gap-4">
                   <button
                     onClick={() => setCheckoutData(prev => ({ ...prev, delivery: 'pickup' }))}
@@ -812,6 +846,18 @@ ${itemsList}
                     משלוח עד הבית
                   </button>
                 </div>
+                {checkoutData.delivery === 'delivery' && (
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">כתובת למשלוח *</label>
+                    <input
+                      type="text"
+                      placeholder="רחוב, מספר בית, עיר"
+                      className="w-full p-3 rounded-xl border-gray-200 border focus:ring-2 focus:ring-[#ff9a9e] focus:border-transparent outline-none"
+                      value={checkoutData.shippingAddress}
+                      onChange={e => setCheckoutData(prev => ({ ...prev, shippingAddress: e.target.value }))}
+                    />
+                  </div>
+                )}
               </div>
 
               {/* Coupon input */}
@@ -968,6 +1014,12 @@ ${itemsList}
               >
                 תוכן אתר
               </button>
+              <button
+                onClick={() => { setAdminTab('analytics'); fetchOrders(); }}
+                className={`pb-4 px-4 transition-all ${adminTab === 'analytics' ? 'border-b-2 border-[#ff9a9e] text-[#ff9a9e] font-bold' : 'text-gray-400'}`}
+              >
+                אנליטיקס
+              </button>
             </div>
 
             {adminTab === 'products' && (
@@ -1030,8 +1082,12 @@ ${itemsList}
                         value={newProduct.description} onChange={e => setNewProduct(prev => ({ ...prev, description: e.target.value }))}
                       />
                       <input
-                        type="number" placeholder="מחיר" className="w-full p-2 rounded-lg border"
+                        type="number" placeholder="מחיר מכירה (₪)" className="w-full p-2 rounded-lg border"
                         value={newProduct.price || ''} onChange={e => setNewProduct(prev => ({ ...prev, price: Number(e.target.value) }))}
+                      />
+                      <input
+                        type="number" placeholder="מחיר עלות (₪)" className="w-full p-2 rounded-lg border"
+                        value={newProduct.costPrice || ''} onChange={e => setNewProduct(prev => ({ ...prev, costPrice: Number(e.target.value) }))}
                       />
                       <select
                         className="w-full p-2 rounded-lg border"
@@ -1102,7 +1158,7 @@ ${itemsList}
                         <button
                           onClick={() => {
                             setEditingProduct(p);
-                            setEditProductData({ name: p.name, description: p.description, price: p.price, category_id: p.category_id, newImageFiles: [], newImagePreviews: [] });
+                            setEditProductData({ name: p.name, description: p.description, price: p.price, costPrice: p.costPrice ?? 0, category_id: p.category_id, newImageFiles: [], newImagePreviews: [] });
                           }}
                           className="text-blue-400 p-2 hover:bg-blue-50 rounded-full transition-colors"
                         >
@@ -1131,6 +1187,7 @@ ${itemsList}
                         <th className="p-4 font-bold">סה"כ</th>
                         <th className="p-4 font-bold">קופון</th>
                         <th className="p-4 font-bold">שיטה</th>
+                        <th className="p-4 font-bold">סטטוס</th>
                         <th className="p-4 font-bold">תאריך</th>
                       </tr>
                     </thead>
@@ -1142,6 +1199,7 @@ ${itemsList}
                           <td className="p-4">{order.customer_phone}</td>
                           <td className="p-4 text-xs">
                             {order.items.map(i => `${i.name} (x${i.quantity})`).join(', ')}
+                            {order.shippingAddress && <div className="text-gray-400 mt-1">📦 {order.shippingAddress}</div>}
                           </td>
                           <td className="p-4 font-bold text-[#ff9a9e]">₪{order.total_price}</td>
                           <td className="p-4 text-xs">
@@ -1150,6 +1208,25 @@ ${itemsList}
                               : <span className="text-gray-300">—</span>}
                           </td>
                           <td className="p-4">{order.delivery_method === 'delivery' ? 'משלוח' : 'איסוף'}</td>
+                          <td className="p-4">
+                            <select
+                              value={order.orderStatus ?? 'Pending'}
+                              onChange={e => handleUpdateOrderStatus(order, e.target.value as Order['orderStatus'])}
+                              className={`text-xs px-2 py-1 rounded-lg border outline-none font-medium ${
+                                order.orderStatus === 'Completed' ? 'bg-green-100 text-green-700 border-green-200' :
+                                order.orderStatus === 'Cancelled' ? 'bg-red-100 text-red-700 border-red-200' :
+                                order.orderStatus === 'Processing' ? 'bg-blue-100 text-blue-700 border-blue-200' :
+                                order.orderStatus === 'Shipped' ? 'bg-purple-100 text-purple-700 border-purple-200' :
+                                'bg-yellow-100 text-yellow-700 border-yellow-200'
+                              }`}
+                            >
+                              <option value="Pending">Pending</option>
+                              <option value="Processing">Processing</option>
+                              <option value="Shipped">Shipped</option>
+                              <option value="Completed">Completed</option>
+                              <option value="Cancelled">Cancelled</option>
+                            </select>
+                          </td>
                           <td className="p-4 text-gray-400 text-xs">{new Date(order.created_at).toLocaleString('he-IL')}</td>
                         </tr>
                       ))}
@@ -1396,6 +1473,59 @@ ${itemsList}
               </div>
             )}
 
+            {adminTab === 'analytics' && (() => {
+              const paidOrders = orders.filter(o => o.isPaid === true);
+              const totalOrders = paidOrders.length;
+              const totalRevenue = paidOrders.reduce((sum, o) => sum + o.total_price, 0);
+              const totalCost = paidOrders.reduce((sum, order) =>
+                sum + order.items.reduce((iSum, item) => {
+                  const product = products.find(p => p.id === item.id);
+                  return iSum + (item.costPrice ?? product?.costPrice ?? 0) * item.quantity;
+                }, 0), 0);
+              const netProfit = totalRevenue - totalCost;
+              const pendingPayment = orders.filter(o => !o.isPaid).length;
+              return (
+                <div className="space-y-6">
+                  <h3 className="text-xl font-bold">דשבורד אנליטיקס</h3>
+                  <p className="text-sm text-gray-400">מבוסס על הזמנות שאושר תשלומן בלבד</p>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
+                    <div className="pastel-card p-6 space-y-2">
+                      <p className="text-sm text-gray-500">הזמנות ששולמו</p>
+                      <p className="text-3xl font-bold text-gray-800">{totalOrders}</p>
+                      <p className="text-xs text-yellow-600">{pendingPayment} ממתינות לתשלום</p>
+                    </div>
+                    <div className="pastel-card p-6 space-y-2">
+                      <p className="text-sm text-gray-500">הכנסות ברוטו</p>
+                      <p className="text-3xl font-bold text-[#ff9a9e]">₪{totalRevenue.toFixed(2)}</p>
+                    </div>
+                    <div className="pastel-card p-6 space-y-2">
+                      <p className="text-sm text-gray-500">עלויות</p>
+                      <p className="text-3xl font-bold text-red-400">₪{totalCost.toFixed(2)}</p>
+                    </div>
+                    <div className="pastel-card p-6 space-y-2">
+                      <p className="text-sm text-gray-500">רווח נקי</p>
+                      <p className={`text-3xl font-bold ${netProfit >= 0 ? 'text-green-500' : 'text-red-500'}`}>₪{netProfit.toFixed(2)}</p>
+                    </div>
+                  </div>
+                  <div className="pastel-card p-6">
+                    <h4 className="font-bold mb-4">התפלגות סטטוסי הזמנות</h4>
+                    <div className="grid grid-cols-2 sm:grid-cols-5 gap-4">
+                      {(['Pending', 'Processing', 'Shipped', 'Completed', 'Cancelled'] as const).map(status => {
+                        const count = orders.filter(o => (o.orderStatus ?? 'Pending') === status).length;
+                        const colors: Record<string, string> = { Pending: 'bg-yellow-100 text-yellow-700', Processing: 'bg-blue-100 text-blue-700', Shipped: 'bg-purple-100 text-purple-700', Completed: 'bg-green-100 text-green-700', Cancelled: 'bg-red-100 text-red-700' };
+                        return (
+                          <div key={status} className={`rounded-xl p-4 text-center ${colors[status]}`}>
+                            <p className="text-2xl font-bold">{count}</p>
+                            <p className="text-sm font-medium">{status}</p>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                </div>
+              );
+            })()}
+
             {adminTab === 'settings' && (
               <div className="max-w-md space-y-6">
                 <div className="pastel-card p-8 space-y-6">
@@ -1516,11 +1646,19 @@ ${itemsList}
                   />
                 </div>
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">מחיר</label>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">מחיר מכירה (₪)</label>
                   <input
                     type="number" className="w-full p-2 rounded-lg border outline-none focus:ring-2 focus:ring-[#ff9a9e]"
                     value={editProductData.price || ''}
                     onChange={e => setEditProductData(prev => ({ ...prev, price: Number(e.target.value) }))}
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">מחיר עלות (₪)</label>
+                  <input
+                    type="number" className="w-full p-2 rounded-lg border outline-none focus:ring-2 focus:ring-[#ff9a9e]"
+                    value={editProductData.costPrice || ''}
+                    onChange={e => setEditProductData(prev => ({ ...prev, costPrice: Number(e.target.value) }))}
                   />
                 </div>
                 <div>

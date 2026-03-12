@@ -1,5 +1,5 @@
 import { initializeApp } from "firebase/app";
-import { getFirestore, collection, addDoc, getDocs, doc, deleteDoc, getDoc, setDoc, query, orderBy } from "firebase/firestore";
+import { initializeFirestore, collection, addDoc, getDocs, doc, deleteDoc, getDoc, setDoc, query, orderBy } from "firebase/firestore";
 import { getStorage, ref, uploadBytes, getDownloadURL } from "firebase/storage";
 import { getAuth } from "firebase/auth";
 
@@ -11,11 +11,20 @@ const firebaseConfig = {
   storageBucket: "my-store-app-14f06.firebasestorage.app",
   messagingSenderId: "760197087911",
   appId: "1:760197087911:web:8dc522ed1a544b49df9182",
-  measurementId: "G-3295PGXS0H"
+  measurementId: "G-3295PGXS0H",
 };
 
+// Debug: verify config values are defined
+console.log("[Firebase] apiKey:", firebaseConfig.apiKey ? "✓ set" : "MISSING");
+console.log("[Firebase] projectId:", firebaseConfig.projectId ?? "MISSING");
+
 const app = initializeApp(firebaseConfig);
-export const db = getFirestore(app);
+console.log("Connecting to Firebase Project:", app.options.projectId);
+
+export const db = initializeFirestore(app, {
+  experimentalForceLongPolling: true
+}, 'default');
+console.log("[Firebase] Firestore initialized — using default database with force long polling");
 export const storage = getStorage(app);
 export const auth = getAuth(app);
 

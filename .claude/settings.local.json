@@ -3,7 +3,10 @@
     "allow": [
       "Bash(dir /s \"C:\\\\Users\\\\omerv\\\\PycharmProjects\\\\Tony\")",
       "Bash(npm run:*)",
-      "Bash(npm install:*)"
+      "Bash(npm install:*)",
+      "Bash(cd C:/Users/omerv/PycharmProjects/Tony && npx firebase deploy --only functions)",
+      "Bash(cd C:/Users/omerv/PycharmProjects/Tony && echo \"8562048733\" | npx firebase functions:secrets:set TELEGRAM_CHAT_ID)",
+      "Bash(cd C:/Users/omerv/PycharmProjects/Tony && echo \"8711645871:AAG02z-6OcNZ3fsjN8ZIKZbqdnQgjCFoZo4\" | npx firebase functions:secrets:set TELEGRAM_BOT_TOKEN)"
     ]
   }
 }
