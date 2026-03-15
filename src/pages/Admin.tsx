@@ -450,14 +450,14 @@ function AnalyticsView({ orders, products, categories }: { orders: Order[]; prod
             )}
           </h3>
         </div>
-        <ResponsiveContainer width="100%" height={240}>
-          <LineChart data={dailyData} margin={{ top: 4, right: 8, left: 0, bottom: 0 }}>
+        <ResponsiveContainer width="100%" height={260}>
+          <LineChart data={dailyData} margin={{ top: 8, right: 12, left: 0, bottom: 0 }}>
             <CartesianGrid strokeDasharray="3 3" stroke="#1e1e3a" />
-            <XAxis dataKey="date" tick={{ fill: '#555', fontSize: 10 }} axisLine={false} tickLine={false} interval="preserveStartEnd" />
-            <YAxis tick={{ fill: '#555', fontSize: 10 }} axisLine={false} tickLine={false} tickFormatter={v => `₪${v}`} width={52} />
-            <Tooltip contentStyle={tooltipStyle} formatter={(v: number) => [`₪${v}`, 'הכנסה']} />
-            <Line type="monotone" dataKey="revenue" stroke={GOLD} strokeWidth={2.5}
-              dot={{ fill: GOLD, strokeWidth: 0, r: 3 }} activeDot={{ r: 5, fill: GOLD }} />
+            <XAxis dataKey="date" tick={{ fill: '#888', fontSize: 12, fontWeight: 700 }} axisLine={false} tickLine={false} interval="preserveStartEnd" />
+            <YAxis tick={{ fill: '#888', fontSize: 12, fontWeight: 700 }} axisLine={false} tickLine={false} tickFormatter={v => `₪${v}`} width={60} />
+            <Tooltip contentStyle={{ ...tooltipStyle, fontWeight: 700, fontSize: 13 }} formatter={(v: number) => [`₪${v}`, 'הכנסה']} />
+            <Line type="monotone" dataKey="revenue" stroke={GOLD} strokeWidth={4}
+              dot={{ fill: GOLD, strokeWidth: 0, r: 5 }} activeDot={{ r: 7, fill: GOLD }} />
           </LineChart>
         </ResponsiveContainer>
       </div>
@@ -467,14 +467,14 @@ function AnalyticsView({ orders, products, categories }: { orders: Order[]; prod
           {/* ── Bar Chart: Sales Volume per Category ── */}
           {categoryVolData.length > 0 && (
             <div className="bg-[#0f0f24] border border-[#252550] rounded-2xl p-5">
-              <h3 className="text-white font-semibold mb-5">כמות מכירות לפי קטגוריה</h3>
-              <ResponsiveContainer width="100%" height={220}>
-                <BarChart data={categoryVolData} margin={{ top: 4, right: 8, left: 0, bottom: 0 }}>
+              <h3 className="text-white font-bold mb-5">כמות מכירות לפי קטגוריה</h3>
+              <ResponsiveContainer width="100%" height={240}>
+                <BarChart data={categoryVolData} margin={{ top: 8, right: 12, left: 0, bottom: 0 }}>
                   <CartesianGrid strokeDasharray="3 3" stroke="#1e1e3a" vertical={false} />
-                  <XAxis dataKey="name" tick={{ fill: '#666', fontSize: 11 }} axisLine={false} tickLine={false} />
-                  <YAxis tick={{ fill: '#666', fontSize: 11 }} axisLine={false} tickLine={false} />
-                  <Tooltip contentStyle={tooltipStyle} formatter={(v: number) => [v, "יחידות"]} />
-                  <Bar dataKey="volume" radius={[6, 6, 0, 0]}>
+                  <XAxis dataKey="name" tick={{ fill: '#aaa', fontSize: 13, fontWeight: 700 }} axisLine={false} tickLine={false} />
+                  <YAxis tick={{ fill: '#aaa', fontSize: 13, fontWeight: 700 }} axisLine={false} tickLine={false} />
+                  <Tooltip contentStyle={{ ...tooltipStyle, fontWeight: 700, fontSize: 13 }} formatter={(v: number) => [v, "יחידות"]} />
+                  <Bar dataKey="volume" radius={[8, 8, 0, 0]}>
                     {categoryVolData.map((_, idx) => (
                       <Cell key={idx} fill={PIE_COLORS[idx % PIE_COLORS.length]} />
                     ))}
@@ -488,18 +488,18 @@ function AnalyticsView({ orders, products, categories }: { orders: Order[]; prod
             {/* ── Pie Chart: Category Revenue Distribution ── */}
             {categoryRevData.length > 0 && (
               <div className="bg-[#0f0f24] border border-[#252550] rounded-2xl p-5">
-                <h3 className="text-white font-semibold mb-4">הכנסות לפי קטגוריה</h3>
-                <ResponsiveContainer width="100%" height={260}>
+                <h3 className="text-white font-bold mb-4">הכנסות לפי קטגוריה</h3>
+                <ResponsiveContainer width="100%" height={300}>
                   <PieChart>
-                    <Pie data={categoryRevData} cx="50%" cy="50%" outerRadius={90} dataKey="value"
+                    <Pie data={categoryRevData} cx="50%" cy="50%" outerRadius={95} dataKey="value"
                       label={({ name, percent }) => `${name} ${(percent * 100).toFixed(0)}%`}
-                      labelLine={{ stroke: '#333' }}>
+                      labelLine={{ stroke: '#555', strokeWidth: 1.5 }}>
                       {categoryRevData.map((_, idx) => (
                         <Cell key={idx} fill={PIE_COLORS[idx % PIE_COLORS.length]} />
                       ))}
                     </Pie>
-                    <Tooltip contentStyle={tooltipStyle} formatter={(v: number) => [`₪${v}`, 'הכנסה']} />
-                    <Legend wrapperStyle={{ color: '#777', fontSize: 11 }} />
+                    <Tooltip contentStyle={{ ...tooltipStyle, fontWeight: 700, fontSize: 13 }} formatter={(v: number) => [`₪${v}`, 'הכנסה']} />
+                    <Legend wrapperStyle={{ color: '#bbb', fontSize: 13, fontWeight: 700 }} />
                   </PieChart>
                 </ResponsiveContainer>
               </div>
@@ -508,19 +508,19 @@ function AnalyticsView({ orders, products, categories }: { orders: Order[]; prod
             {/* ── Pie Chart: Best-Selling Products by Revenue ── */}
             {topProductsData.length > 0 && (
               <div className="bg-[#0f0f24] border border-[#252550] rounded-2xl p-5">
-                <h3 className="text-white font-semibold mb-4">מוצרים מובילים לפי הכנסה</h3>
-                <ResponsiveContainer width="100%" height={260}>
+                <h3 className="text-white font-bold mb-4">מוצרים מובילים לפי הכנסה</h3>
+                <ResponsiveContainer width="100%" height={300}>
                   <PieChart>
-                    <Pie data={topProductsData} cx="50%" cy="50%" innerRadius={50} outerRadius={90} dataKey="value"
+                    <Pie data={topProductsData} cx="50%" cy="50%" innerRadius={55} outerRadius={95} dataKey="value"
                       paddingAngle={3}
                       label={({ name, percent }) => percent > 0.06 ? `${name.length > 12 ? name.slice(0, 12) + '…' : name} ${(percent * 100).toFixed(0)}%` : ''}
-                      labelLine={{ stroke: '#444', strokeWidth: 1 }}>
+                      labelLine={{ stroke: '#666', strokeWidth: 1.5 }}>
                       {topProductsData.map((_, idx) => (
                         <Cell key={idx} fill={PIE_COLORS[idx % PIE_COLORS.length]} />
                       ))}
                     </Pie>
-                    <Tooltip contentStyle={tooltipStyle} formatter={(v: number) => [`₪${v}`, 'הכנסה']} />
-                    <Legend wrapperStyle={{ color: '#777', fontSize: 11 }} />
+                    <Tooltip contentStyle={{ ...tooltipStyle, fontWeight: 700, fontSize: 13 }} formatter={(v: number) => [`₪${v}`, 'הכנסה']} />
+                    <Legend wrapperStyle={{ color: '#bbb', fontSize: 13, fontWeight: 700 }} />
                   </PieChart>
                 </ResponsiveContainer>
               </div>
