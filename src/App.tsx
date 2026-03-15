@@ -9,6 +9,291 @@ import { getFunctions, httpsCallable } from 'firebase/functions';
 import { collection, addDoc, getDocs, doc, deleteDoc, getDoc, setDoc, updateDoc, query, orderBy, where, limit, onSnapshot } from "firebase/firestore";
 import * as XLSX from 'xlsx';
 import { ref, uploadBytes, getDownloadURL } from "firebase/storage";
+import {
+  LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip,
+  ResponsiveContainer, PieChart, Pie, Cell, Legend,
+  BarChart, Bar
+} from 'recharts';
+
+/* ─────────────────────────────── ShopAnalyticsView ──────────────────── */
+const ANALYTICS_COLORS = ['#ff9a9e', '#fecfef', '#a1c4fd', '#c2e9fb', '#ffecd2', '#fcb69f', '#84fab0', '#8fd3f4'];
+
+function ShopAnalyticsView({ orders, products, categories }: {
+  orders: Order[];
+  products: Product[];
+  categories: Category[];
+}) {
+  const [startDate, setStartDate] = React.useState('');
+  const [endDate, setEndDate] = React.useState('');
+  const [selectedProductId, setSelectedProductId] = React.useState('');
+
+  const toDate = (v: string) => new Date(v);
+
+  const dateFiltered = orders.filter(o => {
+    const d = toDate(o.created_at);
+    if (startDate && d < new Date(startDate)) return false;
+    if (endDate && d > new Date(endDate + 'T23:59:59')) return false;
+    return true;
+  });
+
+  const completed = dateFiltered.filter(o => o.orderStatus === 'Completed');
+  const selProd = products.find(p => p.id === selectedProductId);
+  const filtered = selectedProductId
+    ? completed.filter(o => o.items.some(i => i.id === selectedProductId))
+    : completed;
+
+  const periodTotal = filtered.reduce((s, o) => s + o.total_price, 0);
+  const avgOrder = filtered.length > 0 ? Math.round(periodTotal / filtered.length) : 0;
+  const pendingPayment = orders.filter(o => !o.isPaid).length;
+  const allPaid = orders.filter(o => o.isPaid);
+  const totalCost = allPaid.reduce((sum, o) =>
+    sum + o.items.reduce((s, i) => s + (i.costPrice ?? 0) * i.quantity, 0), 0);
+  const netProfit = allPaid.reduce((s, o) => s + o.total_price, 0) - totalCost;
+
+  const dailyData = Array.from({ length: 30 }, (_, i) => {
+    const d = new Date();
+    d.setDate(d.getDate() - (29 - i));
+    const dayStr = d.toISOString().split('T')[0];
+    const dayOrders = completed.filter(o => toDate(o.created_at).toISOString().startsWith(dayStr));
+    let revenue: number;
+    if (selectedProductId) {
+      revenue = dayOrders.reduce((s, o) =>
+        s + o.items.filter(i => i.id === selectedProductId).reduce((is, i) => is + i.price * i.quantity, 0), 0);
+    } else {
+      revenue = dayOrders.reduce((s, o) => s + o.total_price, 0);
+    }
+    return { date: d.toLocaleDateString('he-IL', { month: 'short', day: 'numeric' }), revenue: Math.round(revenue) };
+  });
+
+  const productCatMap: Record<string, string> = {};
+  products.forEach(p => { productCatMap[p.id] = p.category_id; });
+  const catRevMap: Record<string, number> = {};
+  const catVolMap: Record<string, number> = {};
+  const prodRevMap: Record<string, number> = {};
+  const prodVolMap: Record<string, number> = {};
+
+  completed.forEach(o => {
+    o.items.forEach(item => {
+      const catId = productCatMap[item.id] ?? '';
+      const rev = item.price * item.quantity;
+      catRevMap[catId] = (catRevMap[catId] || 0) + rev;
+      catVolMap[catId] = (catVolMap[catId] || 0) + item.quantity;
+      prodRevMap[item.id] = (prodRevMap[item.id] || 0) + rev;
+      prodVolMap[item.id] = (prodVolMap[item.id] || 0) + item.quantity;
+    });
+  });
+
+  const categoryRevData = categories
+    .map(c => ({ name: c.name, value: Math.round(catRevMap[c.id] || 0) }))
+    .filter(c => c.value > 0).sort((a, b) => b.value - a.value);
+
+  const categoryVolData = categories
+    .map(c => ({ name: c.name, volume: catVolMap[c.id] || 0 }))
+    .filter(c => c.volume > 0).sort((a, b) => b.volume - a.volume);
+
+  const topProductsData = Object.entries(prodRevMap)
+    .map(([id, rev]) => ({ name: products.find(p => p.id === id)?.name ?? id.slice(0, 8), value: Math.round(rev) }))
+    .sort((a, b) => b.value - a.value).slice(0, 8);
+
+  const completedProductIds = [...new Set(completed.flatMap(o => o.items.map(i => i.id)))];
+  const completedProducts = completedProductIds.map(id => products.find(p => p.id === id)).filter(Boolean) as Product[];
+  const hasData = categoryRevData.length > 0 || topProductsData.length > 0;
+
+  return (
+    <div className="space-y-6">
+      <div className="flex items-center justify-between flex-wrap gap-2">
+        <div>
+          <h3 className="text-xl font-bold">דשבורד אנליטיקס</h3>
+          <p className="text-sm text-gray-400 mt-0.5">מבוסס על הזמנות שהושלמו בלבד</p>
+        </div>
+        <span className="text-xs font-semibold px-3 py-1 rounded-full bg-green-100 text-green-700">✓ Completed בלבד</span>
+      </div>
+
+      {/* Filters */}
+      <div className="pastel-card p-4">
+        <h4 className="font-semibold text-sm text-gray-700 mb-3">סינון נתונים</h4>
+        <div className="flex flex-wrap gap-3 items-end">
+          <div>
+            <label className="text-gray-500 text-xs block mb-1">מתאריך</label>
+            <input type="date" value={startDate} onChange={e => setStartDate(e.target.value)}
+              className="border rounded-xl px-3 py-2 text-sm outline-none focus:border-[#ff9a9e] transition-colors" />
+          </div>
+          <div>
+            <label className="text-gray-500 text-xs block mb-1">עד תאריך</label>
+            <input type="date" value={endDate} onChange={e => setEndDate(e.target.value)}
+              className="border rounded-xl px-3 py-2 text-sm outline-none focus:border-[#ff9a9e] transition-colors" />
+          </div>
+          <div>
+            <label className="text-gray-500 text-xs block mb-1">סינון לפי מוצר</label>
+            <select value={selectedProductId} onChange={e => setSelectedProductId(e.target.value)}
+              className="border rounded-xl px-3 py-2 text-sm outline-none focus:border-[#ff9a9e] min-w-[180px]">
+              <option value="">כל המוצרים</option>
+              {completedProducts.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+            </select>
+          </div>
+          {(startDate || endDate || selectedProductId) && (
+            <button onClick={() => { setStartDate(''); setEndDate(''); setSelectedProductId(''); }}
+              className="px-3 py-2 text-sm text-gray-500 border rounded-xl hover:bg-gray-50 transition-colors">
+              נקה הכל
+            </button>
+          )}
+          <span className="text-gray-400 text-xs py-2">{filtered.length} הזמנות</span>
+        </div>
+      </div>
+
+      {/* KPI Cards */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+        <div className="pastel-card p-5 space-y-1">
+          <p className="text-sm text-gray-500">הזמנות הושלמו</p>
+          <p className="text-3xl font-bold text-gray-800">{filtered.length}</p>
+          <p className="text-xs text-yellow-600">{pendingPayment} ממתינות</p>
+        </div>
+        <div className="pastel-card p-5 space-y-1">
+          <p className="text-sm text-gray-500">הכנסות ברוטו</p>
+          <p className="text-3xl font-bold text-[#ff9a9e]">₪{periodTotal.toLocaleString()}</p>
+        </div>
+        <div className="pastel-card p-5 space-y-1">
+          <p className="text-sm text-gray-500">ממוצע להזמנה</p>
+          <p className="text-3xl font-bold text-gray-800">{filtered.length > 0 ? `₪${avgOrder.toLocaleString()}` : '—'}</p>
+        </div>
+        <div className="pastel-card p-5 space-y-1">
+          <p className="text-sm text-gray-500">רווח נקי</p>
+          <p className={`text-3xl font-bold ${netProfit >= 0 ? 'text-green-500' : 'text-red-500'}`}>₪{netProfit.toFixed(0)}</p>
+        </div>
+      </div>
+
+      {/* Line Chart — Revenue over time */}
+      <div className="pastel-card p-5">
+        <h4 className="font-semibold mb-4">
+          הכנסות לאורך זמן (30 ימים אחרונים)
+          {selectedProductId && selProd && (
+            <span className="mr-2 text-xs font-normal px-2 py-0.5 rounded-full bg-pink-100 text-[#ff9a9e]">{selProd.name}</span>
+          )}
+        </h4>
+        <ResponsiveContainer width="100%" height={220}>
+          <LineChart data={dailyData} margin={{ top: 4, right: 8, left: 0, bottom: 0 }}>
+            <CartesianGrid strokeDasharray="3 3" stroke="#f5f0f0" />
+            <XAxis dataKey="date" tick={{ fill: '#bbb', fontSize: 10 }} axisLine={false} tickLine={false} interval="preserveStartEnd" />
+            <YAxis tick={{ fill: '#bbb', fontSize: 10 }} axisLine={false} tickLine={false} tickFormatter={v => `₪${v}`} width={52} />
+            <Tooltip formatter={(v: number) => [`₪${v}`, 'הכנסה']} />
+            <Line type="monotone" dataKey="revenue" stroke="#ff9a9e" strokeWidth={2.5}
+              dot={{ fill: '#ff9a9e', strokeWidth: 0, r: 3 }} activeDot={{ r: 5, fill: '#ff9a9e' }} />
+          </LineChart>
+        </ResponsiveContainer>
+      </div>
+
+      {hasData ? (
+        <>
+          {/* Bar Chart — Volume by category */}
+          {categoryVolData.length > 0 && (
+            <div className="pastel-card p-5">
+              <h4 className="font-semibold mb-4">כמות מכירות לפי קטגוריה</h4>
+              <ResponsiveContainer width="100%" height={200}>
+                <BarChart data={categoryVolData} margin={{ top: 4, right: 8, left: 0, bottom: 0 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#f5f0f0" vertical={false} />
+                  <XAxis dataKey="name" tick={{ fill: '#bbb', fontSize: 11 }} axisLine={false} tickLine={false} />
+                  <YAxis tick={{ fill: '#bbb', fontSize: 11 }} axisLine={false} tickLine={false} />
+                  <Tooltip formatter={(v: number) => [v, 'יחידות']} />
+                  <Bar dataKey="volume" radius={[6, 6, 0, 0]}>
+                    {categoryVolData.map((_, idx) => <Cell key={idx} fill={ANALYTICS_COLORS[idx % ANALYTICS_COLORS.length]} />)}
+                  </Bar>
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+          )}
+
+          {/* Pie Charts */}
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+            {categoryRevData.length > 0 && (
+              <div className="pastel-card p-5">
+                <h4 className="font-semibold mb-4">הכנסות לפי קטגוריה</h4>
+                <ResponsiveContainer width="100%" height={240}>
+                  <PieChart>
+                    <Pie data={categoryRevData} cx="50%" cy="50%" outerRadius={80} dataKey="value"
+                      label={({ name, percent }) => `${name} ${(percent * 100).toFixed(0)}%`}>
+                      {categoryRevData.map((_, idx) => <Cell key={idx} fill={ANALYTICS_COLORS[idx % ANALYTICS_COLORS.length]} />)}
+                    </Pie>
+                    <Tooltip formatter={(v: number) => [`₪${v}`, 'הכנסה']} />
+                    <Legend wrapperStyle={{ fontSize: 11 }} />
+                  </PieChart>
+                </ResponsiveContainer>
+              </div>
+            )}
+            {topProductsData.length > 0 && (
+              <div className="pastel-card p-5">
+                <h4 className="font-semibold mb-4">מוצרים מובילים לפי הכנסה</h4>
+                <ResponsiveContainer width="100%" height={240}>
+                  <PieChart>
+                    <Pie data={topProductsData} cx="50%" cy="50%" innerRadius={50} outerRadius={80} dataKey="value" paddingAngle={3}>
+                      {topProductsData.map((_, idx) => <Cell key={idx} fill={ANALYTICS_COLORS[idx % ANALYTICS_COLORS.length]} />)}
+                    </Pie>
+                    <Tooltip formatter={(v: number) => [`₪${v}`, 'הכנסה']} />
+                    <Legend wrapperStyle={{ fontSize: 11 }} />
+                  </PieChart>
+                </ResponsiveContainer>
+              </div>
+            )}
+          </div>
+
+          {/* Product volume table */}
+          {Object.keys(prodVolMap).length > 0 && (
+            <div className="pastel-card p-5">
+              <h4 className="font-semibold mb-4">כמות מכירות לפי מוצר</h4>
+              <div className="space-y-2 max-h-72 overflow-y-auto">
+                {Object.entries(prodVolMap).sort(([, a], [, b]) => b - a).map(([id, qty]) => {
+                  const prod = products.find(p => p.id === id);
+                  if (!prod) return null;
+                  const maxQty = Math.max(...Object.values(prodVolMap));
+                  return (
+                    <div key={id} className="flex items-center gap-3 text-sm">
+                      <div className="flex-1">
+                        <div className="flex justify-between mb-1">
+                          <span className="text-gray-700 truncate">{prod.name}</span>
+                          <span className="font-bold text-[#ff9a9e] flex-shrink-0 mr-2">{qty} יח'</span>
+                        </div>
+                        <div className="h-1.5 rounded-full bg-pink-100 overflow-hidden">
+                          <div className="h-full rounded-full bg-[#ff9a9e]" style={{ width: `${(qty / maxQty) * 100}%` }} />
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+        </>
+      ) : (
+        <div className="pastel-card p-10 text-center text-gray-400">
+          <p className="text-sm">אין נתוני מכירות שהושלמו עדיין</p>
+          <p className="text-xs mt-1">סמן הזמנות כ-Completed כדי לראות נתונים</p>
+        </div>
+      )}
+
+      {/* Status Distribution */}
+      <div className="pastel-card p-6">
+        <h4 className="font-bold mb-4">התפלגות סטטוסי הזמנות</h4>
+        <div className="grid grid-cols-2 sm:grid-cols-5 gap-4">
+          {(['Pending', 'Processing', 'Shipped', 'Completed', 'Cancelled'] as const).map(status => {
+            const count = orders.filter(o => (o.orderStatus ?? 'Pending') === status).length;
+            const colors: Record<string, string> = {
+              Pending: 'bg-yellow-100 text-yellow-700',
+              Processing: 'bg-blue-100 text-blue-700',
+              Shipped: 'bg-purple-100 text-purple-700',
+              Completed: 'bg-green-100 text-green-700',
+              Cancelled: 'bg-red-100 text-red-700'
+            };
+            return (
+              <div key={status} className={`rounded-xl p-4 text-center ${colors[status]}`}>
+                <p className="text-2xl font-bold">{count}</p>
+                <p className="text-sm font-medium">{status}</p>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    </div>
+  );
+}
 
 export default function App() {
   const [view, setView] = useState<'user' | 'admin' | 'checkout' | 'success' | 'product' | 'build-box'>('user');
@@ -2402,58 +2687,9 @@ export default function App() {
               </div>
             )}
 
-            {adminTab === 'analytics' && (() => {
-              const paidOrders = orders.filter(o => o.isPaid === true);
-              const totalOrders = paidOrders.length;
-              const totalRevenue = paidOrders.reduce((sum, o) => sum + o.total_price, 0);
-              const totalCost = paidOrders.reduce((sum, order) =>
-                sum + order.items.reduce((iSum, item) => {
-                  const product = products.find(p => p.id === item.id);
-                  return iSum + (item.costPrice ?? product?.costPrice ?? 0) * item.quantity;
-                }, 0), 0);
-              const netProfit = totalRevenue - totalCost;
-              const pendingPayment = orders.filter(o => !o.isPaid).length;
-              return (
-                <div className="space-y-6">
-                  <h3 className="text-xl font-bold">דשבורד אנליטיקס</h3>
-                  <p className="text-sm text-gray-400">מבוסס על הזמנות שאושר תשלומן בלבד</p>
-                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
-                    <div className="pastel-card p-6 space-y-2">
-                      <p className="text-sm text-gray-500">הזמנות ששולמו</p>
-                      <p className="text-3xl font-bold text-gray-800">{totalOrders}</p>
-                      <p className="text-xs text-yellow-600">{pendingPayment} ממתינות לתשלום</p>
-                    </div>
-                    <div className="pastel-card p-6 space-y-2">
-                      <p className="text-sm text-gray-500">הכנסות ברוטו</p>
-                      <p className="text-3xl font-bold text-[#ff9a9e]">₪{totalRevenue.toFixed(2)}</p>
-                    </div>
-                    <div className="pastel-card p-6 space-y-2">
-                      <p className="text-sm text-gray-500">עלויות</p>
-                      <p className="text-3xl font-bold text-red-400">₪{totalCost.toFixed(2)}</p>
-                    </div>
-                    <div className="pastel-card p-6 space-y-2">
-                      <p className="text-sm text-gray-500">רווח נקי</p>
-                      <p className={`text-3xl font-bold ${netProfit >= 0 ? 'text-green-500' : 'text-red-500'}`}>₪{netProfit.toFixed(2)}</p>
-                    </div>
-                  </div>
-                  <div className="pastel-card p-6">
-                    <h4 className="font-bold mb-4">התפלגות סטטוסי הזמנות</h4>
-                    <div className="grid grid-cols-2 sm:grid-cols-5 gap-4">
-                      {(['Pending', 'Processing', 'Shipped', 'Completed', 'Cancelled'] as const).map(status => {
-                        const count = orders.filter(o => (o.orderStatus ?? 'Pending') === status).length;
-                        const colors: Record<string, string> = { Pending: 'bg-yellow-100 text-yellow-700', Processing: 'bg-blue-100 text-blue-700', Shipped: 'bg-purple-100 text-purple-700', Completed: 'bg-green-100 text-green-700', Cancelled: 'bg-red-100 text-red-700' };
-                        return (
-                          <div key={status} className={`rounded-xl p-4 text-center ${colors[status]}`}>
-                            <p className="text-2xl font-bold">{count}</p>
-                            <p className="text-sm font-medium">{status}</p>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  </div>
-                </div>
-              );
-            })()}
+            {adminTab === 'analytics' && (
+              <ShopAnalyticsView orders={orders} products={products} categories={categories} />
+            )}
 
             {adminTab === 'settings' && (
               <div className="max-w-md space-y-6">
