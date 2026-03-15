@@ -1,32 +1,30 @@
 import { initializeApp } from "firebase/app";
 import { initializeFirestore, collection, addDoc, getDocs, doc, deleteDoc, getDoc, setDoc, query, orderBy } from "firebase/firestore";
 import { getStorage, ref, uploadBytes, getDownloadURL } from "firebase/storage";
-import { getAuth } from "firebase/auth";
+import { getAuth, setPersistence, browserLocalPersistence } from "firebase/auth";
 
 const firebaseConfig = {
-  apiKey: "AIzaSyBqmxpP-fH_Si7_XN8nQNDhLRgOHAmUnc0",
-  authDomain: "my-store-app-14f06.firebaseapp.com",
-  databaseURL: "https://my-store-app-14f06-default-rtdb.firebaseio.com",
-  projectId: "my-store-app-14f06",
-  storageBucket: "my-store-app-14f06.firebasestorage.app",
-  messagingSenderId: "760197087911",
-  appId: "1:760197087911:web:8dc522ed1a544b49df9182",
-  measurementId: "G-3295PGXS0H",
+  apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
+  authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN,
+  databaseURL: import.meta.env.VITE_FIREBASE_DATABASE_URL,
+  projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID,
+  storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET,
+  messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID,
+  appId: import.meta.env.VITE_FIREBASE_APP_ID,
+  measurementId: import.meta.env.VITE_FIREBASE_MEASUREMENT_ID,
 };
 
-// Debug: verify config values are defined
-console.log("[Firebase] apiKey:", firebaseConfig.apiKey ? "✓ set" : "MISSING");
-console.log("[Firebase] projectId:", firebaseConfig.projectId ?? "MISSING");
-
 const app = initializeApp(firebaseConfig);
-console.log("Connecting to Firebase Project:", app.options.projectId);
 
 export const db = initializeFirestore(app, {
   experimentalForceLongPolling: true
-}, 'default');
-console.log("[Firebase] Firestore initialized — using default database with force long polling");
+}, 'default');;
 export const storage = getStorage(app);
 export const auth = getAuth(app);
+// Keep the admin logged in across browser restarts
+setPersistence(auth, browserLocalPersistence).catch(err =>
+  console.error("[Firebase] Auth persistence error:", err)
+);
 
 // Upload image to Firebase Storage
 export async function uploadProductImage(file: File, productId: string): Promise<string> {

@@ -1,0 +1,56 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function isAdmin() {
+      return request.auth != null;
+    }
+
+    // ── Public catalogue — guests browse freely ───────────────────────────
+    match /products/{id} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
+    match /categories/{id} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
+    // ── Coupons — guests validate codes at checkout ───────────────────────
+    match /coupons/{id} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
+    // ── Reviews — guests read and submit ─────────────────────────────────
+    match /reviews/{id} {
+      allow read, create: if true;
+      allow update, delete: if isAdmin();
+    }
+
+    // ── Store settings & content — guests need delivery cost, address ─────
+    match /settings/{id} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
+    // ── Site settings (legal pages, etc.) ────────────────────────────────
+    match /siteSettings/{id} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
+    // ── Orders — guests can place orders; only admin can read them ─────────
+    // This protects all customer PII (names, phones, addresses).
+    match /orders/{id} {
+      allow create: if true;
+      allow read, update, delete: if isAdmin();
+    }
+
+    // ── Deny everything not explicitly listed ─────────────────────────────
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

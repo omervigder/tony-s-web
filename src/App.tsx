@@ -3,8 +3,11 @@ import AccessibilityWidget from './components/AccessibilityWidget';
 import { ShoppingCart, Package, Settings as SettingsIcon, Plus, Trash2, Camera, ChevronRight, ChevronLeft, CheckCircle2, X, Menu, Loader2, Pencil, ChevronDown, Copy, Star, MessageCircle, Gift, Box } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Product, Category, Order, Settings, CartItem, Coupon, SiteContent, Review } from './types';
-import { db, storage } from './firebase';
-import { collection, addDoc, getDocs, doc, deleteDoc, getDoc, setDoc, updateDoc, query, orderBy, where, limit } from "firebase/firestore";
+import { db, storage, auth } from './firebase';
+import { signInWithEmailAndPassword, signOut, onAuthStateChanged } from 'firebase/auth';
+import { getFunctions, httpsCallable } from 'firebase/functions';
+import { collection, addDoc, getDocs, doc, deleteDoc, getDoc, setDoc, updateDoc, query, orderBy, where, limit, onSnapshot } from "firebase/firestore";
+import * as XLSX from 'xlsx';
 import { ref, uploadBytes, getDownloadURL } from "firebase/storage";
 
 export default function App() {
@@ -41,6 +44,9 @@ export default function App() {
   const [reviewForm, setReviewForm] = useState({ rating: 5, message: '', customerName: '', photoFile: null as File | null, photoPreview: '' });
   const [isSubmittingReview, setIsSubmittingReview] = useState(false);
 
+  // Saved total for Bit payment link (finalTotal resets to 0 when cart is cleared)
+  const [savedFinalTotal, setSavedFinalTotal] = useState(0);
+
   // Build-A-Box
   const [selectedBoxBase, setSelectedBoxBase] = useState<Product | null>(null);
   const [bundleItems, setBundleItems] = useState<{ product: Product; qty: number }[]>([]);
@@ -49,6 +55,14 @@ export default function App() {
   // WhatsApp bubble
   const [waVisible, setWaVisible] = useState(false);
   const waTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Real-time orders listener cleanup
+  const ordersUnsubRef = useRef<(() => void) | null>(null);
+
+  // Export
+  const [exportDateFrom, setExportDateFrom] = useState('');
+  const [exportDateTo, setExportDateTo] = useState('');
+  const [isExporting, setIsExporting] = useState(false);
 
   // Admin orders expand
   const [expandedOrders, setExpandedOrders] = useState<Set<string>>(new Set());
@@ -62,7 +76,8 @@ export default function App() {
     name: string; description: string; price: number; costPrice: number; alt_text: string; category_id: string;
     newImageFiles: File[]; newImagePreviews: string[];
     variations: { name: string; values: string }[];
-  }>({ name: '', description: '', price: 0, costPrice: 0, alt_text: '', category_id: '', newImageFiles: [], newImagePreviews: [], variations: [] });
+    isBoxBase: boolean;
+  }>({ name: '', description: '', price: 0, costPrice: 0, alt_text: '', category_id: '', newImageFiles: [], newImagePreviews: [], variations: [], isBoxBase: false });
 
   // Edit category
   const [editingCategoryId, setEditingCategoryId] = useState<string | null>(null);
@@ -100,13 +115,26 @@ export default function App() {
   };
 
   // Admin Login State
-  const [loginData, setLoginData] = useState({ username: '', password: '' });
+  const [loginData, setLoginData] = useState({ email: '', password: '' });
 
   useEffect(() => {
     fetchData();
     // Show WhatsApp bubble after 15 seconds
     waTimerRef.current = setTimeout(() => setWaVisible(true), 15000);
-    return () => { if (waTimerRef.current) clearTimeout(waTimerRef.current); };
+
+    // Restore admin session if Firebase Auth token is still valid
+    const unsubAuth = onAuthStateChanged(auth, (user) => {
+      if (user) {
+        setIsAdmin(true);
+        subscribeOrders();
+      }
+    });
+
+    return () => {
+      if (waTimerRef.current) clearTimeout(waTimerRef.current);
+      if (ordersUnsubRef.current) ordersUnsubRef.current();
+      unsubAuth();
+    };
   }, []);
 
   const fetchData = async () => {
@@ -256,6 +284,107 @@ export default function App() {
     setOrders(ordersData);
   };
 
+  // Real-time listener — replaces fetchOrders when admin is in orders tab
+  const subscribeOrders = () => {
+    // Clean up any existing subscription first
+    if (ordersUnsubRef.current) {
+      ordersUnsubRef.current();
+      ordersUnsubRef.current = null;
+    }
+    const ordersQuery = query(collection(db, "orders"), orderBy("created_at", "desc"));
+    const unsub = onSnapshot(ordersQuery, snapshot => {
+      setOrders(snapshot.docs.map(d => ({ id: d.id, ...d.data() })) as Order[]);
+    }, err => {
+      console.error("onSnapshot error:", err);
+    });
+    ordersUnsubRef.current = unsub;
+  };
+
+  // Excel export
+  const handleExportExcel = async () => {
+    setIsExporting(true);
+    try {
+      let exportOrders = orders;
+      if (exportDateFrom || exportDateTo) {
+        const from = exportDateFrom ? new Date(exportDateFrom).getTime() : 0;
+        const to = exportDateTo ? new Date(exportDateTo + 'T23:59:59').getTime() : Infinity;
+        exportOrders = orders.filter(o => {
+          const t = new Date(o.created_at).getTime();
+          return t >= from && t <= to;
+        });
+      }
+
+      if (exportOrders.length === 0) {
+        alert('אין הזמנות בטווח התאריכים שנבחר');
+        return;
+      }
+
+      const rows = exportOrders.flatMap(order =>
+        order.items.length === 0
+          ? [{
+              'מזהה הזמנה': order.id,
+              'שם לקוח': order.customer_name,
+              'טלפון': order.customer_phone,
+              'אימייל': order.customer_email ?? '',
+              'שיטת משלוח': order.delivery_method === 'delivery' ? 'משלוח' : 'איסוף עצמי',
+              'כתובת משלוח': order.shippingAddress ?? '',
+              'שם מוצר': '',
+              'כמות': '',
+              'מחיר יחידה': '',
+              'וריאציות': '',
+              'סה"כ הזמנה': order.total_price,
+              'קוד קופון': order.coupon_code ?? '',
+              'הנחה': order.discount_amount ?? 0,
+              'סטטוס': order.orderStatus,
+              'שולם': order.isPaid ? 'כן' : 'לא',
+              'הקדשה': order.dedication?.message ?? '',
+              'סוג כרטיס': order.dedication?.cardType ?? '',
+              'הערות': order.customer_notes ?? '',
+              'תאריך הזמנה': new Date(order.created_at).toLocaleString('he-IL'),
+            }]
+          : order.items.map(item => ({
+              'מזהה הזמנה': order.id,
+              'שם לקוח': order.customer_name,
+              'טלפון': order.customer_phone,
+              'אימייל': order.customer_email ?? '',
+              'שיטת משלוח': order.delivery_method === 'delivery' ? 'משלוח' : 'איסוף עצמי',
+              'כתובת משלוח': order.shippingAddress ?? '',
+              'שם מוצר': item.name,
+              'כמות': item.quantity,
+              'מחיר יחידה': item.price,
+              'וריאציות': item.selectedVariations ? Object.entries(item.selectedVariations).map(([k,v]) => `${k}: ${v}`).join(' | ') : '',
+              'סה"כ הזמנה': order.total_price,
+              'קוד קופון': order.coupon_code ?? '',
+              'הנחה': order.discount_amount ?? 0,
+              'סטטוס': order.orderStatus,
+              'שולם': order.isPaid ? 'כן' : 'לא',
+              'הקדשה': order.dedication?.message ?? '',
+              'סוג כרטיס': order.dedication?.cardType ?? '',
+              'הערות': order.customer_notes ?? '',
+              'תאריך הזמנה': new Date(order.created_at).toLocaleString('he-IL'),
+            }))
+      );
+
+      const ws = XLSX.utils.json_to_sheet(rows);
+      // Auto-width columns
+      const colWidths = Object.keys(rows[0] ?? {}).map(k => ({ wch: Math.max(k.length, 14) }));
+      ws['!cols'] = colWidths;
+
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, 'הזמנות');
+      const dateTag = exportDateFrom || exportDateTo
+        ? `_${exportDateFrom || 'start'}_to_${exportDateTo || 'end'}`
+        : `_${new Date().toISOString().slice(0, 10)}`;
+      XLSX.writeFile(wb, `tony_orders${dateTag}.xlsx`);
+      showToast(`יוצאו ${exportOrders.length} הזמנות לקובץ Excel ✅`);
+    } catch (err) {
+      console.error('Export error:', err);
+      alert('שגיאה ביצוא הנתונים');
+    } finally {
+      setIsExporting(false);
+    }
+  };
+
   const getCartKey = (id: string, variations?: Record<string, string>) =>
     variations && Object.keys(variations).length > 0
       ? `${id}|${JSON.stringify(variations)}`
@@ -303,80 +432,11 @@ export default function App() {
 
   const sendTelegramNotification = async (order: {
     orderId: string;
-    name: string;
-    phone: string;
-    email: string;
-    deliveryMethod: 'pickup' | 'delivery';
-    shippingAddress: string;
-    items: { name: string; price: number; quantity: number; selectedVariations?: Record<string, string> }[];
-    total: number;
     pickupAddress: string;
-    dedication?: { message: string; cardType: 'digital' | 'printed' };
-    customerNotes?: string;
   }) => {
-    const botToken = import.meta.env.VITE_TELEGRAM_BOT_TOKEN;
-    const chatId = import.meta.env.VITE_TELEGRAM_CHAT_ID;
-    if (!botToken || !chatId) return;
-
-    const whatsappPhone = order.phone.replace(/^0/, '');
-    const whatsappLink = `https://wa.me/972${whatsappPhone}`;
-    const deliveryLine = order.deliveryMethod === 'delivery'
-      ? `🚚 משלוח — ${order.shippingAddress}`
-      : `📍 איסוף עצמי: ${order.pickupAddress}`;
-    const itemsList = order.items
-      .map(i => {
-        let line = `• ${i.name} x${i.quantity} — ₪${(i.price * i.quantity).toFixed(2)}`;
-        if (i.selectedVariations && Object.keys(i.selectedVariations).length > 0) {
-          const vars = Object.entries(i.selectedVariations).map(([k, v]) => `${k}: ${v}`).join(', ');
-          line += `\n  🎨 ${vars}`;
-        }
-        return line;
-      })
-      .join('\n');
-
-    const dedicationLine = order.dedication?.message
-      ? `\n\n💌 *הקדשה:* ${order.dedication.message}\n🃏 *סוג כרטיס:* ${order.dedication.cardType === 'printed' ? 'מודפס' : 'דיגיטלי'}`
-      : '';
-    const notesLine = order.customerNotes ? `\n\n📝 *הערות:* ${order.customerNotes}` : '';
-
-    const message =
-`📦 *הזמנה חדשה! #${order.orderId.slice(-6)}*
-
-👤 *שם:* ${order.name}
-📞 *טלפון:* ${order.phone}${order.email ? `\n📧 *אימייל:* ${order.email}` : ''}
-${deliveryLine}
-
-🛒 *פריטים:*
-${itemsList}
-
-💰 *סה"כ לתשלום: ₪${order.total.toFixed(2)}*
-💳 *סטטוס תשלום:* ממתין לאישור${dedicationLine}${notesLine}
-
-💬 [שלח WhatsApp ללקוח](${whatsappLink})`;
-
-    const body = {
-      chat_id: chatId,
-      text: message,
-      parse_mode: 'Markdown',
-      reply_markup: {
-        inline_keyboard: [
-          [
-            { text: '✅ אשר תשלום', callback_data: `confirm_payment:${order.orderId}` },
-            { text: '🚚 סמן כנשלח', callback_data: `mark_shipped:${order.orderId}` },
-          ],
-          [
-            { text: '📞 התקשר ללקוח', url: `tel:${order.phone}` },
-            { text: '💬 WhatsApp', url: whatsappLink },
-          ]
-        ]
-      }
-    };
-
-    await fetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body)
-    });
+    const functions = getFunctions();
+    const notify = httpsCallable(functions, 'sendOrderNotification');
+    await notify({ orderId: order.orderId, pickupAddress: order.pickupAddress });
   };
 
   const handleCheckout = async () => {
@@ -411,6 +471,7 @@ ${itemsList}
         ...(customerNotes.trim() && { customer_notes: customerNotes.trim() }),
       });
       setLastOrderId(orderDoc.id);
+      setSavedFinalTotal(finalTotal); // snapshot before cart is cleared
       setCart([]);
       setAppliedCoupon(null);
       setCouponInput('');
@@ -422,16 +483,7 @@ ${itemsList}
       // Fire-and-forget — notification failure must not affect UX
       sendTelegramNotification({
         orderId: orderDoc.id,
-        name: checkoutData.name,
-        phone: checkoutData.phone,
-        email: checkoutData.email,
-        deliveryMethod: checkoutData.delivery,
-        shippingAddress: checkoutData.shippingAddress,
-        items: orderItems,
-        total: finalTotal,
         pickupAddress: settings.pickup_address,
-        dedication: dedicationData,
-        customerNotes: customerNotes.trim() || undefined,
       }).catch(err => console.error("Telegram notification error:", err));
     } catch (err) {
       console.error("Checkout error:", err);
@@ -535,14 +587,14 @@ ${itemsList}
     }
   };
 
-  const handleAdminLogin = (e: React.FormEvent) => {
+  const handleAdminLogin = async (e: React.FormEvent) => {
     e.preventDefault();
-    const adminUser = import.meta.env.VITE_ADMIN_USERNAME;
-    const adminPass = import.meta.env.VITE_ADMIN_PASSWORD;
-    if (loginData.username === adminUser && loginData.password === adminPass) {
+    try {
+      await signInWithEmailAndPassword(auth, loginData.email, loginData.password);
       setIsAdmin(true);
-      fetchOrders();
-    } else {
+      setAdminTab('orders');
+      subscribeOrders();
+    } catch {
       alert("שם משתמש או סיסמה שגויים");
     }
   };
@@ -572,6 +624,7 @@ ${itemsList}
         variations: editProductData.variations
           .filter(v => v.name.trim())
           .map(v => ({ name: v.name.trim(), values: v.values.split(',').map(s => s.trim()).filter(Boolean) })),
+        isBoxBase: editProductData.isBoxBase,
       });
       showToast("המוצר עודכן בהצלחה!");
       setEditingProduct(null);
@@ -1575,12 +1628,12 @@ ${itemsList}
               <p className="text-gray-600">תודה שקנית אצלנו. כעת ניתן לעבור לתשלום ב-Bit.</p>
             </div>
             <a
-              href={`https://bitpay.co.il/app/pay?phone=${settings.bit_phone}&amount=${finalTotal}`}
+              href={`https://bitpay.co.il/app/pay?phone=${settings.bit_phone}&amount=${savedFinalTotal}`}
               target="_blank"
               rel="noopener noreferrer"
               className="block w-full bg-[#00b0ff] text-white py-4 rounded-2xl font-bold text-xl shadow-lg hover:bg-[#0091ea] transition-all"
             >
-              שלם ב-Bit ₪{finalTotal}
+              שלם ב-Bit ₪{savedFinalTotal}
             </a>
             <button onClick={() => setView('user')} className="text-gray-400 hover:text-gray-600">חזרה לדף הבית</button>
           </div>
@@ -1591,12 +1644,12 @@ ${itemsList}
             <h2 className="text-2xl font-bold text-center">כניסת מנהל</h2>
             <form onSubmit={handleAdminLogin} className="pastel-card p-8 space-y-6">
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">שם משתמש</label>
+                <label className="block text-sm font-medium text-gray-700 mb-1">אימייל</label>
                 <input
-                  type="text"
+                  type="email"
                   className="w-full p-3 rounded-xl border-gray-200 border outline-none focus:ring-2 focus:ring-[#a1c4fd]"
-                  value={loginData.username}
-                  onChange={e => setLoginData(prev => ({ ...prev, username: e.target.value }))}
+                  value={loginData.email}
+                  onChange={e => setLoginData(prev => ({ ...prev, email: e.target.value }))}
                 />
               </div>
               <div>
@@ -1617,7 +1670,7 @@ ${itemsList}
           <div className="space-y-8">
             <div className="flex justify-between items-center">
               <h2 className="text-2xl font-bold">ניהול מערכת</h2>
-              <button onClick={() => setIsAdmin(false)} className="text-red-400 hover:text-red-600">התנתקות</button>
+              <button onClick={() => { signOut(auth); setIsAdmin(false); }} className="text-red-400 hover:text-red-600">התנתקות</button>
             </div>
 
             <div className="flex gap-4 border-b">
@@ -1628,7 +1681,7 @@ ${itemsList}
                 מוצרים וקטגוריות
               </button>
               <button
-                onClick={() => { setAdminTab('orders'); fetchOrders(); }}
+                onClick={() => { setAdminTab('orders'); subscribeOrders(); }}
                 className={`pb-4 px-4 transition-all ${adminTab === 'orders' ? 'border-b-2 border-[#ff9a9e] text-[#ff9a9e] font-bold' : 'text-gray-400'}`}
               >
                 הזמנות
@@ -1858,7 +1911,7 @@ ${itemsList}
                         <button
                           onClick={() => {
                             setEditingProduct(p);
-                            setEditProductData({ name: p.name, description: p.description, price: p.price, costPrice: p.costPrice ?? 0, alt_text: p.alt_text ?? '', category_id: p.category_id, newImageFiles: [], newImagePreviews: [], variations: (p.variations || []).map(v => ({ name: v.name, values: v.values.join(', ') })) });
+                            setEditProductData({ name: p.name, description: p.description, price: p.price, costPrice: p.costPrice ?? 0, alt_text: p.alt_text ?? '', category_id: p.category_id, newImageFiles: [], newImagePreviews: [], variations: (p.variations || []).map(v => ({ name: v.name, values: v.values.join(', ') })), isBoxBase: p.isBoxBase ?? false });
                           }}
                           className="text-blue-400 p-2 hover:bg-blue-50 rounded-full transition-colors"
                         >
@@ -1876,8 +1929,70 @@ ${itemsList}
 
             {adminTab === 'orders' && (
               <div className="space-y-3">
+
+                {/* ── Export Section ─────────────────────────────────── */}
+                <div className="pastel-card p-5 space-y-4">
+                  <h3 className="font-bold text-base flex items-center gap-2">
+                    📥 יצוא הזמנות ל-Excel
+                    <span className="text-xs font-normal text-gray-400 bg-gray-100 px-2 py-0.5 rounded-full">{orders.length} הזמנות טעונות</span>
+                  </h3>
+                  <div className="flex flex-wrap gap-3 items-end">
+                    <div>
+                      <label className="block text-xs font-medium text-gray-600 mb-1">מתאריך</label>
+                      <input
+                        type="date"
+                        className="p-2.5 rounded-xl border border-gray-200 focus:ring-2 focus:ring-[#ff9a9e] outline-none text-sm"
+                        value={exportDateFrom}
+                        onChange={e => setExportDateFrom(e.target.value)}
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-medium text-gray-600 mb-1">עד תאריך</label>
+                      <input
+                        type="date"
+                        className="p-2.5 rounded-xl border border-gray-200 focus:ring-2 focus:ring-[#ff9a9e] outline-none text-sm"
+                        value={exportDateTo}
+                        onChange={e => setExportDateTo(e.target.value)}
+                      />
+                    </div>
+                    <button
+                      onClick={handleExportExcel}
+                      disabled={isExporting || orders.length === 0}
+                      className="flex items-center gap-2 px-5 py-2.5 rounded-xl bg-green-600 hover:bg-green-700 text-white font-semibold text-sm transition-colors disabled:opacity-50 shadow-sm"
+                    >
+                      {isExporting
+                        ? <><Loader2 size={16} className="animate-spin" /> מייצא...</>
+                        : <>📊 יצוא ל-Excel</>}
+                    </button>
+                    {(exportDateFrom || exportDateTo) && (
+                      <button
+                        onClick={() => { setExportDateFrom(''); setExportDateTo(''); }}
+                        className="text-xs text-gray-400 hover:text-gray-600 underline"
+                      >
+                        נקה סינון
+                      </button>
+                    )}
+                  </div>
+                  {(exportDateFrom || exportDateTo) && (
+                    <p className="text-xs text-gray-400">
+                      {(() => {
+                        const from = exportDateFrom ? new Date(exportDateFrom).getTime() : 0;
+                        const to = exportDateTo ? new Date(exportDateTo + 'T23:59:59').getTime() : Infinity;
+                        const count = orders.filter(o => {
+                          const t = new Date(o.created_at).getTime();
+                          return t >= from && t <= to;
+                        }).length;
+                        return `${count} הזמנות בטווח הנבחר`;
+                      })()}
+                    </p>
+                  )}
+                </div>
+
                 <div className="flex items-center justify-between">
-                  <h3 className="font-bold text-lg">{orders.length} הזמנות</h3>
+                  <h3 className="font-bold text-lg flex items-center gap-2">
+                    {orders.length} הזמנות
+                    <span className="text-xs font-normal text-green-600 bg-green-50 px-2 py-0.5 rounded-full border border-green-200">● עדכון חי</span>
+                  </h3>
                   <button
                     onClick={() => setExpandedOrders(orders.length === expandedOrders.size ? new Set() : new Set(orders.map(o => o.id)))}
                     className="text-xs text-gray-400 hover:text-gray-600"
@@ -2607,6 +2722,19 @@ ${itemsList}
                     {categories.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
                   </select>
                 </div>
+                {/* Box Base Toggle */}
+                <label className="flex items-center justify-between p-3 bg-pink-50 border border-pink-200 rounded-xl cursor-pointer hover:bg-pink-100 transition-colors">
+                  <div>
+                    <p className="text-sm font-medium text-gray-800">בסיס מארז אישי</p>
+                    <p className="text-xs text-gray-500 mt-0.5">מוצר זה ישמש כקופסה לבחירת לקוח</p>
+                  </div>
+                  <div
+                    onClick={() => setEditProductData(prev => ({ ...prev, isBoxBase: !prev.isBoxBase }))}
+                    className={`relative w-11 h-6 rounded-full transition-colors flex-shrink-0 cursor-pointer ${editProductData.isBoxBase ? 'bg-[#ff9a9e]' : 'bg-gray-300'}`}>
+                    <span className={`absolute top-0.5 w-5 h-5 rounded-full bg-white shadow transition-transform ${editProductData.isBoxBase ? 'translate-x-0.5' : 'translate-x-5'}`} />
+                  </div>
+                </label>
+
                 {editingProduct.images && editingProduct.images.length > 0 && (
                   <div>
                     <label className="block text-sm font-medium text-gray-700 mb-2">תמונות קיימות</label>
