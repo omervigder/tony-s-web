@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import { ShoppingCart, Package, Settings as SettingsIcon, Plus, Trash2, Camera, ChevronRight, ChevronLeft, CheckCircle2, X, Menu, Loader2, Pencil } from 'lucide-react';
+import AccessibilityWidget from './components/AccessibilityWidget';
+import { ShoppingCart, Package, Settings as SettingsIcon, Plus, Trash2, Camera, ChevronRight, ChevronLeft, CheckCircle2, X, Menu, Loader2, Pencil, ChevronDown, Copy } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Product, Category, Order, Settings, CartItem, Coupon, SiteContent } from './types';
 import { db, storage } from './firebase';
@@ -9,7 +10,12 @@ import { ref, uploadBytes, getDownloadURL } from "firebase/storage";
 export default function App() {
   const [view, setView] = useState<'user' | 'admin' | 'checkout' | 'success' | 'product'>('user');
   const [isAdmin, setIsAdmin] = useState(false);
-  const [adminTab, setAdminTab] = useState<'products' | 'orders' | 'settings' | 'coupons' | 'content' | 'analytics'>('products');
+  const [adminTab, setAdminTab] = useState<'products' | 'orders' | 'settings' | 'coupons' | 'content' | 'analytics' | 'legal'>('products');
+
+  // Legal pages CMS
+  const [legalDocs, setLegalDocs] = useState<{ terms: string; privacy: string; shipping: string }>({ terms: '', privacy: '', shipping: '' });
+  const [legalLoading, setLegalLoading] = useState(false);
+  const [legalSaving, setLegalSaving] = useState<string | null>(null);
   const [products, setProducts] = useState<Product[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
   const [orders, setOrders] = useState<Order[]>([]);
@@ -25,6 +31,12 @@ export default function App() {
   const [selectedProduct, setSelectedProduct] = useState<Product | null>(null);
   const [selectedImageIndex, setSelectedImageIndex] = useState(0);
   const [productQuantity, setProductQuantity] = useState(1);
+  const [selectedVariations, setSelectedVariations] = useState<Record<string, string>>({});
+  const [dedication, setDedication] = useState<{ message: string; cardType: 'digital' | 'printed' }>({ message: '', cardType: 'digital' });
+  const [customerNotes, setCustomerNotes] = useState('');
+
+  // Admin orders expand
+  const [expandedOrders, setExpandedOrders] = useState<Set<string>>(new Set());
 
   // Toast
   const [toast, setToast] = useState<string | null>(null);
@@ -32,9 +44,10 @@ export default function App() {
   // Edit product
   const [editingProduct, setEditingProduct] = useState<Product | null>(null);
   const [editProductData, setEditProductData] = useState<{
-    name: string; description: string; price: number; costPrice: number; category_id: string;
+    name: string; description: string; price: number; costPrice: number; alt_text: string; category_id: string;
     newImageFiles: File[]; newImagePreviews: string[];
-  }>({ name: '', description: '', price: 0, costPrice: 0, category_id: '', newImageFiles: [], newImagePreviews: [] });
+    variations: { name: string; values: string }[];
+  }>({ name: '', description: '', price: 0, costPrice: 0, alt_text: '', category_id: '', newImageFiles: [], newImagePreviews: [], variations: [] });
 
   // Edit category
   const [editingCategoryId, setEditingCategoryId] = useState<string | null>(null);
@@ -117,6 +130,7 @@ export default function App() {
     setSelectedProduct(product);
     setSelectedImageIndex(0);
     setProductQuantity(1);
+    setSelectedVariations({});
     setView('product');
     window.scrollTo(0, 0);
   };
@@ -128,23 +142,35 @@ export default function App() {
     setOrders(ordersData);
   };
 
-  const addToCart = (product: Product, quantity: number = 1) => {
+  const getCartKey = (id: string, variations?: Record<string, string>) =>
+    variations && Object.keys(variations).length > 0
+      ? `${id}|${JSON.stringify(variations)}`
+      : id;
+
+  const addToCart = (product: Product, quantity: number = 1, variations?: Record<string, string>) => {
+    const key = getCartKey(product.id, variations);
     setCart(prev => {
-      const existing = prev.find(item => item.id === product.id);
+      const existing = prev.find(item => getCartKey(item.id, item.selectedVariations) === key);
       if (existing) {
-        return prev.map(item => item.id === product.id ? { ...item, quantity: item.quantity + quantity } : item);
+        return prev.map(item =>
+          getCartKey(item.id, item.selectedVariations) === key
+            ? { ...item, quantity: item.quantity + quantity }
+            : item
+        );
       }
-      return [...prev, { ...product, quantity } as CartItem];
+      return [...prev, { ...product, quantity, selectedVariations: variations } as CartItem];
     });
   };
 
-  const removeFromCart = (id: string) => {
-    setCart(prev => prev.filter(item => item.id !== id));
+  const removeFromCart = (id: string, variations?: Record<string, string>) => {
+    const key = getCartKey(id, variations);
+    setCart(prev => prev.filter(item => getCartKey(item.id, item.selectedVariations) !== key));
   };
 
-  const updateQuantity = (id: string, delta: number) => {
+  const updateQuantity = (id: string, delta: number, variations?: Record<string, string>) => {
+    const key = getCartKey(id, variations);
     setCart(prev => prev.map(item => {
-      if (item.id === id) {
+      if (getCartKey(item.id, item.selectedVariations) === key) {
         const newQty = Math.max(1, item.quantity + delta);
         return { ...item, quantity: newQty };
       }
@@ -158,7 +184,8 @@ export default function App() {
       ? Math.round(cartTotal * appliedCoupon.value / 100)
       : Math.min(appliedCoupon.value, cartTotal)
     : 0;
-  const finalTotal = Math.max(0, cartTotal - discountAmount + (checkoutData.delivery === 'delivery' ? Number(settings.delivery_cost) : 0));
+  const cardCost = dedication.message.trim() && dedication.cardType === 'printed' ? Number(settings.printed_card_price || 15) : 0;
+  const finalTotal = Math.max(0, cartTotal - discountAmount + (checkoutData.delivery === 'delivery' ? Number(settings.delivery_cost) : 0) + cardCost);
 
   const sendTelegramNotification = async (order: {
     orderId: string;
@@ -167,9 +194,11 @@ export default function App() {
     email: string;
     deliveryMethod: 'pickup' | 'delivery';
     shippingAddress: string;
-    items: { name: string; price: number; quantity: number }[];
+    items: { name: string; price: number; quantity: number; selectedVariations?: Record<string, string> }[];
     total: number;
     pickupAddress: string;
+    dedication?: { message: string; cardType: 'digital' | 'printed' };
+    customerNotes?: string;
   }) => {
     const botToken = import.meta.env.VITE_TELEGRAM_BOT_TOKEN;
     const chatId = import.meta.env.VITE_TELEGRAM_CHAT_ID;
@@ -181,8 +210,20 @@ export default function App() {
       ? `🚚 משלוח — ${order.shippingAddress}`
       : `📍 איסוף עצמי: ${order.pickupAddress}`;
     const itemsList = order.items
-      .map(i => `• ${i.name} x${i.quantity} — ₪${(i.price * i.quantity).toFixed(2)}`)
+      .map(i => {
+        let line = `• ${i.name} x${i.quantity} — ₪${(i.price * i.quantity).toFixed(2)}`;
+        if (i.selectedVariations && Object.keys(i.selectedVariations).length > 0) {
+          const vars = Object.entries(i.selectedVariations).map(([k, v]) => `${k}: ${v}`).join(', ');
+          line += `\n  🎨 ${vars}`;
+        }
+        return line;
+      })
       .join('\n');
+
+    const dedicationLine = order.dedication?.message
+      ? `\n\n💌 *הקדשה:* ${order.dedication.message}\n🃏 *סוג כרטיס:* ${order.dedication.cardType === 'printed' ? 'מודפס' : 'דיגיטלי'}`
+      : '';
+    const notesLine = order.customerNotes ? `\n\n📝 *הערות:* ${order.customerNotes}` : '';
 
     const message =
 `📦 *הזמנה חדשה! #${order.orderId.slice(-6)}*
@@ -195,7 +236,7 @@ ${deliveryLine}
 ${itemsList}
 
 💰 *סה"כ לתשלום: ₪${order.total.toFixed(2)}*
-💳 *סטטוס תשלום:* ממתין לאישור
+💳 *סטטוס תשלום:* ממתין לאישור${dedicationLine}${notesLine}
 
 💬 [שלח WhatsApp ללקוח](${whatsappLink})`;
 
@@ -229,7 +270,13 @@ ${itemsList}
     if (checkoutData.delivery === 'delivery' && !checkoutData.shippingAddress.trim()) return alert("נא להזין כתובת למשלוח");
 
     try {
-      const orderItems = cart.map(i => ({ id: i.id, name: i.name, price: i.price, costPrice: i.costPrice ?? 0, quantity: i.quantity }));
+      const orderItems = cart.map(i => ({
+        id: i.id, name: i.name, price: i.price, costPrice: i.costPrice ?? 0, quantity: i.quantity,
+        ...(i.selectedVariations && Object.keys(i.selectedVariations).length > 0 && { selectedVariations: i.selectedVariations }),
+      }));
+      const dedicationData = dedication.message.trim()
+        ? { message: dedication.message.trim(), cardType: dedication.cardType }
+        : undefined;
       const orderDoc = await addDoc(collection(db, "orders"), {
         customer_name: checkoutData.name,
         customer_phone: checkoutData.phone,
@@ -246,12 +293,16 @@ ${itemsList}
           coupon_code: appliedCoupon.code,
           discount_amount: discountAmount,
         }),
+        ...(dedicationData && { dedication: dedicationData }),
+        ...(customerNotes.trim() && { customer_notes: customerNotes.trim() }),
       });
       setLastOrderId(orderDoc.id);
       setCart([]);
       setAppliedCoupon(null);
       setCouponInput('');
       setCheckoutData({ name: '', phone: '', email: '', delivery: 'pickup', shippingAddress: '' });
+      setDedication({ message: '', cardType: 'digital' });
+      setCustomerNotes('');
       setView('success');
 
       // Fire-and-forget — notification failure must not affect UX
@@ -264,7 +315,9 @@ ${itemsList}
         shippingAddress: checkoutData.shippingAddress,
         items: orderItems,
         total: finalTotal,
-        pickupAddress: settings.pickup_address
+        pickupAddress: settings.pickup_address,
+        dedication: dedicationData,
+        customerNotes: customerNotes.trim() || undefined,
       }).catch(err => console.error("Telegram notification error:", err));
     } catch (err) {
       console.error("Checkout error:", err);
@@ -398,9 +451,13 @@ ${itemsList}
         description: editProductData.description,
         price: editProductData.price,
         costPrice: editProductData.costPrice ?? 0,
+        alt_text: editProductData.alt_text || editProductData.name,
         category_id: editProductData.category_id,
         images: allImages,
         main_image: allImages[0] || editingProduct.main_image,
+        variations: editProductData.variations
+          .filter(v => v.name.trim())
+          .map(v => ({ name: v.name.trim(), values: v.values.split(',').map(s => s.trim()).filter(Boolean) })),
       });
       showToast("המוצר עודכן בהצלחה!");
       setEditingProduct(null);
@@ -433,11 +490,13 @@ ${itemsList}
     description: string;
     price: number;
     costPrice: number;
+    alt_text: string;
     category_id: string;
     imageFiles: File[];
     imagePreviews: string[];
     main_image_index: number;
-  }>({ name: '', description: '', price: 0, costPrice: 0, category_id: '', imageFiles: [], imagePreviews: [], main_image_index: 0 });
+    variations: { name: string; values: string }[];
+  }>({ name: '', description: '', price: 0, costPrice: 0, alt_text: '', category_id: '', imageFiles: [], imagePreviews: [], main_image_index: 0, variations: [] });
   const [newCategoryName, setNewCategoryName] = useState('');
 
   const handleAddProduct = async () => {
@@ -463,15 +522,19 @@ ${itemsList}
         description: newProduct.description,
         price: newProduct.price,
         costPrice: newProduct.costPrice ?? 0,
+        alt_text: newProduct.alt_text || newProduct.name,
         category_id: newProduct.category_id,
         images: imageUrls,
         main_image: imageUrls[newProduct.main_image_index] || imageUrls[0] || null,
+        variations: newProduct.variations
+          .filter(v => v.name.trim())
+          .map(v => ({ name: v.name.trim(), values: v.values.split(',').map(s => s.trim()).filter(Boolean) })),
         created_at: new Date()
       });
 
       showToast("המוצר נוסף בהצלחה!");
       await fetchData();
-      setNewProduct({ name: '', description: '', price: 0, costPrice: 0, category_id: '', imageFiles: [], imagePreviews: [], main_image_index: 0 });
+      setNewProduct({ name: '', description: '', price: 0, costPrice: 0, alt_text: '', category_id: '', imageFiles: [], imagePreviews: [], main_image_index: 0, variations: [] });
     } catch (err) {
       console.error("Error adding product:", err);
       alert("שגיאה בהוספת המוצר");
@@ -694,7 +757,7 @@ ${itemsList}
                 >
                   <div className="aspect-square relative overflow-hidden bg-gray-100">
                     {product.main_image ? (
-                      <img src={product.main_image} alt={product.name} className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+                      <img src={product.main_image} alt={product.alt_text || product.name} className="w-full h-full object-cover" referrerPolicy="no-referrer" />
                     ) : (
                       <div className="w-full h-full flex items-center justify-center text-gray-300">
                         <Package size={48} />
@@ -757,6 +820,31 @@ ${itemsList}
                   <p className="text-gray-600 text-lg leading-relaxed">{selectedProduct.description}</p>
                 </div>
 
+                {selectedProduct.variations && selectedProduct.variations.length > 0 && (
+                  <div className="space-y-4">
+                    {selectedProduct.variations.map(variation => (
+                      <div key={variation.name}>
+                        <label className="block text-sm font-bold text-gray-700 mb-2">{variation.name}:</label>
+                        <div className="flex flex-wrap gap-2">
+                          {variation.values.map(value => (
+                            <button
+                              key={value}
+                              onClick={() => setSelectedVariations(prev => ({ ...prev, [variation.name]: value }))}
+                              className={`px-4 py-2 rounded-full border text-sm font-medium transition-all ${
+                                selectedVariations[variation.name] === value
+                                  ? 'bg-[#ff9a9e] text-white border-[#ff9a9e] shadow-sm'
+                                  : 'border-gray-200 text-gray-600 hover:border-[#ff9a9e] bg-white'
+                              }`}
+                            >
+                              {value}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
                 <div className="flex items-center gap-4 bg-gray-50 p-4 rounded-2xl w-fit">
                   <span className="text-gray-500 font-medium">כמות:</span>
                   <div className="flex items-center gap-3">
@@ -784,7 +872,14 @@ ${itemsList}
 
                 <button
                   onClick={() => {
-                    addToCart(selectedProduct, productQuantity);
+                    if (selectedProduct.variations && selectedProduct.variations.length > 0) {
+                      const unselected = selectedProduct.variations.filter(v => !selectedVariations[v.name]);
+                      if (unselected.length > 0) {
+                        alert(`נא לבחור: ${unselected.map(v => v.name).join(', ')}`);
+                        return;
+                      }
+                    }
+                    addToCart(selectedProduct, productQuantity, Object.keys(selectedVariations).length > 0 ? selectedVariations : undefined);
                     setIsCartOpen(true);
                   }}
                   className="w-full btn-primary text-xl py-5 shadow-xl flex items-center justify-center gap-3"
@@ -860,6 +955,50 @@ ${itemsList}
                 )}
               </div>
 
+              {/* Dedication Section */}
+              <div className="border-t pt-4 space-y-3">
+                <h3 className="font-bold text-gray-800 flex items-center gap-2">
+                  💌 הקדשה אישית <span className="text-sm font-normal text-gray-400">(אופציונלי)</span>
+                </h3>
+                <textarea
+                  placeholder="כתוב כאן את ההקדשה שלך..."
+                  rows={3}
+                  className="w-full p-3 rounded-xl border border-gray-200 focus:ring-2 focus:ring-[#ff9a9e] focus:border-transparent outline-none resize-none text-sm"
+                  value={dedication.message}
+                  onChange={e => setDedication(prev => ({ ...prev, message: e.target.value }))}
+                />
+                {dedication.message.trim() && (
+                  <div className="flex gap-3">
+                    <button
+                      type="button"
+                      onClick={() => setDedication(prev => ({ ...prev, cardType: 'digital' }))}
+                      className={`flex-1 p-3 rounded-xl border text-sm font-medium transition-all ${dedication.cardType === 'digital' ? 'bg-[#ff9a9e] text-white border-[#ff9a9e]' : 'bg-white text-gray-500 border-gray-200 hover:border-[#ff9a9e]'}`}
+                    >
+                      📱 כרטיס דיגיטלי (חינם)
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setDedication(prev => ({ ...prev, cardType: 'printed' }))}
+                      className={`flex-1 p-3 rounded-xl border text-sm font-medium transition-all ${dedication.cardType === 'printed' ? 'bg-[#ff9a9e] text-white border-[#ff9a9e]' : 'bg-white text-gray-500 border-gray-200 hover:border-[#ff9a9e]'}`}
+                    >
+                      🖨️ כרטיס מודפס (+₪{settings.printed_card_price || 15})
+                    </button>
+                  </div>
+                )}
+              </div>
+
+              {/* Customer Notes */}
+              <div className="space-y-2">
+                <label className="block text-sm font-medium text-gray-700">📝 הערות נוספות <span className="font-normal text-gray-400">(אופציונלי)</span></label>
+                <textarea
+                  placeholder="הערות מיוחדות להזמנה..."
+                  rows={2}
+                  className="w-full p-3 rounded-xl border border-gray-200 focus:ring-2 focus:ring-[#ff9a9e] focus:border-transparent outline-none resize-none text-sm"
+                  value={customerNotes}
+                  onChange={e => setCustomerNotes(e.target.value)}
+                />
+              </div>
+
               {/* Coupon input */}
               <div className="space-y-2">
                 <label className="block text-sm font-medium text-gray-700">קוד קופון</label>
@@ -909,6 +1048,12 @@ ${itemsList}
                   <div className="flex justify-between text-gray-500">
                     <span>דמי משלוח:</span>
                     <span>₪{settings.delivery_cost}</span>
+                  </div>
+                )}
+                {cardCost > 0 && (
+                  <div className="flex justify-between text-gray-500">
+                    <span>כרטיס ברכה מודפס:</span>
+                    <span>+₪{cardCost}</span>
                   </div>
                 )}
                 <div className="flex justify-between text-xl font-bold pt-2">
@@ -1020,6 +1165,28 @@ ${itemsList}
               >
                 אנליטיקס
               </button>
+              <button
+                onClick={() => {
+                  setAdminTab('legal');
+                  if (!legalDocs.terms && !legalDocs.privacy && !legalDocs.shipping) {
+                    setLegalLoading(true);
+                    Promise.all([
+                      getDoc(doc(db, 'siteSettings', 'terms')),
+                      getDoc(doc(db, 'siteSettings', 'privacy')),
+                      getDoc(doc(db, 'siteSettings', 'shipping')),
+                    ]).then(([t, p, s]) => {
+                      setLegalDocs({
+                        terms: t.exists() ? t.data().content ?? '' : '',
+                        privacy: p.exists() ? p.data().content ?? '' : '',
+                        shipping: s.exists() ? s.data().content ?? '' : '',
+                      });
+                    }).finally(() => setLegalLoading(false));
+                  }
+                }}
+                className={`pb-4 px-4 transition-all ${adminTab === 'legal' ? 'border-b-2 border-[#ff9a9e] text-[#ff9a9e] font-bold' : 'text-gray-400'}`}
+              >
+                דפים משפטיים
+              </button>
             </div>
 
             {adminTab === 'products' && (
@@ -1089,6 +1256,10 @@ ${itemsList}
                         type="number" placeholder="מחיר עלות (₪)" className="w-full p-2 rounded-lg border"
                         value={newProduct.costPrice || ''} onChange={e => setNewProduct(prev => ({ ...prev, costPrice: Number(e.target.value) }))}
                       />
+                      <input
+                        type="text" placeholder="תיאור תמונה לנגישות (alt text)" className="w-full p-2 rounded-lg border"
+                        value={newProduct.alt_text} onChange={e => setNewProduct(prev => ({ ...prev, alt_text: e.target.value }))}
+                      />
                       <select
                         className="w-full p-2 rounded-lg border"
                         value={newProduct.category_id} onChange={e => setNewProduct(prev => ({ ...prev, category_id: e.target.value }))}
@@ -1096,6 +1267,43 @@ ${itemsList}
                         <option value="">בחר קטגוריה</option>
                         {categories.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
                       </select>
+                      {/* Variations Section */}
+                      <div className="border-t pt-3 mt-1">
+                        <div className="flex justify-between items-center mb-2">
+                          <span className="text-sm font-bold text-gray-700">וריאציות</span>
+                          <button
+                            type="button"
+                            onClick={() => setNewProduct(prev => ({ ...prev, variations: [...prev.variations, { name: '', values: '' }] }))}
+                            className="text-xs px-2 py-1 rounded-lg bg-blue-100 text-blue-600 hover:bg-blue-200 transition-colors flex items-center gap-1"
+                          >
+                            <Plus size={10} /> הוסף
+                          </button>
+                        </div>
+                        {newProduct.variations.length === 0 && (
+                          <p className="text-xs text-gray-400 text-center py-1">ניתן להוסיף וריאציות כגון: צבע, גודל, סוג</p>
+                        )}
+                        {newProduct.variations.map((v, i) => (
+                          <div key={i} className="mb-2 p-2 bg-gray-50 rounded-lg border">
+                            <div className="flex gap-2 mb-1">
+                              <input
+                                placeholder="שם (למשל: צבע)"
+                                value={v.name}
+                                onChange={e => setNewProduct(prev => ({ ...prev, variations: prev.variations.map((vv, ii) => ii === i ? { ...vv, name: e.target.value } : vv) }))}
+                                className="flex-1 p-1.5 rounded border text-xs outline-none focus:ring-1 focus:ring-[#ff9a9e]"
+                              />
+                              <button type="button" onClick={() => setNewProduct(prev => ({ ...prev, variations: prev.variations.filter((_, ii) => ii !== i) }))} className="text-red-400 hover:text-red-600">
+                                <X size={14} />
+                              </button>
+                            </div>
+                            <input
+                              placeholder="ערכים מופרדים בפסיקים (למשל: אדום, כחול)"
+                              value={v.values}
+                              onChange={e => setNewProduct(prev => ({ ...prev, variations: prev.variations.map((vv, ii) => ii === i ? { ...vv, values: e.target.value } : vv) }))}
+                              className="w-full p-1.5 rounded border text-xs outline-none focus:ring-1 focus:ring-[#ff9a9e]"
+                            />
+                          </div>
+                        ))}
+                      </div>
                       <div className="relative">
                         <input
                           type="file" accept="image/*" multiple className="hidden" id="image-upload"
@@ -1158,7 +1366,7 @@ ${itemsList}
                         <button
                           onClick={() => {
                             setEditingProduct(p);
-                            setEditProductData({ name: p.name, description: p.description, price: p.price, costPrice: p.costPrice ?? 0, category_id: p.category_id, newImageFiles: [], newImagePreviews: [] });
+                            setEditProductData({ name: p.name, description: p.description, price: p.price, costPrice: p.costPrice ?? 0, alt_text: p.alt_text ?? '', category_id: p.category_id, newImageFiles: [], newImagePreviews: [], variations: (p.variations || []).map(v => ({ name: v.name, values: v.values.join(', ') })) });
                           }}
                           className="text-blue-400 p-2 hover:bg-blue-50 rounded-full transition-colors"
                         >
@@ -1175,64 +1383,170 @@ ${itemsList}
             )}
 
             {adminTab === 'orders' && (
-              <div className="pastel-card overflow-hidden">
-                <div className="overflow-x-auto">
-                  <table className="w-full text-right">
-                    <thead className="bg-gray-50 border-b">
-                      <tr>
-                        <th className="p-4 font-bold">מס'</th>
-                        <th className="p-4 font-bold">לקוח</th>
-                        <th className="p-4 font-bold">טלפון</th>
-                        <th className="p-4 font-bold">פריטים</th>
-                        <th className="p-4 font-bold">סה"כ</th>
-                        <th className="p-4 font-bold">קופון</th>
-                        <th className="p-4 font-bold">שיטה</th>
-                        <th className="p-4 font-bold">סטטוס</th>
-                        <th className="p-4 font-bold">תאריך</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y">
-                      {orders.map(order => (
-                        <tr key={order.id} className="hover:bg-gray-50">
-                          <td className="p-4">#{order.id.slice(0, 6)}</td>
-                          <td className="p-4 font-medium">{order.customer_name}</td>
-                          <td className="p-4">{order.customer_phone}</td>
-                          <td className="p-4 text-xs">
-                            {order.items.map(i => `${i.name} (x${i.quantity})`).join(', ')}
-                            {order.shippingAddress && <div className="text-gray-400 mt-1">📦 {order.shippingAddress}</div>}
-                          </td>
-                          <td className="p-4 font-bold text-[#ff9a9e]">₪{order.total_price}</td>
-                          <td className="p-4 text-xs">
-                            {order.coupon_code
-                              ? <span className="bg-green-100 text-green-700 px-2 py-1 rounded-full font-mono">{order.coupon_code} (-₪{order.discount_amount})</span>
-                              : <span className="text-gray-300">—</span>}
-                          </td>
-                          <td className="p-4">{order.delivery_method === 'delivery' ? 'משלוח' : 'איסוף'}</td>
-                          <td className="p-4">
-                            <select
-                              value={order.orderStatus ?? 'Pending'}
-                              onChange={e => handleUpdateOrderStatus(order, e.target.value as Order['orderStatus'])}
-                              className={`text-xs px-2 py-1 rounded-lg border outline-none font-medium ${
-                                order.orderStatus === 'Completed' ? 'bg-green-100 text-green-700 border-green-200' :
-                                order.orderStatus === 'Cancelled' ? 'bg-red-100 text-red-700 border-red-200' :
-                                order.orderStatus === 'Processing' ? 'bg-blue-100 text-blue-700 border-blue-200' :
-                                order.orderStatus === 'Shipped' ? 'bg-purple-100 text-purple-700 border-purple-200' :
-                                'bg-yellow-100 text-yellow-700 border-yellow-200'
-                              }`}
-                            >
-                              <option value="Pending">Pending</option>
-                              <option value="Processing">Processing</option>
-                              <option value="Shipped">Shipped</option>
-                              <option value="Completed">Completed</option>
-                              <option value="Cancelled">Cancelled</option>
-                            </select>
-                          </td>
-                          <td className="p-4 text-gray-400 text-xs">{new Date(order.created_at).toLocaleString('he-IL')}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
+              <div className="space-y-3">
+                <div className="flex items-center justify-between">
+                  <h3 className="font-bold text-lg">{orders.length} הזמנות</h3>
+                  <button
+                    onClick={() => setExpandedOrders(orders.length === expandedOrders.size ? new Set() : new Set(orders.map(o => o.id)))}
+                    className="text-xs text-gray-400 hover:text-gray-600"
+                  >
+                    {expandedOrders.size === orders.length ? 'כווץ הכל' : 'הרחב הכל'}
+                  </button>
                 </div>
+                {orders.length === 0 && (
+                  <div className="text-center py-16 text-gray-400">אין הזמנות עדיין</div>
+                )}
+                {orders.map(order => {
+                  const isExpanded = expandedOrders.has(order.id);
+                  const toggleExpand = () => setExpandedOrders(prev => {
+                    const next = new Set(prev);
+                    if (next.has(order.id)) next.delete(order.id); else next.add(order.id);
+                    return next;
+                  });
+                  return (
+                    <div key={order.id} className="pastel-card overflow-hidden">
+                      {/* Header row */}
+                      <div
+                        className="p-4 flex flex-wrap gap-3 items-center cursor-pointer hover:bg-pink-50/50 transition-colors"
+                        onClick={toggleExpand}
+                      >
+                        <span className="font-mono text-xs font-bold text-gray-400 bg-gray-100 px-2 py-1 rounded">#{order.id.slice(0, 6)}</span>
+                        <span className="font-bold text-gray-800">{order.customer_name}</span>
+                        <span className="text-gray-500 text-sm">{order.customer_phone}</span>
+                        {order.dedication?.message && <span className="text-pink-500 text-xs font-medium bg-pink-50 px-2 py-0.5 rounded-full">💌 הקדשה</span>}
+                        <span className="font-bold text-[#ff9a9e] mr-auto">₪{order.total_price}</span>
+                        <span className="text-gray-400 text-xs hidden sm:block">{new Date(order.created_at).toLocaleString('he-IL')}</span>
+                        <select
+                          value={order.orderStatus ?? 'Pending'}
+                          onChange={e => { e.stopPropagation(); handleUpdateOrderStatus(order, e.target.value as Order['orderStatus']); }}
+                          onClick={e => e.stopPropagation()}
+                          className={`text-xs px-2 py-1 rounded-lg border outline-none font-medium ${
+                            order.orderStatus === 'Completed' ? 'bg-green-100 text-green-700 border-green-200' :
+                            order.orderStatus === 'Cancelled' ? 'bg-red-100 text-red-700 border-red-200' :
+                            order.orderStatus === 'Processing' ? 'bg-blue-100 text-blue-700 border-blue-200' :
+                            order.orderStatus === 'Shipped' ? 'bg-purple-100 text-purple-700 border-purple-200' :
+                            'bg-yellow-100 text-yellow-700 border-yellow-200'
+                          }`}
+                        >
+                          <option value="Pending">Pending</option>
+                          <option value="Processing">Processing</option>
+                          <option value="Shipped">Shipped</option>
+                          <option value="Completed">Completed</option>
+                          <option value="Cancelled">Cancelled</option>
+                        </select>
+                        <ChevronDown size={16} className={`text-gray-400 transition-transform flex-shrink-0 ${isExpanded ? 'rotate-180' : ''}`} />
+                      </div>
+
+                      {/* Expanded details */}
+                      {isExpanded && (
+                        <div className="border-t px-4 pb-5 pt-4 space-y-4 bg-gray-50/40">
+
+                          {/* Items */}
+                          <div>
+                            <h4 className="text-xs font-bold text-gray-500 uppercase tracking-wide mb-2">פריטי הזמנה</h4>
+                            <div className="space-y-2">
+                              {order.items.map((item, idx) => (
+                                <div key={idx} className="bg-white rounded-xl p-3 border border-gray-100 flex justify-between items-start gap-3">
+                                  <div className="flex-grow">
+                                    <span className="font-semibold">{item.name}</span>
+                                    <div className="text-xs text-gray-400 mt-0.5">כמות: {item.quantity} × ₪{item.price}</div>
+                                    {item.selectedVariations && Object.keys(item.selectedVariations).length > 0 && (
+                                      <div className="mt-1.5 flex flex-wrap gap-1">
+                                        {Object.entries(item.selectedVariations).map(([k, v]) => (
+                                          <span key={k} className="bg-[#ff9a9e]/10 text-[#ff9a9e] text-xs px-2 py-0.5 rounded-full font-medium">{k}: {v}</span>
+                                        ))}
+                                      </div>
+                                    )}
+                                  </div>
+                                  <span className="font-bold text-[#ff9a9e] flex-shrink-0">₪{(item.price * item.quantity).toFixed(2)}</span>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+
+                          {/* Dedication — highlighted */}
+                          {order.dedication?.message && (
+                            <div className="bg-pink-50 border-2 border-pink-200 rounded-xl p-4">
+                              <div className="flex items-center gap-2 mb-2">
+                                <span className="text-xl">💌</span>
+                                <h4 className="font-bold text-pink-700">הקדשה אישית</h4>
+                                <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${order.dedication.cardType === 'printed' ? 'bg-pink-200 text-pink-800' : 'bg-gray-100 text-gray-500'}`}>
+                                  {order.dedication.cardType === 'printed' ? '🖨️ כרטיס מודפס' : '📱 דיגיטלי'}
+                                </span>
+                              </div>
+                              <p className="text-gray-700 text-sm leading-relaxed whitespace-pre-wrap">{order.dedication.message}</p>
+                            </div>
+                          )}
+
+                          {/* Shipping address — highlighted */}
+                          {order.delivery_method === 'delivery' && order.shippingAddress && (
+                            <div className="bg-blue-50 border-2 border-blue-200 rounded-xl p-4">
+                              <div className="flex items-center justify-between mb-2">
+                                <div className="flex items-center gap-2">
+                                  <span className="text-xl">🚚</span>
+                                  <h4 className="font-bold text-blue-700">כתובת למשלוח</h4>
+                                </div>
+                                <button
+                                  onClick={() => { navigator.clipboard.writeText(order.shippingAddress!); showToast('הכתובת הועתקה!'); }}
+                                  className="flex items-center gap-1 text-xs bg-blue-100 hover:bg-blue-200 text-blue-700 px-3 py-1.5 rounded-full transition-colors font-medium"
+                                >
+                                  <Copy size={12} /> העתק כתובת
+                                </button>
+                              </div>
+                              <p className="text-gray-800 font-semibold text-sm">{order.shippingAddress}</p>
+                            </div>
+                          )}
+                          {order.delivery_method === 'pickup' && (
+                            <div className="bg-gray-50 border border-gray-200 rounded-xl p-3 flex items-center gap-2 text-sm text-gray-600">
+                              <span>📍</span> <span>איסוף עצמי</span>
+                            </div>
+                          )}
+
+                          {/* Customer notes */}
+                          {order.customer_notes && (
+                            <div className="bg-yellow-50 border border-yellow-200 rounded-xl p-3">
+                              <div className="flex items-center gap-2 mb-1">
+                                <span>📝</span>
+                                <h4 className="font-bold text-yellow-700 text-sm">הערות לקוח</h4>
+                              </div>
+                              <p className="text-gray-600 text-sm">{order.customer_notes}</p>
+                            </div>
+                          )}
+
+                          {/* Meta grid */}
+                          <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 text-sm">
+                            <div className="bg-white rounded-lg p-2.5 border border-gray-100">
+                              <p className="text-gray-400 text-xs mb-0.5">טלפון</p>
+                              <a href={`tel:${order.customer_phone}`} className="font-medium text-blue-600 hover:underline">{order.customer_phone}</a>
+                            </div>
+                            {order.customer_email && (
+                              <div className="bg-white rounded-lg p-2.5 border border-gray-100">
+                                <p className="text-gray-400 text-xs mb-0.5">אימייל</p>
+                                <p className="font-medium text-xs break-all">{order.customer_email}</p>
+                              </div>
+                            )}
+                            <div className="bg-white rounded-lg p-2.5 border border-gray-100">
+                              <p className="text-gray-400 text-xs mb-0.5">תשלום</p>
+                              <p className={`font-medium text-sm ${order.isPaid ? 'text-green-600' : 'text-orange-500'}`}>
+                                {order.isPaid ? '✅ שולם' : '⏳ ממתין'}
+                              </p>
+                            </div>
+                            <div className="bg-white rounded-lg p-2.5 border border-gray-100">
+                              <p className="text-gray-400 text-xs mb-0.5">תאריך</p>
+                              <p className="font-medium text-xs">{new Date(order.created_at).toLocaleString('he-IL')}</p>
+                            </div>
+                            {order.coupon_code && (
+                              <div className="bg-white rounded-lg p-2.5 border border-gray-100 col-span-2">
+                                <p className="text-gray-400 text-xs mb-0.5">קופון</p>
+                                <p className="font-medium text-green-600">{order.coupon_code} <span className="text-gray-500">(-₪{order.discount_amount})</span></p>
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
               </div>
             )}
 
@@ -1550,6 +1864,15 @@ ${itemsList}
                       value={settings.bit_phone} onChange={e => setSettings(prev => ({ ...prev, bit_phone: e.target.value }))}
                     />
                   </div>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">מחיר כרטיס ברכה מודפס (₪)</label>
+                    <input
+                      type="number" className="w-full p-3 rounded-xl border"
+                      placeholder="15"
+                      value={settings.printed_card_price || ''} onChange={e => setSettings(prev => ({ ...prev, printed_card_price: e.target.value }))}
+                    />
+                    <p className="text-xs text-gray-400 mt-1">עלות כרטיס מודפס — יתווסף לסה"כ ההזמנה כשהלקוח בוחר כרטיס מודפס</p>
+                  </div>
                   <button
                     onClick={handleSaveSettings}
                     className="w-full btn-primary"
@@ -1557,6 +1880,55 @@ ${itemsList}
                     שמירת הגדרות
                   </button>
                 </div>
+              </div>
+            )}
+
+            {adminTab === 'legal' && (
+              <div className="space-y-8 max-w-2xl">
+                {legalLoading ? (
+                  <div className="text-center py-12 text-gray-400">טוען...</div>
+                ) : (
+                  ([
+                    { key: 'terms', label: 'תקנון ותנאי שימוש', url: '/terms' },
+                    { key: 'privacy', label: 'מדיניות פרטיות', url: '/privacy' },
+                    { key: 'shipping', label: 'מדיניות משלוחים והחזרות', url: '/shipping' },
+                  ] as { key: 'terms' | 'privacy' | 'shipping'; label: string; url: string }[]).map(({ key, label, url }) => (
+                    <div key={key} className="pastel-card p-6 space-y-4">
+                      <div className="flex items-center justify-between">
+                        <h3 className="font-bold text-lg">{label}</h3>
+                        <a href={url} target="_blank" rel="noopener noreferrer"
+                          className="text-xs text-[#ff9a9e] underline">
+                          צפייה בדף ←
+                        </a>
+                      </div>
+                      <textarea
+                        rows={12}
+                        className="w-full p-3 rounded-xl border text-sm font-mono resize-y"
+                        style={{ direction: 'rtl' }}
+                        value={legalDocs[key]}
+                        onChange={e => setLegalDocs(prev => ({ ...prev, [key]: e.target.value }))}
+                        placeholder={`הכנס כאן את תוכן "${label}"...`}
+                      />
+                      <button
+                        disabled={legalSaving === key}
+                        onClick={async () => {
+                          setLegalSaving(key);
+                          try {
+                            await setDoc(doc(db, 'siteSettings', key), { content: legalDocs[key] }, { merge: true });
+                            showToast(`${label} נשמר בהצלחה`);
+                          } catch {
+                            showToast('שגיאה בשמירה');
+                          } finally {
+                            setLegalSaving(null);
+                          }
+                        }}
+                        className="btn-primary"
+                      >
+                        {legalSaving === key ? 'שומר...' : `שמור ${label}`}
+                      </button>
+                    </div>
+                  ))
+                )}
               </div>
             )}
           </div>
@@ -1662,6 +2034,15 @@ ${itemsList}
                   />
                 </div>
                 <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">תיאור תמונה לנגישות (alt text)</label>
+                  <input
+                    type="text" className="w-full p-2 rounded-lg border outline-none focus:ring-2 focus:ring-[#ff9a9e]"
+                    placeholder={editProductData.name || 'תיאור התמונה'}
+                    value={editProductData.alt_text}
+                    onChange={e => setEditProductData(prev => ({ ...prev, alt_text: e.target.value }))}
+                  />
+                </div>
+                <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">קטגוריה</label>
                   <select
                     className="w-full p-2 rounded-lg border outline-none focus:ring-2 focus:ring-[#ff9a9e]"
@@ -1684,6 +2065,44 @@ ${itemsList}
                     </div>
                   </div>
                 )}
+                {/* Variations Section */}
+                <div className="border-t pt-4">
+                  <div className="flex justify-between items-center mb-2">
+                    <label className="text-sm font-bold text-gray-700">וריאציות</label>
+                    <button
+                      type="button"
+                      onClick={() => setEditProductData(prev => ({ ...prev, variations: [...prev.variations, { name: '', values: '' }] }))}
+                      className="text-xs px-2 py-1 rounded-lg bg-blue-100 text-blue-600 hover:bg-blue-200 transition-colors flex items-center gap-1"
+                    >
+                      <Plus size={10} /> הוסף
+                    </button>
+                  </div>
+                  {editProductData.variations.length === 0 && (
+                    <p className="text-xs text-gray-400 text-center py-1">אין וריאציות — ניתן להוסיף כגון: צבע, גודל, סוג</p>
+                  )}
+                  {editProductData.variations.map((v, i) => (
+                    <div key={i} className="mb-2 p-2 bg-gray-50 rounded-lg border">
+                      <div className="flex gap-2 mb-1">
+                        <input
+                          placeholder="שם הוריאציה"
+                          value={v.name}
+                          onChange={e => setEditProductData(prev => ({ ...prev, variations: prev.variations.map((vv, ii) => ii === i ? { ...vv, name: e.target.value } : vv) }))}
+                          className="flex-1 p-1.5 rounded border text-xs outline-none focus:ring-1 focus:ring-[#ff9a9e]"
+                        />
+                        <button type="button" onClick={() => setEditProductData(prev => ({ ...prev, variations: prev.variations.filter((_, ii) => ii !== i) }))} className="text-red-400 hover:text-red-600">
+                          <X size={14} />
+                        </button>
+                      </div>
+                      <input
+                        placeholder="ערכים מופרדים בפסיקים"
+                        value={v.values}
+                        onChange={e => setEditProductData(prev => ({ ...prev, variations: prev.variations.map((vv, ii) => ii === i ? { ...vv, values: e.target.value } : vv) }))}
+                        className="w-full p-1.5 rounded border text-xs outline-none focus:ring-1 focus:ring-[#ff9a9e]"
+                      />
+                    </div>
+                  ))}
+                </div>
+
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">הוספת תמונות נוספות</label>
                   <input
@@ -1734,6 +2153,8 @@ ${itemsList}
         )}
       </AnimatePresence>
 
+      <AccessibilityWidget />
+
       {/* Cart Drawer */}
       <AnimatePresence>
         {isCartOpen && (
@@ -1768,16 +2189,21 @@ ${itemsList}
                   </div>
                 ) : (
                   cart.map(item => (
-                    <div key={item.id} className="flex gap-4 items-center">
+                    <div key={getCartKey(item.id, item.selectedVariations)} className="flex gap-4 items-center">
                       <div className="w-20 h-20 rounded-2xl bg-gray-100 overflow-hidden flex-shrink-0">
                         {item.main_image && <img src={item.main_image} className="w-full h-full object-cover" referrerPolicy="no-referrer" />}
                       </div>
                       <div className="flex-grow">
                         <h4 className="font-bold">{item.name}</h4>
+                        {item.selectedVariations && Object.keys(item.selectedVariations).length > 0 && (
+                          <p className="text-xs text-gray-400 mt-0.5">
+                            {Object.entries(item.selectedVariations).map(([k, v]) => `${k}: ${v}`).join(' | ')}
+                          </p>
+                        )}
                         <p className="text-[#ff9a9e] font-bold">₪{item.price}</p>
                         <div className="flex items-center gap-3 mt-2">
                           <button
-                            onClick={() => updateQuantity(item.id, -1)}
+                            onClick={() => updateQuantity(item.id, -1, item.selectedVariations)}
                             className="w-8 h-8 rounded-full border flex items-center justify-center hover:bg-gray-100 transition-colors text-gray-400"
                           >
                             <ChevronRight size={16} />
@@ -1786,18 +2212,18 @@ ${itemsList}
                             type="number"
                             min="1"
                             value={item.quantity}
-                            onChange={(e) => updateQuantity(item.id, (parseInt(e.target.value) || 1) - item.quantity)}
+                            onChange={(e) => updateQuantity(item.id, (parseInt(e.target.value) || 1) - item.quantity, item.selectedVariations)}
                             className="w-12 text-center bg-transparent font-bold outline-none"
                           />
                           <button
-                            onClick={() => updateQuantity(item.id, 1)}
+                            onClick={() => updateQuantity(item.id, 1, item.selectedVariations)}
                             className="w-8 h-8 rounded-full border flex items-center justify-center hover:bg-gray-100 transition-colors text-gray-400"
                           >
                             <ChevronLeft size={16} />
                           </button>
                         </div>
                       </div>
-                      <button onClick={() => removeFromCart(item.id)} className="text-gray-300 hover:text-red-400 transition-colors">
+                      <button onClick={() => removeFromCart(item.id, item.selectedVariations)} className="text-gray-300 hover:text-red-400 transition-colors">
                         <Trash2 size={20} />
                       </button>
                     </div>

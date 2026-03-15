@@ -6,7 +6,13 @@
       "Bash(npm install:*)",
       "Bash(cd C:/Users/omerv/PycharmProjects/Tony && npx firebase deploy --only functions)",
       "Bash(cd C:/Users/omerv/PycharmProjects/Tony && echo \"8562048733\" | npx firebase functions:secrets:set TELEGRAM_CHAT_ID)",
-      "Bash(cd C:/Users/omerv/PycharmProjects/Tony && echo \"8711645871:AAG02z-6OcNZ3fsjN8ZIKZbqdnQgjCFoZo4\" | npx firebase functions:secrets:set TELEGRAM_BOT_TOKEN)"
+      "Bash(cd C:/Users/omerv/PycharmProjects/Tony && echo \"8711645871:AAG02z-6OcNZ3fsjN8ZIKZbqdnQgjCFoZo4\" | npx firebase functions:secrets:set TELEGRAM_BOT_TOKEN)",
+      "Bash(cd \"C:\\\\Users\\\\omerv\\\\PycharmProjects\\\\Tony\" && node -e \"require\\('./node_modules/xlsx'\\)\" 2>&1 && echo \"xlsx installed successfully\")",
+      "Bash(cd \"C:\\\\Users\\\\omerv\\\\PycharmProjects\\\\Tony\" && npx tsc --noEmit 2>&1 | head -50)",
+      "Bash(cd \"C:\\\\Users\\\\omerv\\\\PycharmProjects\\\\Tony\" && npx vite build 2>&1 | tail -20)",
+      "Bash(cd \"C:\\\\Users\\\\omerv\\\\PycharmProjects\\\\Tony\" && npx vite build 2>&1 | tail -10)",
+      "Bash(ls \"C:\\\\Users\\\\omerv\\\\.claude\\\\projects\\\\C--Users-omerv-PycharmProjects-Tony\\\\memory\\\\\" 2>/dev/null && echo \"exists\" || echo \"empty/missing\")",
+      "Bash(cd \"C:\\\\Users\\\\omerv\\\\PycharmProjects\\\\Tony\" && npx tsc --noEmit 2>&1 | head -40)"
     ]
   }
 }

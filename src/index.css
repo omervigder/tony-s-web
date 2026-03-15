@@ -6,12 +6,12 @@
 
 body {
   direction: rtl;
-  background-color: #fdfbfb;
+  background-color: #FFF5F7;
   color: #4a4a4a;
 }
 
 .pastel-card {
-  background: white;
+  background: #FFFCFD;
   border-radius: 1.5rem;
   box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.05), 0 8px 10px -6px rgba(0, 0, 0, 0.05);
   transition: transform 0.2s ease, box-shadow 0.2s ease;

@@ -3,15 +3,23 @@ export interface ProductImage {
   url: string;
 }
 
+export interface ProductVariation {
+  name: string;
+  values: string[];
+}
+
 export interface Product {
   id: string;
   name: string;
   description: string;
   price: number;
   costPrice?: number;
+  alt_text?: string;
   category_id: string;
   main_image: string;
   images: string[];
+  variations?: ProductVariation[];
+  isBoxBase?: boolean;
   created_at?: Date;
 }
 
@@ -26,6 +34,8 @@ export interface OrderItem {
   price: number;
   costPrice?: number;
   quantity: number;
+  selectedVariations?: Record<string, string>;
+  bundleItems?: { id: string; name: string; price: number; quantity: number }[];
 }
 
 export interface Order {
@@ -43,6 +53,19 @@ export interface Order {
   created_at: string;
   coupon_code?: string;
   discount_amount?: number;
+  dedication?: { message: string; cardType: 'digital' | 'printed' };
+  customer_notes?: string;
+}
+
+export interface Review {
+  id: string;
+  product_id: string;
+  product_name: string;
+  customer_name: string;
+  rating: number;
+  message: string;
+  photo_url?: string;
+  created_at: string;
 }
 
 export interface Coupon {
@@ -58,10 +81,13 @@ export interface Settings {
   pickup_address: string;
   delivery_cost: string;
   bit_phone: string;
+  printed_card_price?: string;
 }
 
 export interface CartItem extends Product {
   quantity: number;
+  selectedVariations?: Record<string, string>;
+  bundleItems?: { id: string; name: string; price: number; quantity: number }[];
 }
 
 export interface SiteContent {

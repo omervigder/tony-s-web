@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
+import AccessibilityWidget from '../components/AccessibilityWidget';
 import { db } from '../firebase';
 import { collection, query, where, getDocs, limit, orderBy } from 'firebase/firestore';
 import {
@@ -461,7 +462,7 @@ export default function Landing() {
             </div>
           </div>
           <div style={{ display: 'flex', gap: 32, flexWrap: 'wrap' }}>
-            {[[SHOP_URL, 'חנות'], ['#collections', 'קולקציות'], ['#gallery', 'גלריה'], [waLink, 'צור קשר']].map(([href, label]) => (
+            {[[SHOP_URL, 'חנות'], ['#collections', 'קולקציות'], ['#gallery', 'גלריה'], [waLink, 'צור קשר'], ['/accessibility', 'נגישות'], ['/terms', 'תקנון'], ['/privacy', 'פרטיות'], ['/shipping', 'משלוחים']].map(([href, label]) => (
               <a key={label} href={href} target={href.startsWith('https') ? '_blank' : undefined} rel={href.startsWith('https') ? 'noopener noreferrer' : undefined}
                 style={{ color: '#444', fontSize: 13, textDecoration: 'none', transition: 'color 0.2s' }}
                 onMouseEnter={e => (e.currentTarget.style.color = '#F0CC6E')}
@@ -488,6 +489,8 @@ export default function Landing() {
       </a>
 
       <style>{`.wa-btn:hover .wa-tooltip { opacity: 1 !important; }`}</style>
+
+      <AccessibilityWidget />
     </div>
   );
 }

@@ -13,19 +13,22 @@ import {
 import {
   ShoppingBag, BarChart3, Package, Settings as SettingsIcon,
   LogOut, Menu, X, Plus, Trash2, Pencil, Camera, Loader2,
-  MessageCircle, DollarSign, CheckCircle2
+  MessageCircle, DollarSign, CheckCircle2, Download, ChevronDown, ChevronUp
 } from 'lucide-react';
+import * as XLSX from 'xlsx';
 
 /* ─────────────────────────────── Types ─────────────────────────────── */
-interface OrderItem { id: string; name: string; price: number; quantity: number; }
+interface OrderItem { id: string; name: string; price: number; quantity: number; selectedVariations?: Record<string, string>; }
 interface Order {
   id: string; customer_name: string; customer_phone: string;
   delivery_method: 'pickup' | 'delivery'; total_price: number;
   items: OrderItem[] | string; status: string; created_at: string;
 }
+interface ProductVariation { name: string; values: string[]; }
 interface Product {
   id: string; name: string; description: string; price: number;
   category_id: string; main_image: string; images: string[]; created_at?: any;
+  variations?: ProductVariation[];
 }
 interface Category { id: string; name: string; }
 interface StoreSettings { pickup_address: string; delivery_cost: string; bit_phone: string; }
@@ -149,9 +152,16 @@ function OrderCard({ order }: { key?: string; order: Order }) {
 
       <div className="space-y-1.5 flex-1">
         {items.map((item, i) => (
-          <div key={i} className="flex justify-between text-sm">
-            <span className="text-gray-300">{item.name} <span className="text-gray-500">×{item.quantity}</span></span>
-            <span className="text-gray-400">₪{(item.price * item.quantity)}</span>
+          <div key={i} className="text-sm">
+            <div className="flex justify-between">
+              <span className="text-gray-300">{item.name} <span className="text-gray-500">×{item.quantity}</span></span>
+              <span className="text-gray-400">₪{(item.price * item.quantity)}</span>
+            </div>
+            {item.selectedVariations && Object.keys(item.selectedVariations).length > 0 && (
+              <p className="text-gray-500 text-xs mt-0.5 mr-2">
+                {Object.entries(item.selectedVariations).map(([k, v]) => `${k}: ${v}`).join(' | ')}
+              </p>
+            )}
           </div>
         ))}
       </div>
@@ -218,15 +228,25 @@ function OrdersView({ orders }: { orders: Order[] }) {
 
 /* ─────────────────────────────── AnalyticsView ──────────────────────── */
 function AnalyticsView({ orders, products, categories }: { orders: Order[]; products: Product[]; categories: Category[] }) {
-  const now = new Date();
+  const [startDate, setStartDate] = useState('');
+  const [endDate, setEndDate] = useState('');
 
-  const thisMonthOrders = orders.filter(o => {
+  const filtered = orders.filter(o => {
+    const d = toDate(o.created_at);
+    if (startDate && d < new Date(startDate)) return false;
+    if (endDate && d > new Date(endDate + 'T23:59:59')) return false;
+    return true;
+  });
+
+  const now = new Date();
+  const thisMonthFiltered = filtered.filter(o => {
     const d = toDate(o.created_at);
     return d.getMonth() === now.getMonth() && d.getFullYear() === now.getFullYear();
   });
+  const displayOrders = (startDate || endDate) ? filtered : thisMonthFiltered;
 
-  const monthlyTotal = thisMonthOrders.reduce((s, o) => s + o.total_price, 0);
-  const completedCount = orders.filter(o => o.status === 'בוצע').length;
+  const monthlyTotal = displayOrders.reduce((s, o) => s + o.total_price, 0);
+  const completedCount = filtered.filter(o => o.status === 'בוצע').length;
 
   const last7 = Array.from({ length: 7 }, (_, i) => {
     const d = new Date();
@@ -236,20 +256,22 @@ function AnalyticsView({ orders, products, categories }: { orders: Order[]; prod
 
   const dailyData = last7.map(d => {
     const dayStr = d.toISOString().split('T')[0];
-    const revenue = orders
+    const revenue = filtered
       .filter(o => toDate(o.created_at).toISOString().startsWith(dayStr))
       .reduce((s, o) => s + o.total_price, 0);
     return { date: d.toLocaleDateString('he-IL', { weekday: 'short', day: 'numeric' }), revenue };
   });
 
-  const productMap: Record<string, string> = {};
-  products.forEach(p => { productMap[p.id] = p.category_id; });
+  const productCatMap: Record<string, string> = {};
+  products.forEach(p => { productCatMap[p.id] = p.category_id; });
 
   const catRevMap: Record<string, number> = {};
-  orders.forEach(o => {
+  const prodQtyMap: Record<string, number> = {};
+  filtered.forEach(o => {
     parseItems(o.items).forEach(item => {
-      const catId = productMap[item.id];
+      const catId = productCatMap[item.id];
       if (catId) catRevMap[catId] = (catRevMap[catId] || 0) + item.price * item.quantity;
+      prodQtyMap[item.id] = (prodQtyMap[item.id] || 0) + item.quantity;
     });
   });
 
@@ -258,16 +280,88 @@ function AnalyticsView({ orders, products, categories }: { orders: Order[]; prod
     .filter(c => c.value > 0)
     .sort((a, b) => b.value - a.value);
 
+  const productsByCategory = categories.map(cat => ({
+    category: cat,
+    prods: products
+      .filter(p => p.category_id === cat.id)
+      .map(p => ({ ...p, qtySold: prodQtyMap[p.id] || 0 }))
+      .filter(p => p.qtySold > 0)
+      .sort((a, b) => b.qtySold - a.qtySold),
+  })).filter(g => g.prods.length > 0);
+
+  const exportToExcel = () => {
+    const rows = filtered.flatMap(o => {
+      const items = parseItems(o.items);
+      return items.map(item => {
+        const vars = item.selectedVariations
+          ? Object.entries(item.selectedVariations).map(([k, v]) => `${k}: ${v}`).join(', ')
+          : '';
+        return {
+          'מספר הזמנה': `#${o.id.slice(0, 8)}`,
+          'תאריך': toDate(o.created_at).toLocaleString('he-IL'),
+          'שם לקוח': o.customer_name,
+          'טלפון': o.customer_phone,
+          'שיטת משלוח': o.delivery_method === 'delivery' ? 'משלוח' : 'איסוף',
+          'מוצר': item.name,
+          'וריאציות': vars,
+          'כמות': item.quantity,
+          'מחיר יחידה': item.price,
+          'סה"כ שורה': item.price * item.quantity,
+          'סה"כ הזמנה': o.total_price,
+          'סטטוס': o.status,
+        };
+      });
+    });
+    if (rows.length === 0) { alert('אין נתונים לייצוא'); return; }
+    const ws = XLSX.utils.json_to_sheet(rows);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'הזמנות');
+    XLSX.writeFile(wb, `orders_${new Date().toISOString().split('T')[0]}.xlsx`);
+  };
+
   return (
     <div className="space-y-6">
-      <h2 className="text-xl font-bold text-white">סטטיסטיקה</h2>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <h2 className="text-xl font-bold text-white">סטטיסטיקה</h2>
+        <button onClick={exportToExcel}
+          className="flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-bold text-black transition-opacity hover:opacity-90"
+          style={{ background: `linear-gradient(135deg, ${GOLD}, #D4910A)` }}>
+          <Download size={16} /> ייצוא לאקסל
+        </button>
+      </div>
 
+      {/* Date Range Picker */}
+      <div className="bg-[#0f0f24] border border-[#252550] rounded-2xl p-4">
+        <h3 className="text-white text-sm font-semibold mb-3">סינון לפי תאריך</h3>
+        <div className="flex flex-wrap gap-3 items-end">
+          <div>
+            <label className="text-gray-500 text-xs block mb-1">מתאריך</label>
+            <input type="date" value={startDate} onChange={e => setStartDate(e.target.value)}
+              className="bg-[#070712] border border-[#252550] rounded-xl px-3 py-2 text-white text-sm outline-none focus:border-[#F5C518]/50 transition-colors" />
+          </div>
+          <div>
+            <label className="text-gray-500 text-xs block mb-1">עד תאריך</label>
+            <input type="date" value={endDate} onChange={e => setEndDate(e.target.value)}
+              className="bg-[#070712] border border-[#252550] rounded-xl px-3 py-2 text-white text-sm outline-none focus:border-[#F5C518]/50 transition-colors" />
+          </div>
+          {(startDate || endDate) && (
+            <button onClick={() => { setStartDate(''); setEndDate(''); }}
+              className="px-3 py-2 text-sm text-gray-400 border border-[#252550] rounded-xl hover:text-white transition-colors">
+              נקה סינון
+            </button>
+          )}
+          <span className="text-gray-500 text-xs py-2">{filtered.length} הזמנות</span>
+        </div>
+      </div>
+
+      {/* Stat Cards */}
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-        <StatCard label="הכנסה החודש" value={`₪${monthlyTotal.toLocaleString()}`} icon={DollarSign} color={GOLD} />
-        <StatCard label="הזמנות החודש" value={thisMonthOrders.length} icon={ShoppingBag} color={BLUE} />
+        <StatCard label={(startDate || endDate) ? "הכנסה בתקופה" : "הכנסה החודש"} value={`₪${monthlyTotal.toLocaleString()}`} icon={DollarSign} color={GOLD} />
+        <StatCard label={(startDate || endDate) ? "הזמנות בתקופה" : "הזמנות החודש"} value={displayOrders.length} icon={ShoppingBag} color={BLUE} />
         <StatCard label="הזמנות שבוצעו" value={completedCount} icon={CheckCircle2} color="#4CAF50" />
       </div>
 
+      {/* Line Chart */}
       <div className="bg-[#0f0f24] border border-[#252550] rounded-2xl p-5">
         <h3 className="text-white font-semibold mb-5">הכנסות — 7 ימים אחרונים</h3>
         <ResponsiveContainer width="100%" height={220}>
@@ -285,9 +379,10 @@ function AnalyticsView({ orders, products, categories }: { orders: Order[]; prod
         </ResponsiveContainer>
       </div>
 
+      {/* Pie Chart - Category Distribution */}
       {categoryData.length > 0 && (
         <div className="bg-[#0f0f24] border border-[#252550] rounded-2xl p-5">
-          <h3 className="text-white font-semibold mb-5">הכנסות לפי קטגוריה</h3>
+          <h3 className="text-white font-semibold mb-5">התפלגות לפי קטגוריה</h3>
           <ResponsiveContainer width="100%" height={280}>
             <PieChart>
               <Pie data={categoryData} cx="50%" cy="50%" outerRadius={100} dataKey="value"
@@ -307,10 +402,35 @@ function AnalyticsView({ orders, products, categories }: { orders: Order[]; prod
         </div>
       )}
 
-      {categoryData.length === 0 && (
+      {/* Product Qty Sold by Category */}
+      {productsByCategory.length > 0 && (
+        <div className="bg-[#0f0f24] border border-[#252550] rounded-2xl p-5">
+          <h3 className="text-white font-semibold mb-4">כמות מכירות לפי מוצר וסוג</h3>
+          <div className="space-y-5">
+            {productsByCategory.map(({ category, prods }) => (
+              <div key={category.id}>
+                <div className="flex items-center gap-2 mb-2 pb-1 border-b border-[#1e1e3a]">
+                  <span className="text-xs font-bold px-2 py-0.5 rounded-full"
+                    style={{ background: `${GOLD}20`, color: GOLD }}>{category.name}</span>
+                </div>
+                <div className="space-y-1.5">
+                  {prods.map(p => (
+                    <div key={p.id} className="flex justify-between items-center text-sm py-1 px-2 rounded-lg hover:bg-[#070712] transition-colors">
+                      <span className="text-gray-300">{p.name}</span>
+                      <span className="font-bold text-sm" style={{ color: GOLD }}>{p.qtySold} יח'</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {categoryData.length === 0 && productsByCategory.length === 0 && (
         <div className="bg-[#0f0f24] border border-[#252550] rounded-2xl p-10 text-center text-gray-600">
           <BarChart3 size={40} className="mx-auto mb-2 opacity-20" />
-          <p className="text-sm">אין נתוני קטגוריות עדיין</p>
+          <p className="text-sm">אין נתוני מכירות עדיין</p>
         </div>
       )}
     </div>
@@ -322,16 +442,33 @@ function ProductsView({ products, categories }: { products: Product[]; categorie
   const [showForm, setShowForm] = useState(false);
   const [editing, setEditing] = useState<Product | null>(null);
   const [uploading, setUploading] = useState(false);
-  const [form, setForm] = useState({ name: '', description: '', price: 0, category_id: '', files: [] as File[], previews: [] as string[] });
+  const [form, setForm] = useState({
+    name: '', description: '', price: 0, category_id: '',
+    files: [] as File[], previews: [] as string[],
+    variations: [] as { name: string; values: string }[],
+  });
   const [toast, setToast] = useState('');
+  const [collapsedCats, setCollapsedCats] = useState<Set<string>>(new Set());
 
   const showToast = (msg: string) => { setToast(msg); setTimeout(() => setToast(''), 2500); };
-  const resetForm = () => setForm({ name: '', description: '', price: 0, category_id: '', files: [], previews: [] });
+  const resetForm = () => setForm({ name: '', description: '', price: 0, category_id: '', files: [], previews: [], variations: [] });
+
+  const toggleCat = (catId: string) => {
+    setCollapsedCats(prev => {
+      const next = new Set(prev);
+      if (next.has(catId)) next.delete(catId); else next.add(catId);
+      return next;
+    });
+  };
 
   const openAdd = () => { resetForm(); setEditing(null); setShowForm(true); };
   const openEdit = (p: Product) => {
     setEditing(p);
-    setForm({ name: p.name, description: p.description, price: p.price, category_id: p.category_id, files: [], previews: [] });
+    setForm({
+      name: p.name, description: p.description, price: p.price, category_id: p.category_id,
+      files: [], previews: [],
+      variations: (p.variations || []).map(v => ({ name: v.name, values: v.values.join(', ') })),
+    });
     setShowForm(true);
   };
 
@@ -345,6 +482,16 @@ function ProductsView({ products, categories }: { products: Product[]; categorie
     });
   };
 
+  const addVariation = () => setForm(p => ({ ...p, variations: [...p.variations, { name: '', values: '' }] }));
+  const removeVariation = (i: number) => setForm(p => ({ ...p, variations: p.variations.filter((_, ii) => ii !== i) }));
+  const updateVariation = (i: number, field: 'name' | 'values', val: string) =>
+    setForm(p => ({ ...p, variations: p.variations.map((v, ii) => ii === i ? { ...v, [field]: val } : v) }));
+
+  const buildVariations = () =>
+    form.variations
+      .filter(v => v.name.trim())
+      .map(v => ({ name: v.name.trim(), values: v.values.split(',').map(s => s.trim()).filter(Boolean) }));
+
   const handleSave = async () => {
     if (!form.name || !form.price || !form.category_id) return alert('נא למלא שם, מחיר וקטגוריה');
     try {
@@ -355,12 +502,14 @@ function ProductsView({ products, categories }: { products: Product[]; categorie
         await uploadBytes(sRef, file);
         urls.push(await getDownloadURL(sRef));
       }
+      const variations = buildVariations();
       if (editing) {
         const allImgs = [...(editing.images || []), ...urls];
         await updateDoc(doc(db, 'products', editing.id), {
           name: form.name, description: form.description,
           price: form.price, category_id: form.category_id,
           images: allImgs, main_image: allImgs[0] || editing.main_image,
+          variations,
         });
         showToast('המוצר עודכן!');
       } else {
@@ -368,6 +517,7 @@ function ProductsView({ products, categories }: { products: Product[]; categorie
           name: form.name, description: form.description,
           price: form.price, category_id: form.category_id,
           images: urls, main_image: urls[0] || null, created_at: new Date(),
+          variations,
         });
         showToast('המוצר נוסף!');
       }
@@ -383,6 +533,13 @@ function ProductsView({ products, categories }: { products: Product[]; categorie
   };
 
   const catName = (id: string) => categories.find(c => c.id === id)?.name || '-';
+
+  // Group products by category
+  const grouped = categories.map(cat => ({
+    cat, prods: products.filter(p => p.category_id === cat.id),
+  })).filter(g => g.prods.length > 0);
+
+  const uncategorized = products.filter(p => !categories.find(c => c.id === p.category_id));
 
   return (
     <div className="space-y-6">
@@ -401,57 +558,123 @@ function ProductsView({ products, categories }: { products: Product[]; categorie
         </button>
       </div>
 
-      <div className="bg-[#0f0f24] border border-[#252550] rounded-2xl overflow-hidden">
-        <div className="overflow-x-auto">
-          <table className="w-full text-right">
-            <thead>
-              <tr className="border-b border-[#1e1e3a]">
-                {['מוצר', 'קטגוריה', 'מחיר', 'פעולות'].map(h => (
-                  <th key={h} className="p-4 text-gray-500 font-medium text-sm">{h}</th>
-                ))}
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-[#1a1a35]">
-              {products.map(p => (
-                <tr key={p.id} className="hover:bg-[#070712] transition-colors">
-                  <td className="p-4">
-                    <div className="flex items-center gap-3">
-                      <div className="w-10 h-10 rounded-lg bg-[#070712] border border-[#252550] overflow-hidden flex-shrink-0">
-                        {p.main_image && <img src={p.main_image} className="w-full h-full object-cover" referrerPolicy="no-referrer" />}
-                      </div>
-                      <div>
-                        <p className="text-white font-medium text-sm">{p.name}</p>
-                        <p className="text-gray-500 text-xs line-clamp-1 max-w-[180px]">{p.description}</p>
-                      </div>
-                    </div>
-                  </td>
-                  <td className="p-4 text-gray-400 text-sm whitespace-nowrap">{catName(p.category_id)}</td>
-                  <td className="p-4 font-bold text-sm whitespace-nowrap" style={{ color: GOLD }}>₪{p.price}</td>
-                  <td className="p-4">
-                    <div className="flex gap-2">
-                      <button onClick={() => openEdit(p)}
-                        className="p-2 rounded-lg bg-blue-500/15 text-blue-400 hover:bg-blue-500/25 transition-colors">
-                        <Pencil size={14} />
-                      </button>
-                      <button onClick={() => handleDelete(p.id)}
-                        className="p-2 rounded-lg bg-red-500/15 text-red-400 hover:bg-red-500/25 transition-colors">
-                        <Trash2 size={14} />
-                      </button>
-                    </div>
-                  </td>
-                </tr>
-              ))}
-              {products.length === 0 && (
-                <tr>
-                  <td colSpan={4} className="p-12 text-center text-gray-600">
-                    <Package size={36} className="mx-auto mb-2 opacity-20" />
-                    <p className="text-sm">אין מוצרים עדיין</p>
-                  </td>
-                </tr>
-              )}
-            </tbody>
-          </table>
-        </div>
+      {/* Grouped by category */}
+      <div className="space-y-3">
+        {grouped.map(({ cat, prods }) => (
+          <div key={cat.id} className="bg-[#0f0f24] border border-[#252550] rounded-2xl overflow-hidden">
+            <button
+              onClick={() => toggleCat(cat.id)}
+              className="w-full flex items-center justify-between px-5 py-3.5 text-right hover:bg-[#070712] transition-colors">
+              <div className="flex items-center gap-2">
+                <span className="font-bold text-white">{cat.name}</span>
+                <span className="text-xs px-2 py-0.5 rounded-full bg-[#252550] text-gray-400">{prods.length} מוצרים</span>
+              </div>
+              {collapsedCats.has(cat.id) ? <ChevronDown size={16} className="text-gray-500" /> : <ChevronUp size={16} className="text-gray-500" />}
+            </button>
+            {!collapsedCats.has(cat.id) && (
+              <div className="border-t border-[#1e1e3a] overflow-x-auto">
+                <table className="w-full text-right">
+                  <thead>
+                    <tr className="border-b border-[#1e1e3a]">
+                      {['מוצר', 'מחיר', 'וריאציות', 'פעולות'].map(h => (
+                        <th key={h} className="p-4 text-gray-500 font-medium text-sm">{h}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-[#1a1a35]">
+                    {prods.map(p => (
+                      <tr key={p.id} className="hover:bg-[#070712] transition-colors">
+                        <td className="p-4">
+                          <div className="flex items-center gap-3">
+                            <div className="w-10 h-10 rounded-lg bg-[#070712] border border-[#252550] overflow-hidden flex-shrink-0">
+                              {p.main_image && <img src={p.main_image} className="w-full h-full object-cover" referrerPolicy="no-referrer" />}
+                            </div>
+                            <div>
+                              <p className="text-white font-medium text-sm">{p.name}</p>
+                              <p className="text-gray-500 text-xs line-clamp-1 max-w-[180px]">{p.description}</p>
+                            </div>
+                          </div>
+                        </td>
+                        <td className="p-4 font-bold text-sm whitespace-nowrap" style={{ color: GOLD }}>₪{p.price}</td>
+                        <td className="p-4 text-gray-500 text-xs">
+                          {p.variations && p.variations.length > 0
+                            ? p.variations.map(v => v.name).join(', ')
+                            : '—'}
+                        </td>
+                        <td className="p-4">
+                          <div className="flex gap-2">
+                            <button onClick={() => openEdit(p)}
+                              className="p-2 rounded-lg bg-blue-500/15 text-blue-400 hover:bg-blue-500/25 transition-colors">
+                              <Pencil size={14} />
+                            </button>
+                            <button onClick={() => handleDelete(p.id)}
+                              className="p-2 rounded-lg bg-red-500/15 text-red-400 hover:bg-red-500/25 transition-colors">
+                              <Trash2 size={14} />
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        ))}
+
+        {uncategorized.length > 0 && (
+          <div className="bg-[#0f0f24] border border-[#252550] rounded-2xl overflow-hidden">
+            <button
+              onClick={() => toggleCat('__uncategorized__')}
+              className="w-full flex items-center justify-between px-5 py-3.5 text-right hover:bg-[#070712] transition-colors">
+              <div className="flex items-center gap-2">
+                <span className="font-bold text-gray-400">ללא קטגוריה</span>
+                <span className="text-xs px-2 py-0.5 rounded-full bg-[#252550] text-gray-400">{uncategorized.length}</span>
+              </div>
+              {collapsedCats.has('__uncategorized__') ? <ChevronDown size={16} className="text-gray-500" /> : <ChevronUp size={16} className="text-gray-500" />}
+            </button>
+            {!collapsedCats.has('__uncategorized__') && (
+              <div className="border-t border-[#1e1e3a] overflow-x-auto">
+                <table className="w-full text-right">
+                  <thead><tr className="border-b border-[#1e1e3a]">
+                    {['מוצר', 'קטגוריה', 'מחיר', 'פעולות'].map(h => (
+                      <th key={h} className="p-4 text-gray-500 font-medium text-sm">{h}</th>
+                    ))}
+                  </tr></thead>
+                  <tbody className="divide-y divide-[#1a1a35]">
+                    {uncategorized.map(p => (
+                      <tr key={p.id} className="hover:bg-[#070712] transition-colors">
+                        <td className="p-4">
+                          <div className="flex items-center gap-3">
+                            <div className="w-10 h-10 rounded-lg bg-[#070712] border border-[#252550] overflow-hidden flex-shrink-0">
+                              {p.main_image && <img src={p.main_image} className="w-full h-full object-cover" referrerPolicy="no-referrer" />}
+                            </div>
+                            <p className="text-white font-medium text-sm">{p.name}</p>
+                          </div>
+                        </td>
+                        <td className="p-4 text-gray-400 text-sm">{catName(p.category_id)}</td>
+                        <td className="p-4 font-bold text-sm whitespace-nowrap" style={{ color: GOLD }}>₪{p.price}</td>
+                        <td className="p-4">
+                          <div className="flex gap-2">
+                            <button onClick={() => openEdit(p)} className="p-2 rounded-lg bg-blue-500/15 text-blue-400 hover:bg-blue-500/25 transition-colors"><Pencil size={14} /></button>
+                            <button onClick={() => handleDelete(p.id)} className="p-2 rounded-lg bg-red-500/15 text-red-400 hover:bg-red-500/25 transition-colors"><Trash2 size={14} /></button>
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        )}
+
+        {products.length === 0 && (
+          <div className="bg-[#0f0f24] border border-[#252550] rounded-2xl p-12 text-center text-gray-600">
+            <Package size={36} className="mx-auto mb-2 opacity-20" />
+            <p className="text-sm">אין מוצרים עדיין</p>
+          </div>
+        )}
       </div>
 
       {/* Add/Edit Modal */}
@@ -480,6 +703,41 @@ function ProductsView({ products, categories }: { products: Product[]; categorie
                 <option value="">בחר קטגוריה *</option>
                 {categories.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
               </select>
+
+              {/* Variations Section */}
+              <div className="border-t border-[#252550] pt-4">
+                <div className="flex justify-between items-center mb-3">
+                  <span className="text-white text-sm font-bold">וריאציות</span>
+                  <button onClick={addVariation}
+                    className="flex items-center gap-1 text-xs px-3 py-1.5 rounded-lg bg-blue-500/20 text-blue-400 hover:bg-blue-500/30 transition-colors">
+                    <Plus size={12} /> הוסף וריאציה
+                  </button>
+                </div>
+                {form.variations.length === 0 && (
+                  <p className="text-gray-600 text-xs text-center py-2">אין וריאציות (למשל: צבע, גודל, סוג בקבוק)</p>
+                )}
+                {form.variations.map((v, i) => (
+                  <div key={i} className="mb-3 p-3 bg-[#070712] rounded-xl border border-[#252550]">
+                    <div className="flex gap-2 mb-2">
+                      <input
+                        placeholder="שם הוריאציה (למשל: צבע)"
+                        value={v.name}
+                        onChange={e => updateVariation(i, 'name', e.target.value)}
+                        className="flex-1 bg-[#0f0f24] border border-[#252550] rounded-lg p-2 text-white text-xs outline-none focus:border-[#F5C518]/40 transition-colors"
+                      />
+                      <button onClick={() => removeVariation(i)} className="p-2 text-red-400 hover:text-red-300 transition-colors">
+                        <X size={14} />
+                      </button>
+                    </div>
+                    <input
+                      placeholder="ערכים מופרדים בפסיקים (למשל: אדום, כחול, ירוק)"
+                      value={v.values}
+                      onChange={e => updateVariation(i, 'values', e.target.value)}
+                      className="w-full bg-[#0f0f24] border border-[#252550] rounded-lg p-2 text-white text-xs outline-none focus:border-[#F5C518]/40 transition-colors"
+                    />
+                  </div>
+                ))}
+              </div>
 
               {editing && editing.images?.length > 0 && (
                 <div>
