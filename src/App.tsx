@@ -71,6 +71,7 @@ function ShopAnalyticsView({ orders, products, categories }: {
   const catVolMap: Record<string, number> = {};
   const prodRevMap: Record<string, number> = {};
   const prodVolMap: Record<string, number> = {};
+  const prodNameMap: Record<string, string> = {};
 
   completed.forEach(o => {
     o.items.forEach(item => {
@@ -80,6 +81,7 @@ function ShopAnalyticsView({ orders, products, categories }: {
       catVolMap[catId] = (catVolMap[catId] || 0) + item.quantity;
       prodRevMap[item.id] = (prodRevMap[item.id] || 0) + rev;
       prodVolMap[item.id] = (prodVolMap[item.id] || 0) + item.quantity;
+      if (!prodNameMap[item.id]) prodNameMap[item.id] = item.name;
     });
   });
 
@@ -92,7 +94,7 @@ function ShopAnalyticsView({ orders, products, categories }: {
     .filter(c => c.volume > 0).sort((a, b) => b.volume - a.volume);
 
   const topProductsData = Object.entries(prodRevMap)
-    .map(([id, rev]) => ({ name: products.find(p => p.id === id)?.name ?? id.slice(0, 8), value: Math.round(rev) }))
+    .map(([id, rev]) => ({ name: prodNameMap[id] ?? products.find(p => p.id === id)?.name ?? id.slice(0, 8), value: Math.round(rev) }))
     .sort((a, b) => b.value - a.value).slice(0, 8);
 
   const completedProductIds = [...new Set(completed.flatMap(o => o.items.map(i => i.id)))];
@@ -224,7 +226,9 @@ function ShopAnalyticsView({ orders, products, categories }: {
                 <h4 className="font-semibold mb-4">מוצרים מובילים לפי הכנסה</h4>
                 <ResponsiveContainer width="100%" height={240}>
                   <PieChart>
-                    <Pie data={topProductsData} cx="50%" cy="50%" innerRadius={50} outerRadius={80} dataKey="value" paddingAngle={3}>
+                    <Pie data={topProductsData} cx="50%" cy="50%" innerRadius={50} outerRadius={80} dataKey="value" paddingAngle={3}
+                      label={({ name, percent }) => percent > 0.06 ? `${name.length > 12 ? name.slice(0, 12) + '…' : name} ${(percent * 100).toFixed(0)}%` : ''}
+                      labelLine={{ stroke: '#ddd', strokeWidth: 1 }}>
                       {topProductsData.map((_, idx) => <Cell key={idx} fill={ANALYTICS_COLORS[idx % ANALYTICS_COLORS.length]} />)}
                     </Pie>
                     <Tooltip formatter={(v: number) => [`₪${v}`, 'הכנסה']} />

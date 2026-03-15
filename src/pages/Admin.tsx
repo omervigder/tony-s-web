@@ -297,6 +297,7 @@ function AnalyticsView({ orders, products, categories }: { orders: Order[]; prod
   const catVolMap: Record<string, number> = {};
   const prodRevMap: Record<string, number> = {};
   const prodVolMap: Record<string, number> = {};
+  const prodNameMap: Record<string, string> = {};
 
   completedInRange.forEach(o => {
     parseItems(o.items).forEach(item => {
@@ -306,6 +307,7 @@ function AnalyticsView({ orders, products, categories }: { orders: Order[]; prod
       catVolMap[catId] = (catVolMap[catId] || 0) + item.quantity;
       prodRevMap[item.id] = (prodRevMap[item.id] || 0) + rev;
       prodVolMap[item.id] = (prodVolMap[item.id] || 0) + item.quantity;
+      if (!prodNameMap[item.id]) prodNameMap[item.id] = item.name;
     });
   });
 
@@ -319,7 +321,7 @@ function AnalyticsView({ orders, products, categories }: { orders: Order[]; prod
     .filter(c => c.volume > 0).sort((a, b) => b.volume - a.volume);
 
   const topProductsData = Object.entries(prodRevMap)
-    .map(([id, rev]) => ({ name: products.find(p => p.id === id)?.name ?? id.slice(0, 8), value: Math.round(rev) }))
+    .map(([id, rev]) => ({ name: prodNameMap[id] ?? products.find(p => p.id === id)?.name ?? id.slice(0, 8), value: Math.round(rev) }))
     .sort((a, b) => b.value - a.value).slice(0, 8);
 
   /* ── Product dropdown — only products from completed orders ── */
@@ -510,7 +512,9 @@ function AnalyticsView({ orders, products, categories }: { orders: Order[]; prod
                 <ResponsiveContainer width="100%" height={260}>
                   <PieChart>
                     <Pie data={topProductsData} cx="50%" cy="50%" innerRadius={50} outerRadius={90} dataKey="value"
-                      paddingAngle={3}>
+                      paddingAngle={3}
+                      label={({ name, percent }) => percent > 0.06 ? `${name.length > 12 ? name.slice(0, 12) + '…' : name} ${(percent * 100).toFixed(0)}%` : ''}
+                      labelLine={{ stroke: '#444', strokeWidth: 1 }}>
                       {topProductsData.map((_, idx) => (
                         <Cell key={idx} fill={PIE_COLORS[idx % PIE_COLORS.length]} />
                       ))}
