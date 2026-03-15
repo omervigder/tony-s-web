@@ -634,6 +634,111 @@ ${itemsList}
     ? products.filter(p => p.category_id === selectedCategory)
     : products;
 
+  const printOrder = (order: Order) => {
+    const win = window.open('', '_blank', 'width=820,height=700');
+    if (!win) return;
+    const itemsHtml = order.items.map(item => `
+      <div class="item">
+        <div>
+          <div class="item-name">${item.name}</div>
+          <div class="item-qty">× ${item.quantity} &nbsp;|&nbsp; ₪${item.price} ליחידה</div>
+          ${item.selectedVariations && Object.keys(item.selectedVariations).length > 0
+            ? `<div class="item-vars">${Object.entries(item.selectedVariations).map(([k, v]) => `${k}: <strong>${v}</strong>`).join(' &nbsp;|&nbsp; ')}</div>`
+            : ''}
+        </div>
+        <div class="item-price">₪${(item.price * item.quantity).toFixed(2)}</div>
+      </div>`).join('');
+
+    const dedicationHtml = order.dedication?.message ? `
+      <div class="section dedication">
+        <h3>💌 הקדשה אישית</h3>
+        <p class="ded-text">${order.dedication.message.replace(/\n/g, '<br>')}</p>
+        <span class="card-badge">${order.dedication.cardType === 'printed' ? '🖨️ כרטיס מודפס' : '📱 כרטיס דיגיטלי'}</span>
+      </div>` : '';
+
+    const notesHtml = order.customer_notes ? `
+      <div class="section notes-sec">
+        <h3>📝 הערות לקוח</h3>
+        <p>${order.customer_notes}</p>
+      </div>` : '';
+
+    const html = `<!DOCTYPE html>
+<html dir="rtl" lang="he">
+<head>
+  <meta charset="UTF-8">
+  <title>הזמנה #${order.id.slice(0, 6)}</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: Arial, Helvetica, sans-serif; direction: rtl; color: #111; background: #fff; padding: 32px 40px; font-size: 14px; }
+    .header { display: flex; justify-content: space-between; align-items: flex-start; padding-bottom: 16px; border-bottom: 3px solid #ff9a9e; margin-bottom: 20px; }
+    .brand { font-size: 26px; font-weight: 900; color: #ff9a9e; }
+    .brand-sub { font-size: 12px; color: #aaa; margin-top: 2px; }
+    .order-id { font-size: 18px; font-weight: 700; color: #333; }
+    .order-date { font-size: 12px; color: #999; margin-top: 3px; }
+    .section { margin-bottom: 16px; padding: 14px 18px; border: 1px solid #ffe0e8; border-radius: 10px; background: #fff9fb; }
+    .section h3 { font-size: 12px; font-weight: 800; color: #ff9a9e; text-transform: uppercase; letter-spacing: 0.8px; margin-bottom: 10px; }
+    .customer-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+    .field label { display: block; font-size: 10px; color: #888; margin-bottom: 2px; }
+    .field span { font-size: 14px; font-weight: 600; }
+    .address-sec { background: #f0f7ff; border-color: #b3d4ff; }
+    .address-sec h3 { color: #3b82f6; }
+    .address-text { font-size: 16px; font-weight: 800; color: #1d4ed8; }
+    .dedication { background: #fff5f7; border-color: #ffb3c1; border-width: 2px; }
+    .dedication h3 { color: #e11d48; }
+    .ded-text { font-size: 15px; line-height: 1.75; color: #333; font-style: italic; margin-bottom: 8px; }
+    .card-badge { font-size: 12px; background: #ffe4e6; color: #be123c; padding: 3px 10px; border-radius: 99px; display: inline-block; }
+    .notes-sec { background: #fffbeb; border-color: #fde68a; }
+    .notes-sec h3 { color: #d97706; }
+    .item { display: flex; justify-content: space-between; align-items: flex-start; padding: 10px 0; border-bottom: 1px solid #f5e0e4; }
+    .item:last-child { border-bottom: none; }
+    .item-name { font-weight: 700; font-size: 14px; }
+    .item-qty { font-size: 12px; color: #888; margin-top: 3px; }
+    .item-vars { font-size: 12px; color: #ff9a9e; margin-top: 4px; }
+    .item-price { font-weight: 700; color: #ff9a9e; font-size: 14px; flex-shrink: 0; }
+    .totals { margin-top: 12px; border-top: 2px dashed #ffcdd2; padding-top: 12px; }
+    .total-row { display: flex; justify-content: space-between; font-size: 13px; color: #666; padding: 3px 0; }
+    .total-row.grand { font-size: 20px; font-weight: 900; color: #ff9a9e; padding-top: 10px; border-top: 2px solid #ff9a9e; margin-top: 6px; }
+    .footer-note { text-align: center; color: #bbb; font-size: 11px; margin-top: 28px; padding-top: 14px; border-top: 1px solid #f0f0f0; }
+    @media print { @page { margin: 16mm; } }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <div><div class="brand">Tony</div><div class="brand-sub">אמנות המיתוג</div></div>
+    <div style="text-align:left"><div class="order-id">הזמנה #${order.id.slice(0, 6)}</div><div class="order-date">${new Date(order.created_at).toLocaleString('he-IL')}</div></div>
+  </div>
+  <div class="section">
+    <h3>פרטי לקוח</h3>
+    <div class="customer-grid">
+      <div class="field"><label>שם מלא</label><span>${order.customer_name}</span></div>
+      <div class="field"><label>טלפון</label><span>${order.customer_phone}</span></div>
+      ${order.customer_email ? `<div class="field"><label>אימייל</label><span>${order.customer_email}</span></div>` : ''}
+      <div class="field"><label>שיטת משלוח</label><span>${order.delivery_method === 'delivery' ? '🚚 משלוח' : '📍 איסוף עצמי'}</span></div>
+    </div>
+  </div>
+  ${order.delivery_method === 'delivery' && order.shippingAddress ? `
+  <div class="section address-sec">
+    <h3>📍 כתובת למשלוח</h3>
+    <div class="address-text">${order.shippingAddress}</div>
+  </div>` : ''}
+  ${dedicationHtml}
+  ${notesHtml}
+  <div class="section">
+    <h3>פריטי הזמנה</h3>
+    ${itemsHtml}
+    <div class="totals">
+      ${order.coupon_code ? `<div class="total-row"><span>קופון (${order.coupon_code})</span><span>-₪${order.discount_amount}</span></div>` : ''}
+      <div class="total-row grand"><span>סה"כ לתשלום</span><span>₪${order.total_price}</span></div>
+    </div>
+  </div>
+  <div class="footer-note">Tony — אמנות המיתוג &nbsp;|&nbsp; כל הזכויות שמורות</div>
+  <script>window.onload = () => setTimeout(() => window.print(), 400);</script>
+</body>
+</html>`;
+    win.document.write(html);
+    win.document.close();
+  };
+
   return (
     <div className="min-h-screen pb-20">
       {/* Toast */}
@@ -1542,6 +1647,14 @@ ${itemsList}
                               </div>
                             )}
                           </div>
+
+                          {/* Print button */}
+                          <button
+                            onClick={() => printOrder(order)}
+                            className="w-full mt-2 flex items-center justify-center gap-2 py-2.5 px-4 rounded-xl border-2 border-[#ff9a9e] text-[#ff9a9e] font-semibold text-sm hover:bg-[#ff9a9e] hover:text-white transition-all"
+                          >
+                            🖨️ הדפס הזמנה
+                          </button>
                         </div>
                       )}
                     </div>
@@ -1934,6 +2047,60 @@ ${itemsList}
           </div>
         )}
       </main>
+
+      {/* Footer */}
+      {view !== 'admin' && (
+        <footer className="bg-white/60 border-t border-pink-100 mt-16 px-6 py-10">
+          <div className="max-w-6xl mx-auto">
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-8 mb-8">
+              {/* Brand */}
+              <div className="space-y-2">
+                <div className="flex items-center gap-2">
+                  <div className="w-8 h-8 bg-gradient-to-br from-[#ff9a9e] to-[#fecfef] rounded-lg flex items-center justify-center">
+                    <Package size={16} className="text-white" />
+                  </div>
+                  <span className="font-bold text-lg bg-clip-text text-transparent bg-gradient-to-r from-[#ff9a9e] to-[#a1c4fd]">Tony</span>
+                </div>
+                <p className="text-gray-400 text-sm leading-relaxed">מארזי מתנה יוקרתיים עם מיתוג אישי. לאירועים, לעסקים ולכל רגע מיוחד.</p>
+              </div>
+
+              {/* Navigation */}
+              <div className="space-y-2">
+                <h4 className="font-bold text-gray-700 text-sm">ניווט מהיר</h4>
+                <div className="flex flex-col gap-1.5">
+                  {[['/', 'דף הבית'], ['/shop', 'החנות']].map(([href, label]) => (
+                    <a key={href} href={href} className="text-sm text-gray-500 hover:text-[#ff9a9e] transition-colors">{label}</a>
+                  ))}
+                </div>
+              </div>
+
+              {/* Legal */}
+              <div className="space-y-2">
+                <h4 className="font-bold text-gray-700 text-sm">מידע משפטי</h4>
+                <div className="flex flex-col gap-1.5">
+                  {[
+                    ['/accessibility', 'הצהרת נגישות ♿'],
+                    ['/terms', 'תקנון האתר'],
+                    ['/privacy', 'מדיניות פרטיות'],
+                    ['/shipping', 'משלוחים והחזרות'],
+                  ].map(([href, label]) => (
+                    <a key={href} href={href} className="text-sm text-gray-500 hover:text-[#ff9a9e] transition-colors">{label}</a>
+                  ))}
+                </div>
+              </div>
+            </div>
+
+            <div className="border-t border-pink-100 pt-6 flex flex-wrap items-center justify-between gap-3 text-xs text-gray-400">
+              <span>© {new Date().getFullYear()} Tony — אמנות המיתוג. כל הזכויות שמורות.</span>
+              <div className="flex gap-4 flex-wrap">
+                {[['/accessibility','נגישות'],['/terms','תקנון'],['/privacy','פרטיות'],['/shipping','משלוחים']].map(([href, label]) => (
+                  <a key={href} href={href} className="hover:text-[#ff9a9e] transition-colors">{label}</a>
+                ))}
+              </div>
+            </div>
+          </div>
+        </footer>
+      )}
 
       {/* Menu Drawer (Categories) */}
       <AnimatePresence>

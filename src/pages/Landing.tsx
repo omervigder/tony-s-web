@@ -450,28 +450,71 @@ export default function Landing() {
       </section>
 
       {/* ── Footer ───────────────────────────────────────────────────── */}
-      <footer style={{ borderTop: '1px solid #1E1E3A', padding: '48px 24px' }}>
-        <div style={{ maxWidth: 1152, margin: '0 auto', display: 'flex', flexWrap: 'wrap', justifyContent: 'space-between', alignItems: 'center', gap: 24 }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-            <div style={{ width: 36, height: 36, borderRadius: 10, background: 'linear-gradient(135deg,#C9A84C,#F0CC6E)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-              <Gift size={16} color="#08080F" />
-            </div>
+      <footer style={{ borderTop: '1px solid #1E1E3A', padding: '64px 24px 40px' }}>
+        <div style={{ maxWidth: 1152, margin: '0 auto' }}>
+          {/* Top row: Brand + nav columns */}
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 48, marginBottom: 48 }}>
+            {/* Brand */}
             <div>
-              <p className="serif" style={{ fontSize: 18, fontWeight: 700, color: '#F0CC6E', margin: 0 }}>Tony</p>
-              <p style={{ color: '#444', fontSize: 11, margin: 0 }}>מארזי מתנה יוקרתיים</p>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 14 }}>
+                <div style={{ width: 36, height: 36, borderRadius: 10, background: 'linear-gradient(135deg,#C9A84C,#F0CC6E)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                  <Gift size={16} color="#08080F" />
+                </div>
+                <span className="serif" style={{ fontSize: 20, fontWeight: 700, color: '#F0CC6E' }}>Tony</span>
+              </div>
+              <p style={{ color: '#555', fontSize: 13, lineHeight: 1.7 }}>מארזי מתנה יוקרתיים עם מיתוג אישי. לאירועים, לעסקים ולכל רגע מיוחד.</p>
+            </div>
+
+            {/* Navigation */}
+            <div>
+              <p style={{ color: '#888', fontSize: 11, letterSpacing: 2, textTransform: 'uppercase', marginBottom: 16 }}>ניווט</p>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                {[[SHOP_URL, 'החנות'], ['#collections', 'קולקציות'], ['#how-it-works', 'איך זה עובד'], ['#gallery', 'גלריה'], ['#testimonials', 'ביקורות'], [waLink, 'צור קשר']].map(([href, label]) => (
+                  <a key={label} href={href} target={href.startsWith('https') ? '_blank' : undefined} rel={href.startsWith('https') ? 'noopener noreferrer' : undefined}
+                    style={{ color: '#555', fontSize: 13, textDecoration: 'none', transition: 'color 0.2s' }}
+                    onMouseEnter={e => (e.currentTarget.style.color = '#F0CC6E')}
+                    onMouseLeave={e => (e.currentTarget.style.color = '#555')}>
+                    {label}
+                  </a>
+                ))}
+              </div>
+            </div>
+
+            {/* Legal section */}
+            <div>
+              <p style={{ color: '#888', fontSize: 11, letterSpacing: 2, textTransform: 'uppercase', marginBottom: 16 }}>מידע משפטי</p>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                {[
+                  ['/accessibility', '♿ הצהרת נגישות'],
+                  ['/terms', '📄 תקנון האתר'],
+                  ['/privacy', '🔒 מדיניות פרטיות'],
+                  ['/shipping', '📦 משלוחים והחזרות'],
+                ].map(([href, label]) => (
+                  <a key={href} href={href}
+                    style={{ color: '#C9A84C', fontSize: 13, textDecoration: 'none', transition: 'color 0.2s', display: 'flex', alignItems: 'center', gap: 6 }}
+                    onMouseEnter={e => (e.currentTarget.style.color = '#F0CC6E')}
+                    onMouseLeave={e => (e.currentTarget.style.color = '#C9A84C')}>
+                    {label}
+                  </a>
+                ))}
+              </div>
             </div>
           </div>
-          <div style={{ display: 'flex', gap: 32, flexWrap: 'wrap' }}>
-            {[[SHOP_URL, 'חנות'], ['#collections', 'קולקציות'], ['#gallery', 'גלריה'], [waLink, 'צור קשר'], ['/accessibility', 'נגישות'], ['/terms', 'תקנון'], ['/privacy', 'פרטיות'], ['/shipping', 'משלוחים']].map(([href, label]) => (
-              <a key={label} href={href} target={href.startsWith('https') ? '_blank' : undefined} rel={href.startsWith('https') ? 'noopener noreferrer' : undefined}
-                style={{ color: '#444', fontSize: 13, textDecoration: 'none', transition: 'color 0.2s' }}
-                onMouseEnter={e => (e.currentTarget.style.color = '#F0CC6E')}
-                onMouseLeave={e => (e.currentTarget.style.color = '#444')}>
-                {label}
-              </a>
-            ))}
+
+          {/* Bottom row */}
+          <div style={{ borderTop: '1px solid #1E1E3A', paddingTop: 24, display: 'flex', flexWrap: 'wrap', justifyContent: 'space-between', alignItems: 'center', gap: 12 }}>
+            <p style={{ color: '#333', fontSize: 12 }}>© {new Date().getFullYear()} Tony — אמנות המיתוג. כל הזכויות שמורות.</p>
+            <div style={{ display: 'flex', gap: 20, flexWrap: 'wrap' }}>
+              {[['/accessibility','נגישות'],['/terms','תקנון'],['/privacy','פרטיות'],['/shipping','משלוחים']].map(([href, label]) => (
+                <a key={href} href={href}
+                  style={{ color: '#444', fontSize: 12, textDecoration: 'none', transition: 'color 0.2s' }}
+                  onMouseEnter={e => (e.currentTarget.style.color = '#F0CC6E')}
+                  onMouseLeave={e => (e.currentTarget.style.color = '#444')}>
+                  {label}
+                </a>
+              ))}
+            </div>
           </div>
-          <p style={{ color: '#333', fontSize: 12 }}>© {new Date().getFullYear()} Tony. כל הזכויות שמורות.</p>
         </div>
       </footer>
 

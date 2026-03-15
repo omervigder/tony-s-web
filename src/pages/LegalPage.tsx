@@ -54,17 +54,29 @@ export default function LegalPage({ docKey, title, defaultContent }: LegalPagePr
         )}
       </main>
 
-      <footer style={{ borderTop: '1px solid #ececec', padding: '24px', textAlign: 'center', color: '#aaa', fontSize: 13 }}>
-        <div style={{ display: 'flex', justifyContent: 'center', gap: 24, flexWrap: 'wrap', marginBottom: 12 }}>
-          {[['/', 'דף הבית'], ['/accessibility', 'נגישות'], ['/terms', 'תקנון'], ['/privacy', 'פרטיות'], ['/shipping', 'משלוחים']].map(([href, label]) => (
-            <a key={href} href={href} style={{ color: '#aaa', textDecoration: 'none', fontSize: 13 }}
-              onMouseEnter={e => (e.currentTarget.style.color = '#ff9a9e')}
-              onMouseLeave={e => (e.currentTarget.style.color = '#aaa')}>
+      <footer style={{ borderTop: '1px solid #ececec', padding: '28px 24px', textAlign: 'center' }}>
+        <div style={{ display: 'flex', justifyContent: 'center', gap: 6, flexWrap: 'wrap', marginBottom: 14, alignItems: 'center' }}>
+          <span style={{ color: '#999', fontSize: 11, letterSpacing: 1, textTransform: 'uppercase' }}>מידע משפטי:</span>
+          {[
+            ['/accessibility', '♿ הצהרת נגישות'],
+            ['/terms', 'תקנון האתר'],
+            ['/privacy', 'מדיניות פרטיות'],
+            ['/shipping', 'משלוחים והחזרות'],
+          ].map(([href, label]) => (
+            <a key={href} href={href}
+              style={{ color: '#ff9a9e', fontSize: 13, textDecoration: 'none', padding: '3px 10px', borderRadius: 999, border: '1px solid #ffe0e8', transition: 'background 0.2s' }}
+              onMouseEnter={e => (e.currentTarget.style.background = '#fff5f7')}
+              onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}>
               {label}
             </a>
           ))}
         </div>
-        © {new Date().getFullYear()} Tony — אמנות המיתוג. כל הזכויות שמורות.
+        <a href="/" style={{ color: '#aaa', textDecoration: 'none', fontSize: 13, display: 'inline-block', marginBottom: 8 }}
+          onMouseEnter={e => (e.currentTarget.style.color = '#ff9a9e')}
+          onMouseLeave={e => (e.currentTarget.style.color = '#aaa')}>
+          ← חזרה לדף הבית
+        </a>
+        <p style={{ color: '#bbb', fontSize: 12, marginTop: 6 }}>© {new Date().getFullYear()} Tony — אמנות המיתוג. כל הזכויות שמורות.</p>
       </footer>
     </div>
   );

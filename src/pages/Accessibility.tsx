@@ -84,8 +84,24 @@ export default function AccessibilityPage() {
         </div>
       </main>
 
-      <footer style={{ borderTop: '1px solid #ececec', padding: '24px', textAlign: 'center', color: '#aaa', fontSize: 13 }}>
-        © {new Date().getFullYear()} Tony — אמנות המיתוג. כל הזכויות שמורות.
+      <footer style={{ borderTop: '1px solid #ececec', padding: '28px 24px', textAlign: 'center' }}>
+        <div style={{ display: 'flex', justifyContent: 'center', gap: 6, flexWrap: 'wrap', marginBottom: 14 }}>
+          <span style={{ color: '#999', fontSize: 11, letterSpacing: 1, textTransform: 'uppercase', alignSelf: 'center' }}>מידע משפטי:</span>
+          {[
+            ['/accessibility', '♿ הצהרת נגישות'],
+            ['/terms', 'תקנון האתר'],
+            ['/privacy', 'מדיניות פרטיות'],
+            ['/shipping', 'משלוחים והחזרות'],
+          ].map(([href, label]) => (
+            <a key={href} href={href}
+              style={{ color: '#ff9a9e', fontSize: 13, textDecoration: 'none', padding: '3px 10px', borderRadius: 999, border: '1px solid #ffe0e8', transition: 'background 0.2s' }}
+              onMouseEnter={e => (e.currentTarget.style.background = '#fff5f7')}
+              onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}>
+              {label}
+            </a>
+          ))}
+        </div>
+        <p style={{ color: '#bbb', fontSize: 12 }}>© {new Date().getFullYear()} Tony — אמנות המיתוג. כל הזכויות שמורות.</p>
       </footer>
     </div>
   );
