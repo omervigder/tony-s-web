@@ -2,9 +2,10 @@ import React, { useState, useEffect, useRef } from 'react';
 import AccessibilityWidget from '../components/AccessibilityWidget';
 import { db } from '../firebase';
 import { collection, query, where, getDocs, limit, orderBy } from 'firebase/firestore';
+import { AnimatePresence, motion } from 'motion/react';
 import {
   ChevronLeft, ChevronRight, Star, Gift, MessageCircle,
-  Copy, Check, X, ChevronDown, Sparkles, ArrowLeft
+  Copy, Check, X, ChevronDown, Sparkles, ArrowLeft, MessageSquare
 } from 'lucide-react';
 
 /* ─── Types ─────────────────────────────────────────────────────────── */
@@ -66,6 +67,9 @@ const STEPS = [
   { num: '03', title: 'קבל עד הבית', desc: 'משלוח מהיר ואריזה מושלמת בכל פעם' },
 ];
 
+/* ─── Types ─────────────────────────────────────────────────────────── */
+interface ReviewPhoto { id: string; photo_url: string; customer_name: string; product_name: string; rating: number; }
+
 /* ─── Landing Page ───────────────────────────────────────────────────── */
 export default function Landing() {
   const [coupon, setCoupon] = useState<Coupon | null>(null);
@@ -74,7 +78,10 @@ export default function Landing() {
   const [tIdx, setTIdx] = useState(0);
   const [scrolled, setScrolled] = useState(false);
   const [heroVisible, setHeroVisible] = useState(false);
+  const [reviewPhotos, setReviewPhotos] = useState<ReviewPhoto[]>([]);
+  const [waVisible, setWaVisible] = useState(false);
   const timerRef = useRef<ReturnType<typeof setInterval> | undefined>(undefined);
+  const waTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
   /* Fetch active coupon */
   useEffect(() => {
@@ -84,6 +91,18 @@ export default function Landing() {
         if (!snap.empty) setCoupon({ id: snap.docs[0].id, ...snap.docs[0].data() } as Coupon);
       } catch { /* no coupons */ }
     })();
+
+    // Fetch review photos for gallery
+    (async () => {
+      try {
+        const snap = await getDocs(query(collection(db, 'reviews'), where('photo_url', '!=', ''), orderBy('photo_url'), orderBy('created_at', 'desc'), limit(9)));
+        setReviewPhotos(snap.docs.map(d => ({ id: d.id, ...d.data() })) as ReviewPhoto[]);
+      } catch { /* no reviews */ }
+    })();
+
+    // Show WhatsApp bubble after 15 seconds
+    waTimerRef.current = setTimeout(() => setWaVisible(true), 15000);
+    return () => { if (waTimerRef.current) clearTimeout(waTimerRef.current); };
   }, []);
 
   /* Hero entrance */
@@ -359,6 +378,44 @@ export default function Landing() {
         </div>
       </section>
 
+      {/* ── Customer Gallery ─────────────────────────────────────────── */}
+      {reviewPhotos.length > 0 && (
+        <section style={{ padding: '0 24px 96px' }}>
+          <div style={{ maxWidth: 1152, margin: '0 auto' }}>
+            <div style={{ textAlign: 'center', marginBottom: 48 }}>
+              <p style={{ color: '#C9A84C', fontSize: 11, letterSpacing: 4, textTransform: 'uppercase', marginBottom: 12 }}>מה אומרים עלינו</p>
+              <h2 className="serif" style={{ fontSize: 'clamp(28px, 5vw, 44px)', fontWeight: 700 }}>גלריית לקוחות 📸</h2>
+              <p style={{ color: '#666', marginTop: 12, fontSize: 14 }}>תמונות אמיתיות מלקוחות מרוצים</p>
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', gap: 12 }}>
+              {reviewPhotos.map((r, i) => (
+                <div key={r.id}
+                  className="gallery-zoom"
+                  style={{ position: 'relative', overflow: 'hidden', borderRadius: 16, border: '1px solid #1E1E3A', aspectRatio: '1', cursor: 'pointer' }}>
+                  <img src={r.photo_url} alt={`ביקורת של ${r.customer_name}`} style={{ width: '100%', height: '100%', objectFit: 'cover' }} referrerPolicy="no-referrer" loading="lazy" />
+                  <div style={{ position: 'absolute', bottom: 0, left: 0, right: 0, background: 'linear-gradient(to top, rgba(8,8,15,0.85), transparent)', padding: '16px 12px 10px' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 4, marginBottom: 2 }}>
+                      {[1,2,3,4,5].map(s => (
+                        <Star key={s} size={10} color={s <= r.rating ? '#fbbf24' : '#333'} fill={s <= r.rating ? '#fbbf24' : '#333'} />
+                      ))}
+                    </div>
+                    <p style={{ color: '#F0ECE0', fontSize: 11, fontWeight: 600 }}>{r.customer_name}</p>
+                    <p style={{ color: '#888', fontSize: 10 }}>{r.product_name}</p>
+                  </div>
+                </div>
+              ))}
+            </div>
+            <div style={{ textAlign: 'center', marginTop: 32 }}>
+              <a href={SHOP_URL}
+                className="gold-btn"
+                style={{ display: 'inline-flex', alignItems: 'center', gap: 8, padding: '12px 28px', borderRadius: 12, fontWeight: 600, fontSize: 14, color: '#08080F', textDecoration: 'none' }}>
+                קנה עכשיו וצרף תמונה <ChevronLeft size={16} />
+              </a>
+            </div>
+          </div>
+        </section>
+      )}
+
       {/* ── Testimonials ─────────────────────────────────────────────── */}
       <section id="testimonials" style={{ padding: '96px 24px', position: 'relative', overflow: 'hidden', background: 'linear-gradient(180deg, #08080F, #0D0D20, #08080F)' }}>
         <div style={{ position: 'relative', maxWidth: 760, margin: '0 auto' }}>
@@ -518,20 +575,42 @@ export default function Landing() {
         </div>
       </footer>
 
-      {/* ── Floating WhatsApp ─────────────────────────────────────────── */}
-      <a href={waLink} target="_blank" rel="noopener noreferrer"
-        className="wa-btn"
-        style={{ position: 'fixed', bottom: 28, left: 28, zIndex: 50, width: 58, height: 58, borderRadius: '50%', background: 'linear-gradient(135deg, #25D366, #128C7E)', display: 'flex', alignItems: 'center', justifyContent: 'center', textDecoration: 'none', transition: 'transform 0.25s ease' }}
-        onMouseEnter={e => (e.currentTarget.style.transform = 'scale(1.12)')}
-        onMouseLeave={e => (e.currentTarget.style.transform = 'scale(1)')}>
-        <MessageCircle size={26} color="white" fill="white" />
-        <div style={{ position: 'absolute', left: '110%', marginLeft: 8, background: '#0F0F1E', border: '1px solid #2A2A4A', color: '#F0ECE0', padding: '6px 14px', borderRadius: 10, fontSize: 12, fontWeight: 500, whiteSpace: 'nowrap', opacity: 0, transition: 'opacity 0.2s', pointerEvents: 'none' }}
-          className="wa-tooltip">
-          שאל אותנו בווצאפ
-        </div>
-      </a>
-
-      <style>{`.wa-btn:hover .wa-tooltip { opacity: 1 !important; }`}</style>
+      {/* ── Floating WhatsApp (appears after 15s) ────────────────────── */}
+      <AnimatePresence>
+        {waVisible && (
+          <motion.div
+            initial={{ opacity: 0, scale: 0.5, y: 20 }}
+            animate={{ opacity: 1, scale: 1, y: 0 }}
+            exit={{ opacity: 0, scale: 0.5 }}
+            transition={{ type: 'spring', stiffness: 260, damping: 20 }}
+            style={{ position: 'fixed', bottom: 28, left: 28, zIndex: 50, display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 8 }}
+          >
+            <motion.div
+              initial={{ opacity: 0, x: -10 }}
+              animate={{ opacity: 1, x: 0 }}
+              transition={{ delay: 0.3 }}
+              style={{ background: '#0F0F1E', border: '1px solid #2A2A4A', borderRight: '3px solid #25D366', color: '#F0ECE0', padding: '8px 14px', borderRadius: 12, fontSize: 12, fontWeight: 500, whiteSpace: 'nowrap', maxWidth: 200 }}
+            >
+              🎁 נעזור לך לבחור מתנה
+            </motion.div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <a href={waLink} target="_blank" rel="noopener noreferrer"
+                className="wa-btn"
+                style={{ width: 58, height: 58, borderRadius: '50%', background: 'linear-gradient(135deg, #25D366, #128C7E)', display: 'flex', alignItems: 'center', justifyContent: 'center', textDecoration: 'none', transition: 'transform 0.25s ease' }}
+                onMouseEnter={e => (e.currentTarget.style.transform = 'scale(1.12)')}
+                onMouseLeave={e => (e.currentTarget.style.transform = 'scale(1)')}>
+                <MessageCircle size={26} color="white" fill="white" />
+              </a>
+              <button
+                onClick={() => setWaVisible(false)}
+                style={{ width: 22, height: 22, borderRadius: '50%', background: 'rgba(255,255,255,0.15)', border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#888' }}
+              >
+                <X size={12} />
+              </button>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       <AccessibilityWidget />
     </div>

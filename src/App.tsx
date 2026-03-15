@@ -1,14 +1,14 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import AccessibilityWidget from './components/AccessibilityWidget';
-import { ShoppingCart, Package, Settings as SettingsIcon, Plus, Trash2, Camera, ChevronRight, ChevronLeft, CheckCircle2, X, Menu, Loader2, Pencil, ChevronDown, Copy } from 'lucide-react';
+import { ShoppingCart, Package, Settings as SettingsIcon, Plus, Trash2, Camera, ChevronRight, ChevronLeft, CheckCircle2, X, Menu, Loader2, Pencil, ChevronDown, Copy, Star, MessageCircle, Gift, Box } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
-import { Product, Category, Order, Settings, CartItem, Coupon, SiteContent } from './types';
+import { Product, Category, Order, Settings, CartItem, Coupon, SiteContent, Review } from './types';
 import { db, storage } from './firebase';
-import { collection, addDoc, getDocs, doc, deleteDoc, getDoc, setDoc, updateDoc, query, orderBy, where } from "firebase/firestore";
+import { collection, addDoc, getDocs, doc, deleteDoc, getDoc, setDoc, updateDoc, query, orderBy, where, limit } from "firebase/firestore";
 import { ref, uploadBytes, getDownloadURL } from "firebase/storage";
 
 export default function App() {
-  const [view, setView] = useState<'user' | 'admin' | 'checkout' | 'success' | 'product'>('user');
+  const [view, setView] = useState<'user' | 'admin' | 'checkout' | 'success' | 'product' | 'build-box'>('user');
   const [isAdmin, setIsAdmin] = useState(false);
   const [adminTab, setAdminTab] = useState<'products' | 'orders' | 'settings' | 'coupons' | 'content' | 'analytics' | 'legal'>('products');
 
@@ -34,6 +34,21 @@ export default function App() {
   const [selectedVariations, setSelectedVariations] = useState<Record<string, string>>({});
   const [dedication, setDedication] = useState<{ message: string; cardType: 'digital' | 'printed' }>({ message: '', cardType: 'digital' });
   const [customerNotes, setCustomerNotes] = useState('');
+
+  // Reviews
+  const [reviews, setReviews] = useState<Review[]>([]);
+  const [isLoadingReviews, setIsLoadingReviews] = useState(false);
+  const [reviewForm, setReviewForm] = useState({ rating: 5, message: '', customerName: '', photoFile: null as File | null, photoPreview: '' });
+  const [isSubmittingReview, setIsSubmittingReview] = useState(false);
+
+  // Build-A-Box
+  const [selectedBoxBase, setSelectedBoxBase] = useState<Product | null>(null);
+  const [bundleItems, setBundleItems] = useState<{ product: Product; qty: number }[]>([]);
+  const [bundleBoxStyle, setBundleBoxStyle] = useState<string>('');
+
+  // WhatsApp bubble
+  const [waVisible, setWaVisible] = useState(false);
+  const waTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Admin orders expand
   const [expandedOrders, setExpandedOrders] = useState<Set<string>>(new Set());
@@ -89,6 +104,9 @@ export default function App() {
 
   useEffect(() => {
     fetchData();
+    // Show WhatsApp bubble after 15 seconds
+    waTimerRef.current = setTimeout(() => setWaVisible(true), 15000);
+    return () => { if (waTimerRef.current) clearTimeout(waTimerRef.current); };
   }, []);
 
   const fetchData = async () => {
@@ -131,8 +149,104 @@ export default function App() {
     setSelectedImageIndex(0);
     setProductQuantity(1);
     setSelectedVariations({});
+    setReviews([]);
+    setReviewForm({ rating: 5, message: '', customerName: '', photoFile: null, photoPreview: '' });
     setView('product');
     window.scrollTo(0, 0);
+    fetchReviews(id);
+  };
+
+  const fetchReviews = async (productId: string) => {
+    setIsLoadingReviews(true);
+    try {
+      const snap = await getDocs(query(collection(db, 'reviews'), where('product_id', '==', productId), orderBy('created_at', 'desc')));
+      setReviews(snap.docs.map(d => ({ id: d.id, ...d.data() })) as Review[]);
+    } catch (err) {
+      console.error('Error fetching reviews:', err);
+    } finally {
+      setIsLoadingReviews(false);
+    }
+  };
+
+  const handleSubmitReview = async () => {
+    if (!selectedProduct || !reviewForm.customerName.trim() || !reviewForm.message.trim()) {
+      alert('נא למלא שם וטקסט ביקורת');
+      return;
+    }
+    setIsSubmittingReview(true);
+    try {
+      let photoUrl = '';
+      if (reviewForm.photoFile) {
+        const storageRef = ref(storage, `reviews/${Date.now()}_${reviewForm.photoFile.name}`);
+        await uploadBytes(storageRef, reviewForm.photoFile);
+        photoUrl = await getDownloadURL(storageRef);
+      }
+      await addDoc(collection(db, 'reviews'), {
+        product_id: selectedProduct.id,
+        product_name: selectedProduct.name,
+        customer_name: reviewForm.customerName.trim(),
+        rating: reviewForm.rating,
+        message: reviewForm.message.trim(),
+        ...(photoUrl && { photo_url: photoUrl }),
+        created_at: new Date().toISOString(),
+      });
+      showToast('תודה על הביקורת! 🌸');
+      setReviewForm({ rating: 5, message: '', customerName: '', photoFile: null, photoPreview: '' });
+      fetchReviews(selectedProduct.id);
+    } catch (err) {
+      console.error('Error submitting review:', err);
+      alert('שגיאה בשליחת הביקורת');
+    } finally {
+      setIsSubmittingReview(false);
+    }
+  };
+
+  // Build-A-Box helpers
+  const bundleTotal = (selectedBoxBase?.price || 0) + bundleItems.reduce((sum, bi) => sum + bi.product.price * bi.qty, 0);
+  const addBundleItem = (product: Product) => {
+    setBundleItems(prev => {
+      const existing = prev.find(bi => bi.product.id === product.id);
+      if (existing) return prev.map(bi => bi.product.id === product.id ? { ...bi, qty: bi.qty + 1 } : bi);
+      return [...prev, { product, qty: 1 }];
+    });
+  };
+  const removeBundleItem = (productId: string) => {
+    setBundleItems(prev => prev.filter(bi => bi.product.id !== productId));
+  };
+  const updateBundleQty = (productId: string, delta: number) => {
+    setBundleItems(prev => prev.map(bi => bi.product.id === productId ? { ...bi, qty: Math.max(1, bi.qty + delta) } : bi).filter(bi => bi.qty > 0));
+  };
+  const addBundleToCart = () => {
+    if (!selectedBoxBase) return;
+    const bundleProduct: Product = {
+      ...selectedBoxBase,
+      id: `bundle_${Date.now()}`,
+      name: `מארז אישי — ${selectedBoxBase.name}`,
+      price: bundleTotal,
+      images: selectedBoxBase.images,
+    };
+    const cartBundle: CartItem = {
+      ...bundleProduct,
+      quantity: 1,
+      bundleItems: bundleItems.map(bi => ({ id: bi.product.id, name: bi.product.name, price: bi.product.price, quantity: bi.qty })),
+    };
+    setCart(prev => [...prev, cartBundle]);
+    setSelectedBoxBase(null);
+    setBundleItems([]);
+    setBundleBoxStyle('');
+    setIsCartOpen(true);
+    setView('user');
+    showToast('המארז נוסף לסל! 🎁');
+  };
+
+  // WhatsApp smart message
+  const getWhatsAppLink = () => {
+    const phone = '972525830758';
+    let msg = 'היי, אשמח לעזרה בבחירת מתנה';
+    if (view === 'product' && selectedProduct) {
+      msg = `היי טוני, יש לי שאלה לגבי ${selectedProduct.name}`;
+    }
+    return `https://wa.me/${phone}?text=${encodeURIComponent(msg)}`;
   };
 
   const fetchOrders = async () => {
@@ -841,6 +955,26 @@ ${itemsList}
               )}
             </div>
 
+            {/* Build-A-Box Banner */}
+            <div
+              onClick={() => { setSelectedBoxBase(null); setBundleItems([]); setView('build-box'); window.scrollTo(0,0); }}
+              className="cursor-pointer rounded-3xl overflow-hidden shadow-lg hover:shadow-xl transition-all"
+              style={{ background: 'linear-gradient(135deg, #fff0f5 0%, #ffe4ef 50%, #ffd6e8 100%)', border: '1.5px solid #ffd6e8' }}
+            >
+              <div className="p-6 flex items-center gap-6">
+                <div className="w-16 h-16 rounded-2xl flex items-center justify-center flex-shrink-0" style={{ background: 'linear-gradient(135deg,#ff9a9e,#fecfef)' }}>
+                  <Gift size={32} color="white" />
+                </div>
+                <div className="flex-grow">
+                  <h3 className="text-xl font-bold text-gray-800">✨ בנה את המארז שלך</h3>
+                  <p className="text-gray-500 text-sm mt-1">בחר בסיס מארז, הוסף מוצרים ויצור חוויה מותאמת אישית</p>
+                </div>
+                <div className="btn-primary px-5 py-2 flex items-center gap-2 flex-shrink-0">
+                  <Box size={16} /> בנה עכשיו
+                </div>
+              </div>
+            </div>
+
             {/* Collections Title */}
             <div className="flex items-center gap-4">
               {isContentLoading
@@ -994,6 +1128,127 @@ ${itemsList}
                 </button>
               </div>
             </div>
+
+            {/* ── Customer Reviews ──────────────────────────────────────── */}
+            <div className="pastel-card p-8 space-y-8">
+              <h3 className="text-2xl font-bold flex items-center gap-2">
+                <Star size={24} className="text-[#ff9a9e]" fill="#ff9a9e" />
+                ביקורות לקוחות
+                {reviews.length > 0 && <span className="text-base font-normal text-gray-400">({reviews.length})</span>}
+              </h3>
+
+              {/* Existing reviews */}
+              {isLoadingReviews ? (
+                <div className="flex justify-center py-6">
+                  <Loader2 size={28} className="animate-spin text-[#ff9a9e]" />
+                </div>
+              ) : reviews.length === 0 ? (
+                <p className="text-gray-400 text-center py-4">היה הראשון לכתוב ביקורת 🌸</p>
+              ) : (
+                <div className="space-y-6">
+                  {reviews.map(review => (
+                    <div key={review.id} className="border-b border-gray-100 pb-6 last:border-0 last:pb-0">
+                      <div className="flex items-start gap-4">
+                        {review.photo_url && (
+                          <div className="w-20 h-20 rounded-2xl overflow-hidden flex-shrink-0 shadow-sm">
+                            <img src={review.photo_url} alt="ביקורת" className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+                          </div>
+                        )}
+                        <div className="flex-grow">
+                          <div className="flex items-center gap-3 mb-2">
+                            <span className="font-bold text-gray-800">{review.customer_name}</span>
+                            <div className="flex gap-0.5">
+                              {[1,2,3,4,5].map(s => (
+                                <Star key={s} size={14} className={s <= review.rating ? 'text-amber-400' : 'text-gray-200'} fill={s <= review.rating ? '#fbbf24' : '#e5e7eb'} />
+                              ))}
+                            </div>
+                          </div>
+                          <p className="text-gray-600 text-sm leading-relaxed">{review.message}</p>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {/* Write a review form */}
+              <div className="border-t pt-6 space-y-4">
+                <h4 className="font-bold text-gray-700">✍️ כתוב ביקורת</h4>
+                <div>
+                  <label className="block text-sm text-gray-600 mb-1">שם</label>
+                  <input
+                    type="text"
+                    placeholder="השם שלך"
+                    className="w-full p-3 rounded-xl border border-gray-200 focus:ring-2 focus:ring-[#ff9a9e] outline-none text-sm"
+                    value={reviewForm.customerName}
+                    onChange={e => setReviewForm(prev => ({ ...prev, customerName: e.target.value }))}
+                  />
+                </div>
+                {/* Star rating picker */}
+                <div>
+                  <label className="block text-sm text-gray-600 mb-2">דירוג</label>
+                  <div className="flex gap-2">
+                    {[1,2,3,4,5].map(s => (
+                      <button key={s} type="button" onClick={() => setReviewForm(prev => ({ ...prev, rating: s }))}>
+                        <Star size={28} className={s <= reviewForm.rating ? 'text-amber-400' : 'text-gray-200'} fill={s <= reviewForm.rating ? '#fbbf24' : '#e5e7eb'} />
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                <div>
+                  <label className="block text-sm text-gray-600 mb-1">הביקורת שלך</label>
+                  <textarea
+                    rows={3}
+                    placeholder="ספר לנו על החוויה שלך..."
+                    className="w-full p-3 rounded-xl border border-gray-200 focus:ring-2 focus:ring-[#ff9a9e] outline-none resize-none text-sm"
+                    value={reviewForm.message}
+                    onChange={e => setReviewForm(prev => ({ ...prev, message: e.target.value }))}
+                  />
+                </div>
+                {/* Photo upload */}
+                <div>
+                  <label className="block text-sm text-gray-600 mb-2">📸 תמונה של המארז (אופציונלי)</label>
+                  <div className="flex items-center gap-4">
+                    <label className="cursor-pointer flex items-center gap-2 px-4 py-2 rounded-xl border border-dashed border-[#ff9a9e] text-[#ff9a9e] text-sm hover:bg-[#ff9a9e]/5 transition-colors">
+                      <Camera size={16} />
+                      העלה תמונה
+                      <input
+                        type="file"
+                        accept="image/*"
+                        className="hidden"
+                        onChange={e => {
+                          const file = e.target.files?.[0];
+                          if (file) {
+                            const url = URL.createObjectURL(file);
+                            setReviewForm(prev => ({ ...prev, photoFile: file, photoPreview: url }));
+                          }
+                        }}
+                      />
+                    </label>
+                    {reviewForm.photoPreview && (
+                      <div className="relative w-16 h-16 rounded-xl overflow-hidden shadow-sm">
+                        <img src={reviewForm.photoPreview} className="w-full h-full object-cover" />
+                        <button
+                          type="button"
+                          onClick={() => setReviewForm(prev => ({ ...prev, photoFile: null, photoPreview: '' }))}
+                          className="absolute top-0.5 right-0.5 w-5 h-5 bg-red-500 text-white rounded-full flex items-center justify-center text-[10px]"
+                        >
+                          <X size={10} />
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                </div>
+                <button
+                  onClick={handleSubmitReview}
+                  disabled={isSubmittingReview}
+                  className="btn-primary flex items-center gap-2 disabled:opacity-50"
+                >
+                  {isSubmittingReview ? <Loader2 size={16} className="animate-spin" /> : <Star size={16} />}
+                  שלח ביקורת
+                </button>
+              </div>
+            </div>
           </div>
         )}
 
@@ -1061,10 +1316,11 @@ ${itemsList}
               </div>
 
               {/* Dedication Section */}
-              <div className="border-t pt-4 space-y-3">
+              <div className="border-t pt-4 space-y-3" style={{ background: 'linear-gradient(135deg,#fff5f8,#fff0f5)', borderRadius: 16, padding: 20, marginTop: 8 }}>
                 <h3 className="font-bold text-gray-800 flex items-center gap-2">
-                  💌 הקדשה אישית <span className="text-sm font-normal text-gray-400">(אופציונלי)</span>
+                  💌 ברכה אישית <span className="text-sm font-normal text-gray-400">(אופציונלי)</span>
                 </h3>
+                <p className="text-xs text-gray-400">הוסף הקדשה אישית שתצורף למארז</p>
                 <textarea
                   placeholder="כתוב כאן את ההקדשה שלך..."
                   rows={3}
@@ -1072,24 +1328,25 @@ ${itemsList}
                   value={dedication.message}
                   onChange={e => setDedication(prev => ({ ...prev, message: e.target.value }))}
                 />
-                {dedication.message.trim() && (
+                <div>
+                  <p className="text-sm font-medium text-gray-700 mb-2">סוג כרטיס ברכה:</p>
                   <div className="flex gap-3">
                     <button
                       type="button"
                       onClick={() => setDedication(prev => ({ ...prev, cardType: 'digital' }))}
-                      className={`flex-1 p-3 rounded-xl border text-sm font-medium transition-all ${dedication.cardType === 'digital' ? 'bg-[#ff9a9e] text-white border-[#ff9a9e]' : 'bg-white text-gray-500 border-gray-200 hover:border-[#ff9a9e]'}`}
+                      className={`flex-1 p-3 rounded-xl border text-sm font-medium transition-all ${dedication.cardType === 'digital' ? 'bg-[#ff9a9e] text-white border-[#ff9a9e] shadow-sm' : 'bg-white text-gray-500 border-gray-200 hover:border-[#ff9a9e]'}`}
                     >
-                      📱 כרטיס דיגיטלי (חינם)
+                      📱 כרטיס דיגיטלי<br/><span className="text-xs font-normal opacity-75">חינם</span>
                     </button>
                     <button
                       type="button"
                       onClick={() => setDedication(prev => ({ ...prev, cardType: 'printed' }))}
-                      className={`flex-1 p-3 rounded-xl border text-sm font-medium transition-all ${dedication.cardType === 'printed' ? 'bg-[#ff9a9e] text-white border-[#ff9a9e]' : 'bg-white text-gray-500 border-gray-200 hover:border-[#ff9a9e]'}`}
+                      className={`flex-1 p-3 rounded-xl border text-sm font-medium transition-all ${dedication.cardType === 'printed' ? 'bg-[#ff9a9e] text-white border-[#ff9a9e] shadow-sm' : 'bg-white text-gray-500 border-gray-200 hover:border-[#ff9a9e]'}`}
                     >
-                      🖨️ כרטיס מודפס (+₪{settings.printed_card_price || 15})
+                      🖨️ כרטיס מודפס פרימיום<br/><span className="text-xs font-normal opacity-75">+₪{settings.printed_card_price || 15}</span>
                     </button>
                   </div>
-                )}
+                </div>
               </div>
 
               {/* Customer Notes */}
@@ -1174,6 +1431,136 @@ ${itemsList}
                 אישור הזמנה ותשלום
               </button>
             </div>
+          </div>
+        )}
+
+        {/* ── Build-A-Box ───────────────────────────────────────────── */}
+        {view === 'build-box' && (
+          <div className="space-y-8 max-w-4xl mx-auto">
+            <button onClick={() => setView('user')} className="flex items-center gap-2 text-gray-500 hover:text-gray-800">
+              <ChevronRight size={20} /> חזרה לחנות
+            </button>
+            <div className="text-center space-y-2">
+              <h2 className="text-3xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-[#ff9a9e] to-[#a1c4fd]">✨ בנה את המארז שלך</h2>
+              <p className="text-gray-500">בחר בסיס מארז ואחר כך הוסף מוצרים לפי בחירתך</p>
+            </div>
+
+            {/* Step 1: Select Box Base */}
+            <div className="pastel-card p-6 space-y-4">
+              <h3 className="text-lg font-bold text-gray-800 flex items-center gap-2">
+                <span className="w-7 h-7 rounded-full bg-[#ff9a9e] text-white text-sm flex items-center justify-center font-bold">1</span>
+                בחר סגנון מארז
+              </h3>
+              {(() => {
+                const boxBases = products.filter(p => p.isBoxBase);
+                if (boxBases.length === 0) {
+                  return <p className="text-gray-400 text-sm">אין בסיסי מארז זמינים כרגע. סמן מוצרים כ"בסיס מארז" בניהול.</p>;
+                }
+                return (
+                  <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
+                    {boxBases.map(box => (
+                      <div
+                        key={box.id}
+                        onClick={() => setSelectedBoxBase(box)}
+                        className={`cursor-pointer rounded-2xl border-2 overflow-hidden transition-all ${selectedBoxBase?.id === box.id ? 'border-[#ff9a9e] shadow-lg scale-[1.02]' : 'border-gray-100 hover:border-[#ffd6e8]'}`}
+                      >
+                        <div className="aspect-square bg-gray-50 relative">
+                          {box.main_image ? (
+                            <img src={box.main_image} alt={box.name} className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+                          ) : (
+                            <div className="w-full h-full flex items-center justify-center"><Gift size={32} className="text-gray-200" /></div>
+                          )}
+                          {selectedBoxBase?.id === box.id && (
+                            <div className="absolute top-2 right-2 w-6 h-6 rounded-full bg-[#ff9a9e] flex items-center justify-center">
+                              <CheckCircle2 size={14} color="white" />
+                            </div>
+                          )}
+                        </div>
+                        <div className="p-3">
+                          <p className="font-semibold text-sm">{box.name}</p>
+                          <p className="text-[#ff9a9e] font-bold text-sm">₪{box.price}</p>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                );
+              })()}
+            </div>
+
+            {/* Step 2: Add Items */}
+            {selectedBoxBase && (
+              <div className="pastel-card p-6 space-y-4">
+                <h3 className="text-lg font-bold text-gray-800 flex items-center gap-2">
+                  <span className="w-7 h-7 rounded-full bg-[#a1c4fd] text-white text-sm flex items-center justify-center font-bold">2</span>
+                  הוסף מוצרים למארז
+                </h3>
+                <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
+                  {products.filter(p => !p.isBoxBase).map(product => {
+                    const inBundle = bundleItems.find(bi => bi.product.id === product.id);
+                    return (
+                      <div key={product.id} className={`rounded-2xl border-2 overflow-hidden transition-all ${inBundle ? 'border-[#a1c4fd] shadow-md' : 'border-gray-100'}`}>
+                        <div className="aspect-square bg-gray-50">
+                          {product.main_image ? (
+                            <img src={product.main_image} alt={product.name} className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+                          ) : (
+                            <div className="w-full h-full flex items-center justify-center"><Package size={28} className="text-gray-200" /></div>
+                          )}
+                        </div>
+                        <div className="p-3 space-y-2">
+                          <p className="font-semibold text-sm leading-tight">{product.name}</p>
+                          <p className="text-[#ff9a9e] font-bold text-sm">₪{product.price}</p>
+                          {inBundle ? (
+                            <div className="flex items-center justify-between">
+                              <button onClick={() => updateBundleQty(product.id, -1)} className="w-7 h-7 rounded-full border flex items-center justify-center hover:bg-gray-100 text-gray-400"><ChevronRight size={14} /></button>
+                              <span className="font-bold text-sm">{inBundle.qty}</span>
+                              <button onClick={() => updateBundleQty(product.id, 1)} className="w-7 h-7 rounded-full border flex items-center justify-center hover:bg-gray-100 text-gray-400"><ChevronLeft size={14} /></button>
+                              <button onClick={() => removeBundleItem(product.id)} className="text-red-300 hover:text-red-500"><X size={14} /></button>
+                            </div>
+                          ) : (
+                            <button
+                              onClick={() => addBundleItem(product)}
+                              className="w-full text-xs py-1.5 rounded-lg border border-[#ff9a9e] text-[#ff9a9e] hover:bg-[#ff9a9e] hover:text-white transition-all flex items-center justify-center gap-1"
+                            >
+                              <Plus size={12} /> הוסף
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
+            {/* Summary & Add to Cart */}
+            {selectedBoxBase && (
+              <div className="pastel-card p-6 space-y-4 sticky bottom-4">
+                <h3 className="text-lg font-bold text-gray-800">📦 סיכום המארז</h3>
+                <div className="space-y-2 text-sm">
+                  <div className="flex justify-between text-gray-600">
+                    <span>בסיס: {selectedBoxBase.name}</span>
+                    <span>₪{selectedBoxBase.price}</span>
+                  </div>
+                  {bundleItems.map(bi => (
+                    <div key={bi.product.id} className="flex justify-between text-gray-600">
+                      <span>{bi.product.name} × {bi.qty}</span>
+                      <span>₪{bi.product.price * bi.qty}</span>
+                    </div>
+                  ))}
+                  <div className="border-t pt-2 flex justify-between font-bold text-lg">
+                    <span>סה"כ:</span>
+                    <span className="text-[#ff9a9e]">₪{bundleTotal}</span>
+                  </div>
+                </div>
+                <button
+                  onClick={addBundleToCart}
+                  className="w-full btn-primary py-4 text-lg flex items-center justify-center gap-2"
+                >
+                  <ShoppingCart size={20} />
+                  הוסף מארז לסל — ₪{bundleTotal}
+                </button>
+              </div>
+            )}
           </div>
         )}
 
@@ -2414,6 +2801,48 @@ ${itemsList}
               )}
             </motion.div>
           </>
+        )}
+      </AnimatePresence>
+
+      {/* ── Smart WhatsApp Floating Bubble ─────────────────────────── */}
+      <AnimatePresence>
+        {waVisible && (
+          <motion.div
+            initial={{ opacity: 0, scale: 0.5, y: 20 }}
+            animate={{ opacity: 1, scale: 1, y: 0 }}
+            exit={{ opacity: 0, scale: 0.5 }}
+            transition={{ type: 'spring', stiffness: 260, damping: 20 }}
+            className="fixed bottom-6 left-6 z-[200] flex flex-col items-start gap-2"
+          >
+            <motion.div
+              initial={{ opacity: 0, x: -10 }}
+              animate={{ opacity: 1, x: 0 }}
+              transition={{ delay: 0.3 }}
+              className="bg-white text-gray-700 text-sm font-medium px-4 py-2 rounded-2xl shadow-lg border border-gray-100 max-w-[200px] leading-snug"
+              style={{ borderRight: '3px solid #25D366' }}
+            >
+              {view === 'product' && selectedProduct
+                ? `שאלות על ${selectedProduct.name}? 💬`
+                : 'נעזור לך לבחור מתנה 🎁'}
+            </motion.div>
+            <div className="flex items-center gap-2">
+              <a
+                href={getWhatsAppLink()}
+                target="_blank"
+                rel="noopener noreferrer"
+                style={{ background: 'linear-gradient(135deg,#25D366,#128C7E)', boxShadow: '0 4px 20px rgba(37,211,102,0.4)' }}
+                className="w-14 h-14 rounded-full flex items-center justify-center text-white hover:scale-110 transition-transform"
+              >
+                <MessageCircle size={28} fill="white" />
+              </a>
+              <button
+                onClick={() => setWaVisible(false)}
+                className="w-6 h-6 rounded-full bg-gray-200 hover:bg-gray-300 flex items-center justify-center transition-colors"
+              >
+                <X size={12} className="text-gray-500" />
+              </button>
+            </div>
+          </motion.div>
         )}
       </AnimatePresence>
     </div>
