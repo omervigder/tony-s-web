@@ -15,5 +15,8 @@
       "Bash(cd \"C:\\\\Users\\\\omerv\\\\PycharmProjects\\\\Tony\" && npx tsc --noEmit 2>&1 | head -40)",
       "Bash(cd:*)"
     ]
+  },
+  "env": {
+    "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1"
   }
 }
