@@ -7,7 +7,9 @@ const admin = require("firebase-admin");
 const axios = require("axios");
 
 admin.initializeApp();
-const db = admin.firestore();
+// Data lives in the named database "default" (not the standard "(default)")
+const db = admin.app().firestore();
+db.settings({ databaseId: "default" });
 
 setGlobalOptions({ maxInstances: 10 });
 
@@ -78,7 +80,7 @@ ${itemsList}
 
 // ── Firestore trigger — fires automatically when a new order document is created
 exports.onOrderCreated = onDocumentCreated(
-  { document: "orders/{orderId}", secrets: [telegramBotToken, telegramChatId] },
+  { document: "orders/{orderId}", database: "default", secrets: [telegramBotToken, telegramChatId] },
   async (event) => {
     const orderId = event.params.orderId;
     // Data comes directly from the trigger — document is guaranteed to exist
