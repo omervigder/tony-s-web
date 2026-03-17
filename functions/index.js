@@ -17,8 +17,48 @@ const telegramBotToken = defineSecret("TELEGRAM_BOT_TOKEN");
 const telegramChatId = defineSecret("TELEGRAM_CHAT_ID");
 const telegramWebhookSecret = defineSecret("TELEGRAM_WEBHOOK_SECRET");
 
+// ── Helper: normalize Israeli phone to 05XXXXXXXX ─────────────────────────────
+function normalizePhone(phone) {
+  let p = (phone || '').replace(/[\s\-().+]/g, '');
+  if (p.startsWith('972')) p = '0' + p.slice(3);
+  return p;
+}
+
+// ── Helper: upsert customer CRM record ───────────────────────────────────────
+async function upsertCustomer(order) {
+  const normalizedPhone = normalizePhone(order.customer_phone);
+  if (!normalizedPhone) return 1;
+  const orderTotal = Number(order.total_price) || 0;
+  const now = new Date().toISOString();
+  const customerRef = db.collection('customers').doc(normalizedPhone);
+  const snap = await customerRef.get();
+  if (snap.exists) {
+    const newTotal = (snap.data().totalOrders || 0) + 1;
+    await customerRef.update({
+      totalOrders: admin.firestore.FieldValue.increment(1),
+      totalSpend: admin.firestore.FieldValue.increment(orderTotal),
+      lastOrderDate: now,
+      name: order.customer_name,
+      ...(order.customer_email ? { email: order.customer_email } : {}),
+    });
+    return newTotal;
+  } else {
+    await customerRef.set({
+      name: order.customer_name,
+      phone: order.customer_phone,
+      normalizedPhone,
+      ...(order.customer_email ? { email: order.customer_email } : {}),
+      totalOrders: 1,
+      totalSpend: orderTotal,
+      firstOrderDate: now,
+      lastOrderDate: now,
+    });
+    return 1;
+  }
+}
+
 // ── Shared: build and send order notification to Telegram ─────────────────────
-async function sendOrderToTelegram(orderId, order, pickupAddress, BOT_TOKEN, CHAT_ID) {
+async function sendOrderToTelegram(orderId, order, pickupAddress, BOT_TOKEN, CHAT_ID, totalOrders = 1) {
   const items = Array.isArray(order.items) ? order.items : [];
   const whatsappPhone = (order.customer_phone || "").replace(/^0/, "");
   const whatsappLink = `https://wa.me/972${whatsappPhone}`;
@@ -43,8 +83,12 @@ async function sendOrderToTelegram(orderId, order, pickupAddress, BOT_TOKEN, CHA
     : "";
   const notesLine = order.customer_notes ? `\n\n📝 *הערות:* ${order.customer_notes}` : "";
 
+  const returningBadge = totalOrders > 1
+    ? `⭐ *לקוח חוזר! (הזמנה ${totalOrders})*\n\n`
+    : '';
+
   const message =
-`📦 *הזמנה חדשה! #${orderId.slice(-6)}*
+`${returningBadge}📦 *הזמנה חדשה! #${orderId.slice(-6)}*
 
 👤 *שם:* ${order.customer_name}
 📞 *טלפון:* ${order.customer_phone}${order.customer_email ? `\n📧 *אימייל:* ${order.customer_email}` : ""}
@@ -100,8 +144,16 @@ exports.onOrderCreated = onDocumentCreated(
       }
     }
 
+    let totalOrders = 1;
     try {
-      await sendOrderToTelegram(orderId, order, pickupAddress, BOT_TOKEN, CHAT_ID);
+      totalOrders = await upsertCustomer(order);
+      logger.info(`Customer upserted for order ${orderId}, totalOrders=${totalOrders}`);
+    } catch (err) {
+      logger.warn(`Could not upsert customer for order ${orderId}:`, err);
+    }
+
+    try {
+      await sendOrderToTelegram(orderId, order, pickupAddress, BOT_TOKEN, CHAT_ID, totalOrders);
       logger.info(`Telegram notification sent for order ${orderId}`);
     } catch (err) {
       logger.error(`Failed to send Telegram notification for order ${orderId}:`, err);

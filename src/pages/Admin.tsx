@@ -14,7 +14,7 @@ import {
 import {
   ShoppingBag, BarChart3, Package, Settings as SettingsIcon,
   LogOut, Menu, X, Plus, Trash2, Pencil, Camera, Loader2,
-  MessageCircle, DollarSign, CheckCircle2, Download, ChevronDown, ChevronUp
+  MessageCircle, DollarSign, CheckCircle2, Download, ChevronDown, ChevronUp, Users
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 
@@ -33,7 +33,12 @@ interface Product {
 }
 interface Category { id: string; name: string; }
 interface StoreSettings { pickup_address: string; delivery_cost: string; bit_phone: string; }
-type TabName = 'orders' | 'analytics' | 'products' | 'settings';
+interface Customer {
+  id: string; name: string; phone: string; email?: string;
+  totalOrders: number; totalSpend: number;
+  firstOrderDate: string; lastOrderDate: string;
+}
+type TabName = 'orders' | 'analytics' | 'products' | 'customers' | 'settings';
 
 /* ─────────────────────────────── Constants ──────────────────────────── */
 const GOLD = '#F5C518';
@@ -929,6 +934,87 @@ function ProductsView({ products, categories }: { products: Product[]; categorie
   );
 }
 
+/* ─────────────────────────────── CustomersView ─────────────────────── */
+function CustomersView({ customers }: { customers: Customer[] }) {
+  const [sortBy, setSortBy] = useState<'totalSpend' | 'totalOrders'>('totalSpend');
+  const [sortDir, setSortDir] = useState<'desc' | 'asc'>('desc');
+
+  const sorted = [...customers].sort((a, b) => {
+    const diff = b[sortBy] - a[sortBy];
+    return sortDir === 'desc' ? diff : -diff;
+  });
+
+  const toggleSort = (key: 'totalSpend' | 'totalOrders') => {
+    if (sortBy === key) setSortDir(d => d === 'desc' ? 'asc' : 'desc');
+    else { setSortBy(key); setSortDir('desc'); }
+  };
+
+  const fmtDate = (v: any) => {
+    if (!v) return '-';
+    return new Date(v).toLocaleDateString('he-IL', { day: 'numeric', month: 'short', year: 'numeric' });
+  };
+
+  return (
+    <div className="space-y-6">
+      <h2 className="text-xl font-bold text-white">לקוחות ({customers.length})</h2>
+
+      {customers.length === 0 ? (
+        <div className="text-center py-24 text-gray-600">
+          <Users size={52} className="mx-auto mb-3 opacity-20" />
+          <p>אין לקוחות עדיין</p>
+        </div>
+      ) : (
+        <div className="bg-[#0f0f24] border border-[#252550] rounded-2xl overflow-hidden">
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-[#1e1e3a]">
+                  <th className="text-right text-gray-400 font-medium px-5 py-3.5">שם</th>
+                  <th className="text-right text-gray-400 font-medium px-5 py-3.5">טלפון</th>
+                  <th className="text-right px-5 py-3.5">
+                    <button onClick={() => toggleSort('totalOrders')}
+                      className="flex items-center gap-1 text-gray-400 font-medium hover:text-white transition-colors">
+                      הזמנות
+                      {sortBy === 'totalOrders' ? (sortDir === 'desc' ? <ChevronDown size={14} /> : <ChevronUp size={14} />) : <ChevronDown size={14} className="opacity-20" />}
+                    </button>
+                  </th>
+                  <th className="text-right px-5 py-3.5">
+                    <button onClick={() => toggleSort('totalSpend')}
+                      className="flex items-center gap-1 text-gray-400 font-medium hover:text-white transition-colors">
+                      סה"כ ₪
+                      {sortBy === 'totalSpend' ? (sortDir === 'desc' ? <ChevronDown size={14} /> : <ChevronUp size={14} />) : <ChevronDown size={14} className="opacity-20" />}
+                    </button>
+                  </th>
+                  <th className="text-right text-gray-400 font-medium px-5 py-3.5">הזמנה אחרונה</th>
+                </tr>
+              </thead>
+              <tbody>
+                {sorted.map((c, i) => (
+                  <tr key={c.id}
+                    className={`hover:bg-[#070712] transition-colors ${i < sorted.length - 1 ? 'border-b border-[#1a1a30]' : ''}`}>
+                    <td className="px-5 py-3.5 text-white font-medium">
+                      {c.totalOrders > 1 && <span className="text-yellow-400 ml-1">⭐</span>}
+                      {c.name}
+                    </td>
+                    <td className="px-5 py-3.5 text-gray-400">
+                      <a href={`https://wa.me/972${c.phone.replace(/^0/, '')}`}
+                        target="_blank" rel="noopener noreferrer"
+                        className="hover:text-green-400 transition-colors">{c.phone}</a>
+                    </td>
+                    <td className="px-5 py-3.5 text-gray-300 text-center">{c.totalOrders}</td>
+                    <td className="px-5 py-3.5 font-bold" style={{ color: GOLD }}>₪{c.totalSpend.toFixed(0)}</td>
+                    <td className="px-5 py-3.5 text-gray-400">{fmtDate(c.lastOrderDate)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 /* ─────────────────────────────── SettingsView ───────────────────────── */
 function SettingsView({ settings: init }: { settings: StoreSettings }) {
   const [s, setS] = useState(init);
@@ -982,6 +1068,7 @@ export default function Admin() {
   const [orders, setOrders] = useState<Order[]>([]);
   const [products, setProducts] = useState<Product[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
+  const [customers, setCustomers] = useState<Customer[]>([]);
   const [settings, setSettings] = useState<StoreSettings>({ pickup_address: '', delivery_cost: '0', bit_phone: '' });
 
   useEffect(() => {
@@ -996,8 +1083,10 @@ export default function Admin() {
       snap => setProducts(snap.docs.map(d => ({ id: d.id, ...d.data() } as Product))));
     const unsubC = onSnapshot(collection(db, 'categories'),
       snap => setCategories(snap.docs.map(d => ({ id: d.id, ...d.data() } as Category))));
+    const unsubCust = onSnapshot(collection(db, 'customers'),
+      snap => setCustomers(snap.docs.map(d => ({ id: d.id, ...d.data() } as Customer))));
     getDoc(doc(db, 'settings', 'store')).then(d => { if (d.exists()) setSettings(d.data() as StoreSettings); });
-    return () => { unsubO(); unsubP(); unsubC(); };
+    return () => { unsubO(); unsubP(); unsubC(); unsubCust(); };
   }, [user]);
 
   if (authLoading) return (
@@ -1016,6 +1105,7 @@ export default function Admin() {
     { tab: 'orders', label: 'הזמנות', icon: ShoppingBag },
     { tab: 'analytics', label: 'סטטיסטיקה', icon: BarChart3 },
     { tab: 'products', label: 'מוצרים', icon: Package },
+    { tab: 'customers', label: 'לקוחות', icon: Users },
     { tab: 'settings', label: 'הגדרות', icon: SettingsIcon },
   ];
 
@@ -1092,6 +1182,7 @@ export default function Admin() {
           {activeTab === 'orders' && <OrdersView orders={orders} />}
           {activeTab === 'analytics' && <AnalyticsView orders={orders} products={products} categories={categories} />}
           {activeTab === 'products' && <ProductsView products={products} categories={categories} />}
+          {activeTab === 'customers' && <CustomersView customers={customers} />}
           {activeTab === 'settings' && <SettingsView settings={settings} />}
         </main>
       </div>
