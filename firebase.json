@@ -1,4 +1,10 @@
 {
+  "firestore": [
+    {
+      "database": "default",
+      "rules": "firestore.rules"
+    }
+  ],
   "hosting": {
     "site": "tony-amramy-branding",
     "public": "dist",
