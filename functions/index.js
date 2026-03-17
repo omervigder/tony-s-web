@@ -70,7 +70,6 @@ ${itemsList}
           { text: "📦 הושלם",  callback_data: `status_completed:${orderId}` },
         ],
         [
-          { text: "📞 התקשר ללקוח", url: `tel:${order.customer_phone}` },
           { text: "💬 WhatsApp",    url: whatsappLink },
         ],
       ],
