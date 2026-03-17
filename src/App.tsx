@@ -5,7 +5,6 @@ import { motion, AnimatePresence } from 'motion/react';
 import { Product, Category, Order, Settings, CartItem, Coupon, SiteContent, Review } from './types';
 import { db, storage, auth } from './firebase';
 import { signInWithEmailAndPassword, signOut, onAuthStateChanged } from 'firebase/auth';
-import { getFunctions, httpsCallable } from 'firebase/functions';
 import { collection, addDoc, getDocs, doc, deleteDoc, getDoc, setDoc, updateDoc, query, orderBy, where, limit, onSnapshot } from "firebase/firestore";
 import * as XLSX from 'xlsx';
 import { ref, uploadBytes, getDownloadURL } from "firebase/storage";
@@ -720,15 +719,6 @@ export default function App() {
   const cardCost = dedication.message.trim() && dedication.cardType === 'printed' ? Number(settings.printed_card_price || 15) : 0;
   const finalTotal = Math.max(0, cartTotal - discountAmount + (checkoutData.delivery === 'delivery' ? Number(settings.delivery_cost) : 0) + cardCost);
 
-  const sendTelegramNotification = async (order: {
-    orderId: string;
-    pickupAddress: string;
-  }) => {
-    const functions = getFunctions();
-    const notify = httpsCallable(functions, 'sendOrderNotification');
-    await notify({ orderId: order.orderId, pickupAddress: order.pickupAddress });
-  };
-
   const handleCheckout = async () => {
     if (!checkoutData.name || !checkoutData.phone) return alert("נא למלא את כל השדות");
     if (checkoutData.delivery === 'delivery' && !checkoutData.shippingAddress.trim()) return alert("נא להזין כתובת למשלוח");
@@ -769,12 +759,7 @@ export default function App() {
       setDedication({ message: '', cardType: 'digital' });
       setCustomerNotes('');
       setView('success');
-
-      // Fire-and-forget — notification failure must not affect UX
-      sendTelegramNotification({
-        orderId: orderDoc.id,
-        pickupAddress: settings.pickup_address,
-      }).catch(err => console.error("Telegram notification error:", err));
+      // Telegram notification is sent automatically by the onOrderCreated Cloud Function trigger
     } catch (err) {
       console.error("Checkout error:", err);
       alert("שגיאה בשליחת ההזמנה");

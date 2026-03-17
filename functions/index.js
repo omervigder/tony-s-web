@@ -1,5 +1,5 @@
 const { setGlobalOptions } = require("firebase-functions");
-const { onRequest, onCall } = require("firebase-functions/v2/https");
+const { onRequest } = require("firebase-functions/v2/https");
 const { onDocumentCreated } = require("firebase-functions/v2/firestore");
 const { defineSecret } = require("firebase-functions/params");
 const logger = require("firebase-functions/logger");
@@ -76,27 +76,26 @@ ${itemsList}
   });
 }
 
-// ── PRIMARY: Firestore trigger — fires automatically on every new order ────────
+// ── Firestore trigger — fires automatically when a new order document is created
 exports.onOrderCreated = onDocumentCreated(
   { document: "orders/{orderId}", secrets: [telegramBotToken, telegramChatId] },
   async (event) => {
     const orderId = event.params.orderId;
-    const order = event.data?.data();
-    if (!order) {
-      logger.warn(`onOrderCreated: no data for order ${orderId}`);
-      return;
-    }
+    // Data comes directly from the trigger — document is guaranteed to exist
+    const order = event.data.data();
 
     const BOT_TOKEN = telegramBotToken.value();
     const CHAT_ID = telegramChatId.value();
 
-    // Read pickup address from settings
+    // Read pickup address from settings (only needed for pickup orders)
     let pickupAddress = "";
-    try {
-      const settingsSnap = await db.collection("settings").doc("store").get();
-      if (settingsSnap.exists) pickupAddress = settingsSnap.data().pickup_address || "";
-    } catch (e) {
-      logger.warn("Could not read pickup_address from settings:", e);
+    if (order.delivery_method !== "delivery") {
+      try {
+        const settingsSnap = await db.collection("settings").doc("store").get();
+        if (settingsSnap.exists) pickupAddress = settingsSnap.data().pickup_address || "";
+      } catch (e) {
+        logger.warn("Could not read pickup_address from settings:", e);
+      }
     }
 
     try {
@@ -105,26 +104,6 @@ exports.onOrderCreated = onDocumentCreated(
     } catch (err) {
       logger.error(`Failed to send Telegram notification for order ${orderId}:`, err);
     }
-  }
-);
-
-// ── FALLBACK: Callable — can be used for manual retry from the frontend ───────
-exports.sendOrderNotification = onCall(
-  { secrets: [telegramBotToken, telegramChatId], allowUnauthenticated: true },
-  async (request) => {
-    const { orderId, pickupAddress } = request.data;
-    if (!orderId || typeof orderId !== "string") {
-      throw new Error("Missing orderId");
-    }
-
-    const BOT_TOKEN = telegramBotToken.value();
-    const CHAT_ID = telegramChatId.value();
-
-    const orderSnap = await db.collection("orders").doc(orderId).get();
-    if (!orderSnap.exists) throw new Error("Order not found");
-
-    await sendOrderToTelegram(orderId, orderSnap.data(), pickupAddress || "", BOT_TOKEN, CHAT_ID);
-    return { success: true };
   }
 );
 

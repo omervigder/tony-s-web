@@ -1,4 +1,7 @@
 {
+  "env": {
+    "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1"
+  },
   "permissions": {
     "allow": [
       "Bash(dir /s \"C:\\\\Users\\\\omerv\\\\PycharmProjects\\\\Tony\")",
@@ -13,10 +16,9 @@
       "Bash(cd \"C:\\\\Users\\\\omerv\\\\PycharmProjects\\\\Tony\" && npx vite build 2>&1 | tail -10)",
       "Bash(ls \"C:\\\\Users\\\\omerv\\\\.claude\\\\projects\\\\C--Users-omerv-PycharmProjects-Tony\\\\memory\\\\\" 2>/dev/null && echo \"exists\" || echo \"empty/missing\")",
       "Bash(cd \"C:\\\\Users\\\\omerv\\\\PycharmProjects\\\\Tony\" && npx tsc --noEmit 2>&1 | head -40)",
-      "Bash(cd:*)"
+      "Bash(cd:*)",
+      "Bash(firebase deploy:*)",
+      "Bash(npx firebase:*)"
     ]
-  },
-  "env": {
-    "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1"
   }
 }
