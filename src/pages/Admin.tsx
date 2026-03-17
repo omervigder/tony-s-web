@@ -24,6 +24,7 @@ interface Order {
   id: string; customer_name: string; customer_phone: string;
   delivery_method: 'pickup' | 'delivery'; total_price: number;
   items: OrderItem[] | string; status: string; created_at: string;
+  adminNote?: string;
 }
 interface ProductVariation { name: string; values: string[]; }
 interface Product {
@@ -140,6 +141,21 @@ function OrderCard({ order }: { key?: string; order: Order }) {
   const phone = order.customer_phone.replace(/^0/, '972');
   const dateStr = toDate(order.created_at).toLocaleString('he-IL', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
 
+  const [note, setNote] = useState(order.adminNote || '');
+  const [savingNote, setSavingNote] = useState(false);
+  const [noteSaved, setNoteSaved] = useState(false);
+
+  const saveNote = async () => {
+    setSavingNote(true);
+    try {
+      await updateDoc(doc(db, 'orders', order.id), { adminNote: note });
+      setNoteSaved(true);
+      setTimeout(() => setNoteSaved(false), 2500);
+    } finally {
+      setSavingNote(false);
+    }
+  };
+
   const updateStatus = async (status: string) => {
     await updateDoc(doc(db, 'orders', order.id), { status });
   };
@@ -193,6 +209,24 @@ function OrderCard({ order }: { key?: string; order: Order }) {
         <option value="בטיפול">🔵 בטיפול</option>
         <option value="בוצע">🟢 בוצע</option>
       </select>
+
+      <div className="space-y-2 border-t border-[#1e1e3a] pt-3">
+        <label className="block text-xs text-gray-500">הערת מנהל (פנימי)</label>
+        <textarea
+          value={note}
+          onChange={e => setNote(e.target.value)}
+          rows={2}
+          placeholder="הערה פנימית..."
+          className="w-full bg-[#070712] border border-[#252550] rounded-xl p-2.5 text-sm text-gray-300 outline-none resize-none focus:border-[#F5C518]/40 transition-colors placeholder:text-gray-600"
+        />
+        <button
+          onClick={saveNote}
+          disabled={savingNote}
+          className="flex items-center justify-center gap-1.5 w-full py-2 rounded-xl text-xs font-bold transition-all disabled:opacity-60"
+          style={{ background: noteSaved ? '#16a34a22' : '#F5C51815', color: noteSaved ? '#4ade80' : GOLD, border: `1px solid ${noteSaved ? '#4ade8040' : '#F5C51840'}` }}>
+          {savingNote ? <Loader2 size={12} className="animate-spin" /> : noteSaved ? '✓ ההערה נשמרה' : 'שמור הערה'}
+        </button>
+      </div>
     </div>
   );
 }
