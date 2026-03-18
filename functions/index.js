@@ -203,7 +203,7 @@ exports.telegramWebhook = onRequest(
       logger.warn(`Rejected callback from unauthorised chat: ${chatId}`);
       await telegramApi(BOT_TOKEN, "answerCallbackQuery", {
         callback_query_id: callbackQueryId,
-        text: "⛔ Unauthorized",
+        text: "⛔ אין לך הרשאה לבצע פעולה זו!",
         show_alert: true,
       }).catch(() => {});
       res.status(200).send("OK");
