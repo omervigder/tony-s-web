@@ -312,7 +312,9 @@ export default function App() {
   const [categories, setCategories] = useState<Category[]>([]);
   const [orders, setOrders] = useState<Order[]>([]);
   const [settings, setSettings] = useState<Settings>({ pickup_address: '', delivery_cost: '0', bit_phone: '' });
-  const [cart, setCart] = useState<CartItem[]>([]);
+  const [cart, setCart] = useState<CartItem[]>(() => {
+    try { return JSON.parse(localStorage.getItem('tony_store_cart') || '[]'); } catch { return []; }
+  });
   const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
   const [isCartOpen, setIsCartOpen] = useState(false);
   const [isMenuOpen, setIsMenuOpen] = useState(false);
@@ -347,6 +349,7 @@ export default function App() {
 
   // Real-time orders listener cleanup
   const ordersUnsubRef = useRef<(() => void) | null>(null);
+  const urlInitDone = useRef(false);
 
   // Export
   const [exportDateFrom, setExportDateFrom] = useState('');
@@ -426,6 +429,11 @@ export default function App() {
     };
   }, []);
 
+  // Persist cart to localStorage on every change
+  useEffect(() => {
+    localStorage.setItem('tony_store_cart', JSON.stringify(cart));
+  }, [cart]);
+
   const fetchData = async () => {
     try {
       const [productsSnapshot, categoriesSnapshot, settingsDoc, contentDoc] = await Promise.all([
@@ -459,6 +467,47 @@ export default function App() {
     if (ogDesc && siteContent.seoDescription) ogDesc.content = siteContent.seoDescription;
   }, [siteContent.storeName, siteContent.heroTitle, siteContent.seoDescription]);
 
+  // ── URL-based navigation ───────────────────────────────────────────────────
+  const VIEW_URLS: Record<string, string> = {
+    user: '/shop', checkout: '/shop/checkout', success: '/shop/success', 'build-box': '/shop/build-box',
+  };
+  const navigateTo = (newView: typeof view, productId?: string) => {
+    const url = newView === 'product' && productId
+      ? `/shop/product/${productId}`
+      : VIEW_URLS[newView] ?? '/shop';
+    window.history.pushState({ view: newView, productId: productId ?? null }, '', url);
+    setView(newView);
+  };
+
+  // Handle browser back / forward
+  useEffect(() => {
+    const onPop = (e: PopStateEvent) => {
+      const s = e.state as { view: string; productId: string | null } | null;
+      const target = (s?.view ?? 'user') as typeof view;
+      setView(target);
+      if (target === 'product' && s?.productId) fetchProductDetails(s.productId);
+    };
+    window.addEventListener('popstate', onPop);
+    return () => window.removeEventListener('popstate', onPop);
+  }, [products]); // re-bind when products load so fetchProductDetails has fresh closure
+
+  // Initialize view from URL once products are available (handles direct links & refresh)
+  useEffect(() => {
+    if (products.length === 0 || urlInitDone.current) return;
+    urlInitDone.current = true;
+    const path = window.location.pathname;
+    window.history.replaceState({ view: 'user', productId: null }, '', path);
+    if (path.startsWith('/shop/product/')) {
+      fetchProductDetails(path.replace('/shop/product/', ''));
+    } else if (path === '/shop/checkout') {
+      setView('checkout');
+    } else if (path === '/shop/success') {
+      setView('success');
+    } else if (path === '/shop/build-box') {
+      setView('build-box');
+    }
+  }, [products]);
+
   const fetchProductDetails = (id: string) => {
     const product = products.find(p => p.id === id);
     if (!product) return;
@@ -468,7 +517,7 @@ export default function App() {
     setSelectedVariations({});
     setReviews([]);
     setReviewForm({ rating: 5, message: '', customerName: '', photoFile: null, photoPreview: '' });
-    setView('product');
+    navigateTo('product', id);
     window.scrollTo(0, 0);
     fetchReviews(id);
   };
@@ -552,7 +601,7 @@ export default function App() {
     setBundleItems([]);
     setBundleBoxStyle('');
     setIsCartOpen(true);
-    setView('user');
+    navigateTo('user');
     showToast('המארז נוסף לסל! 🎁');
   };
 
@@ -758,7 +807,7 @@ export default function App() {
       setCheckoutData({ name: '', phone: '', email: '', delivery: 'pickup', shippingAddress: '' });
       setDedication({ message: '', cardType: 'digital' });
       setCustomerNotes('');
-      setView('success');
+      navigateTo('success');
       // Telegram notification is sent automatically by the onOrderCreated Cloud Function trigger
     } catch (err) {
       console.error("Checkout error:", err);
@@ -1215,7 +1264,7 @@ export default function App() {
           >
             <Menu size={24} className="text-gray-500" />
           </button>
-          <div className="flex items-center gap-2 cursor-pointer" onClick={() => setView('user')}>
+          <div className="flex items-center gap-2 cursor-pointer" onClick={() => navigateTo('user')}>
             <div className="w-10 h-10 bg-gradient-to-br from-[#ff9a9e] to-[#fecfef] rounded-xl flex items-center justify-center text-white shadow-lg">
               <Package size={24} />
             </div>
@@ -1285,7 +1334,7 @@ export default function App() {
 
             {/* Build-A-Box Banner */}
             <div
-              onClick={() => { setSelectedBoxBase(null); setBundleItems([]); setView('build-box'); window.scrollTo(0,0); }}
+              onClick={() => { setSelectedBoxBase(null); setBundleItems([]); navigateTo('build-box'); window.scrollTo(0,0); }}
               className="cursor-pointer rounded-3xl overflow-hidden shadow-lg hover:shadow-xl transition-all"
               style={{ background: 'linear-gradient(135deg, #fff0f5 0%, #ffe4ef 50%, #ffd6e8 100%)', border: '1.5px solid #ffd6e8' }}
             >
@@ -1353,7 +1402,7 @@ export default function App() {
 
         {view === 'product' && selectedProduct && (
           <div className="space-y-8">
-            <button onClick={() => setView('user')} className="flex items-center gap-2 text-gray-500 hover:text-gray-800">
+            <button onClick={() => navigateTo('user')} className="flex items-center gap-2 text-gray-500 hover:text-gray-800">
               <ChevronRight size={20} /> חזרה לחנות
             </button>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-12">
@@ -1582,7 +1631,7 @@ export default function App() {
 
         {view === 'checkout' && (
           <div className="max-w-md mx-auto space-y-8">
-            <button onClick={() => setView('user')} className="flex items-center gap-2 text-gray-500 hover:text-gray-800">
+            <button onClick={() => navigateTo('user')} className="flex items-center gap-2 text-gray-500 hover:text-gray-800">
               <ChevronRight size={20} /> חזרה לחנות
             </button>
             <h2 className="text-2xl font-bold">פרטי הזמנה</h2>
@@ -1765,7 +1814,7 @@ export default function App() {
         {/* ── Build-A-Box ───────────────────────────────────────────── */}
         {view === 'build-box' && (
           <div className="space-y-8 max-w-4xl mx-auto">
-            <button onClick={() => setView('user')} className="flex items-center gap-2 text-gray-500 hover:text-gray-800">
+            <button onClick={() => navigateTo('user')} className="flex items-center gap-2 text-gray-500 hover:text-gray-800">
               <ChevronRight size={20} /> חזרה לחנות
             </button>
             <div className="text-center space-y-2">
@@ -1910,7 +1959,7 @@ export default function App() {
             >
               שלם ב-Bit ₪{savedFinalTotal}
             </a>
-            <button onClick={() => setView('user')} className="text-gray-400 hover:text-gray-600">חזרה לדף הבית</button>
+            <button onClick={() => navigateTo('user')} className="text-gray-400 hover:text-gray-600">חזרה לדף הבית</button>
           </div>
         )}
 
@@ -2858,7 +2907,7 @@ export default function App() {
 
               <div className="flex-grow overflow-y-auto p-6 space-y-2">
                 <button
-                  onClick={() => { setSelectedCategory(null); setIsMenuOpen(false); setView('user'); }}
+                  onClick={() => { setSelectedCategory(null); setIsMenuOpen(false); navigateTo('user'); }}
                   className={`w-full text-right px-6 py-4 rounded-2xl transition-all font-bold ${!selectedCategory ? 'bg-[#ff9a9e]/10 text-[#ff9a9e]' : 'hover:bg-gray-50 text-gray-600'}`}
                 >
                   הכל
@@ -2866,7 +2915,7 @@ export default function App() {
                 {categories.map(cat => (
                   <button
                     key={cat.id}
-                    onClick={() => { setSelectedCategory(cat.id); setIsMenuOpen(false); setView('user'); }}
+                    onClick={() => { setSelectedCategory(cat.id); setIsMenuOpen(false); navigateTo('user'); }}
                     className={`w-full text-right px-6 py-4 rounded-2xl transition-all font-bold ${selectedCategory === cat.id ? 'bg-[#ff9a9e]/10 text-[#ff9a9e]' : 'hover:bg-gray-50 text-gray-600'}`}
                   >
                     {cat.name}
@@ -3146,7 +3195,7 @@ export default function App() {
                     <span>₪{cartTotal}</span>
                   </div>
                   <button
-                    onClick={() => { setIsCartOpen(false); setView('checkout'); }}
+                    onClick={() => { setIsCartOpen(false); navigateTo('checkout'); }}
                     className="w-full btn-primary text-lg py-4 shadow-lg"
                   >
                     מעבר לתשלום
