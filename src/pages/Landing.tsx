@@ -82,6 +82,8 @@ export default function Landing() {
   const [reviewPhotos, setReviewPhotos] = useState<ReviewPhoto[]>([]);
   const [featuredProducts, setFeaturedProducts] = useState<FeaturedProduct[]>([]);
   const [productsLoading, setProductsLoading] = useState(true);
+  const [packages, setPackages] = useState<FeaturedProduct[]>([]);
+  const [packagesLoading, setPackagesLoading] = useState(true);
   const [waVisible, setWaVisible] = useState(false);
   const timerRef = useRef<ReturnType<typeof setInterval> | undefined>(undefined);
   const waTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
@@ -110,6 +112,25 @@ export default function Landing() {
         setFeaturedProducts(snap.docs.map(d => ({ id: d.id, ...d.data() })) as FeaturedProduct[]);
       } catch { /* ignore */ } finally {
         setProductsLoading(false);
+      }
+    })();
+
+    // Fetch packages (מארזים category products)
+    (async () => {
+      try {
+        const catsSnap = await getDocs(collection(db, 'categories'));
+        const pkgCat = catsSnap.docs.find(d => (d.data().name as string).includes('מארז'));
+        if (pkgCat) {
+          const prodSnap = await getDocs(query(
+            collection(db, 'products'),
+            where('category_id', '==', pkgCat.id),
+            orderBy('created_at', 'desc'),
+            limit(6)
+          ));
+          setPackages(prodSnap.docs.map(d => ({ id: d.id, ...d.data() })) as FeaturedProduct[]);
+        }
+      } catch { /* ignore */ } finally {
+        setPackagesLoading(false);
       }
     })();
 
@@ -170,6 +191,8 @@ export default function Landing() {
         .gallery-zoom:hover img { transform: scale(1.07); }
         .gallery-zoom .prod-overlay { opacity: 0; transition: opacity 0.3s ease; }
         .gallery-zoom:hover .prod-overlay { opacity: 1; }
+        .pkg-lift { transition: transform 0.35s ease, box-shadow 0.35s ease; }
+        .pkg-lift:hover { transform: translateY(-8px); box-shadow: 0 24px 60px rgba(255,154,158,0.28) !important; }
         .wa-btn { animation: pulse-gold 2.5s ease-in-out infinite; }
         .dot-active { width: 24px !important; }
         ::-webkit-scrollbar { width: 6px; } ::-webkit-scrollbar-track { background: #0F0F1E; } ::-webkit-scrollbar-thumb { background: #C9A84C55; border-radius: 3px; }
@@ -307,36 +330,122 @@ export default function Landing() {
         </div>
       </section>
 
-      {/* ── Featured Collections ──────────────────────────────────────── */}
-      <section id="collections" style={{ padding: '96px 24px' }}>
+      {/* ── Event Packages ────────────────────────────────────────────── */}
+      <section id="collections" style={{ padding: '96px 24px', background: '#fdf2f8' }}>
         <div style={{ maxWidth: 1152, margin: '0 auto' }}>
-          <div style={{ textAlign: 'center', marginBottom: 56 }}>
-            <p style={{ color: '#C9A84C', fontSize: 11, letterSpacing: 4, textTransform: 'uppercase', marginBottom: 12 }}>הקולקציות שלנו</p>
-            <h2 className="serif" style={{ fontSize: 'clamp(32px, 6vw, 52px)', fontWeight: 700 }}>מארזים לכל אירוע</h2>
+
+          {/* Section header */}
+          <div style={{ textAlign: 'center', marginBottom: 60 }}>
+            <p style={{ color: '#e879a0', fontSize: 12, letterSpacing: 4, textTransform: 'uppercase', marginBottom: 14, fontWeight: 700 }}>
+              הקולקציות שלנו
+            </p>
+            <h2 className="serif" style={{ fontSize: 'clamp(38px, 7vw, 64px)', fontWeight: 800, color: '#1a1a2e', lineHeight: 1.1, marginBottom: 18 }}>
+              מארזים לכל אירוע
+            </h2>
+            <p style={{ color: '#777', fontSize: 'clamp(15px, 2vw, 19px)', maxWidth: 540, margin: '0 auto', lineHeight: 1.75 }}>
+              בחרו מתוך קולקציית המארזים היוקרתיים שלנו — כל אחד עם מיתוג אישי ועיצוב מרהיב
+            </p>
           </div>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: 24 }}>
-            {COLLECTIONS.map(cat => (
-              <a key={cat.title} href={SHOP_URL}
-                className="card-lift"
-                style={{ display: 'block', position: 'relative', overflow: 'hidden', borderRadius: 24, border: '1px solid #1E1E3A', textDecoration: 'none', background: '#0F0F1E', cursor: 'pointer' }}>
-                <div style={{ aspectRatio: '4/3', overflow: 'hidden', position: 'relative' }}>
-                  <img src={cat.image} alt={cat.title} style={{ width: '100%', height: '100%', objectFit: 'cover', opacity: 0.65, transition: 'opacity 0.4s ease, transform 0.5s ease' }}
-                    onMouseEnter={e => { (e.target as HTMLImageElement).style.opacity = '0.85'; (e.target as HTMLImageElement).style.transform = 'scale(1.05)'; }}
-                    onMouseLeave={e => { (e.target as HTMLImageElement).style.opacity = '0.65'; (e.target as HTMLImageElement).style.transform = 'scale(1)'; }} />
-                  <div style={{ position: 'absolute', inset: 0, background: `linear-gradient(to top, ${cat.accent}CC 0%, transparent 60%)` }} />
-                </div>
-                <div style={{ padding: '20px 24px 24px' }}>
-                  <span style={{ fontSize: 32, display: 'block', marginBottom: 8 }}>{cat.emoji}</span>
-                  <h3 className="serif" style={{ fontSize: 22, fontWeight: 700, color: '#F0ECE0', marginBottom: 4 }}>{cat.title}</h3>
-                  <p style={{ color: '#888', fontSize: 13, marginBottom: 12 }}>{cat.subtitle}</p>
-                  <p style={{ color: '#666', fontSize: 12, lineHeight: 1.6, marginBottom: 16 }}>{cat.desc}</p>
-                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, color: '#F0CC6E', fontSize: 13, fontWeight: 600 }}>
-                    גלה עכשיו <ChevronLeft size={14} />
-                  </span>
-                </div>
-              </a>
-            ))}
+
+          {/* Cards grid */}
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: 28 }}>
+            {packagesLoading
+              ? Array.from({ length: 3 }).map((_, i) => (
+                  <div key={i} style={{
+                    borderRadius: 24, height: 390,
+                    background: 'linear-gradient(90deg, #f9d0e8 25%, #fce4f1 50%, #f9d0e8 75%)',
+                    backgroundSize: '200% 100%',
+                    animation: 'shimmer 1.5s infinite',
+                  }} />
+                ))
+              : packages.length > 0
+                ? packages.map(prod => {
+                    const imgUrl = prod.main_image || prod.images?.[0] || '';
+                    return (
+                      <a
+                        key={prod.id}
+                        href={`/shop/product/${prod.id}`}
+                        className="pkg-lift"
+                        style={{
+                          display: 'block', textDecoration: 'none', borderRadius: 24,
+                          overflow: 'hidden', background: '#fff',
+                          border: '1px solid rgba(255,154,158,0.22)',
+                          boxShadow: '0 4px 28px rgba(255,154,158,0.14)',
+                        }}
+                      >
+                        <div style={{ aspectRatio: '4/3', overflow: 'hidden', position: 'relative' }}>
+                          <img
+                            src={imgUrl} alt={prod.name}
+                            style={{ width: '100%', height: '100%', objectFit: 'cover', transition: 'transform 0.5s ease' }}
+                            onMouseEnter={e => { (e.target as HTMLImageElement).style.transform = 'scale(1.06)'; }}
+                            onMouseLeave={e => { (e.target as HTMLImageElement).style.transform = 'scale(1)'; }}
+                          />
+                          <div style={{ position: 'absolute', inset: 0, background: 'linear-gradient(to top, rgba(255,154,158,0.3) 0%, transparent 55%)' }} />
+                        </div>
+                        <div style={{ padding: '22px 26px 26px' }}>
+                          <h3 className="serif" style={{ fontSize: 24, fontWeight: 800, color: '#1a1a2e', marginBottom: 10, lineHeight: 1.3 }}>
+                            {prod.name}
+                          </h3>
+                          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                            <span style={{ fontSize: 22, fontWeight: 700, color: '#e879a0' }}>₪{prod.price}</span>
+                            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, color: '#ff9a9e', fontSize: 14, fontWeight: 600 }}>
+                              גלה עכשיו <ChevronLeft size={15} />
+                            </span>
+                          </div>
+                        </div>
+                      </a>
+                    );
+                  })
+                : COLLECTIONS.map(cat => (
+                    <a key={cat.title} href={SHOP_URL}
+                      className="pkg-lift"
+                      style={{
+                        display: 'block', textDecoration: 'none', borderRadius: 24,
+                        overflow: 'hidden', background: '#fff',
+                        border: '1px solid rgba(255,154,158,0.22)',
+                        boxShadow: '0 4px 28px rgba(255,154,158,0.14)',
+                      }}
+                    >
+                      <div style={{ aspectRatio: '4/3', overflow: 'hidden', position: 'relative' }}>
+                        <img src={cat.image} alt={cat.title}
+                          style={{ width: '100%', height: '100%', objectFit: 'cover', transition: 'transform 0.5s ease' }}
+                          onMouseEnter={e => { (e.target as HTMLImageElement).style.transform = 'scale(1.06)'; }}
+                          onMouseLeave={e => { (e.target as HTMLImageElement).style.transform = 'scale(1)'; }}
+                        />
+                        <div style={{ position: 'absolute', inset: 0, background: 'linear-gradient(to top, rgba(255,154,158,0.3) 0%, transparent 55%)' }} />
+                      </div>
+                      <div style={{ padding: '22px 26px 26px' }}>
+                        <span style={{ fontSize: 30, display: 'block', marginBottom: 10 }}>{cat.emoji}</span>
+                        <h3 className="serif" style={{ fontSize: 24, fontWeight: 800, color: '#1a1a2e', marginBottom: 8 }}>{cat.title}</h3>
+                        <p style={{ color: '#777', fontSize: 15, marginBottom: 6, lineHeight: 1.6 }}>{cat.subtitle}</p>
+                        <p style={{ color: '#999', fontSize: 14, lineHeight: 1.65, marginBottom: 16 }}>{cat.desc}</p>
+                        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, color: '#ff9a9e', fontSize: 14, fontWeight: 600 }}>
+                          גלה עכשיו <ChevronLeft size={15} />
+                        </span>
+                      </div>
+                    </a>
+                  ))
+            }
           </div>
+
+          {/* CTA */}
+          <div style={{ textAlign: 'center', marginTop: 48 }}>
+            <a href={SHOP_URL}
+              style={{
+                display: 'inline-flex', alignItems: 'center', gap: 8,
+                padding: '14px 40px', borderRadius: 14,
+                fontWeight: 700, fontSize: 16, color: '#fff',
+                background: 'linear-gradient(135deg, #ff9a9e, #fecfef)',
+                textDecoration: 'none',
+                boxShadow: '0 8px 28px rgba(255,154,158,0.38)',
+                transition: 'transform 0.2s',
+              }}
+              onMouseEnter={e => (e.currentTarget.style.transform = 'scale(1.04)')}
+              onMouseLeave={e => (e.currentTarget.style.transform = 'scale(1)')}>
+              לכל המארזים <ChevronLeft size={18} />
+            </a>
+          </div>
+
         </div>
       </section>
 
