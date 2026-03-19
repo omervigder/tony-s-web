@@ -69,6 +69,7 @@ const STEPS = [
 
 /* ─── Types ─────────────────────────────────────────────────────────── */
 interface ReviewPhoto { id: string; photo_url: string; customer_name: string; product_name: string; rating: number; }
+interface FeaturedProduct { id: string; name: string; main_image: string; images: string[]; price: number; }
 
 /* ─── Landing Page ───────────────────────────────────────────────────── */
 export default function Landing() {
@@ -79,6 +80,8 @@ export default function Landing() {
   const [scrolled, setScrolled] = useState(false);
   const [heroVisible, setHeroVisible] = useState(false);
   const [reviewPhotos, setReviewPhotos] = useState<ReviewPhoto[]>([]);
+  const [featuredProducts, setFeaturedProducts] = useState<FeaturedProduct[]>([]);
+  const [productsLoading, setProductsLoading] = useState(true);
   const [waVisible, setWaVisible] = useState(false);
   const timerRef = useRef<ReturnType<typeof setInterval> | undefined>(undefined);
   const waTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
@@ -98,6 +101,16 @@ export default function Landing() {
         const snap = await getDocs(query(collection(db, 'reviews'), where('photo_url', '!=', ''), orderBy('photo_url'), orderBy('created_at', 'desc'), limit(9)));
         setReviewPhotos(snap.docs.map(d => ({ id: d.id, ...d.data() })) as ReviewPhoto[]);
       } catch { /* no reviews */ }
+    })();
+
+    // Fetch featured products for gallery
+    (async () => {
+      try {
+        const snap = await getDocs(query(collection(db, 'products'), orderBy('created_at', 'desc'), limit(6)));
+        setFeaturedProducts(snap.docs.map(d => ({ id: d.id, ...d.data() })) as FeaturedProduct[]);
+      } catch { /* ignore */ } finally {
+        setProductsLoading(false);
+      }
     })();
 
     // Show WhatsApp bubble after 15 seconds
@@ -155,6 +168,8 @@ export default function Landing() {
         .card-lift:hover { transform: translateY(-8px); box-shadow: 0 24px 60px rgba(201,168,76,0.18); }
         .gallery-zoom img { transition: transform 0.6s ease; }
         .gallery-zoom:hover img { transform: scale(1.07); }
+        .gallery-zoom .prod-overlay { opacity: 0; transition: opacity 0.3s ease; }
+        .gallery-zoom:hover .prod-overlay { opacity: 1; }
         .wa-btn { animation: pulse-gold 2.5s ease-in-out infinite; }
         .dot-active { width: 24px !important; }
         ::-webkit-scrollbar { width: 6px; } ::-webkit-scrollbar-track { background: #0F0F1E; } ::-webkit-scrollbar-thumb { background: #C9A84C55; border-radius: 3px; }
@@ -367,13 +382,69 @@ export default function Landing() {
             <h2 className="serif" style={{ fontSize: 'clamp(32px, 6vw, 52px)', fontWeight: 700 }}>כל פרט מושלם</h2>
           </div>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gridAutoRows: '220px', gap: 12 }}>
-            {GALLERY.map((img, i) => (
-              <div key={i}
-                className="gallery-zoom"
-                style={{ overflow: 'hidden', borderRadius: 16, border: '1px solid #1E1E3A', gridRow: i === 0 || i === 3 ? 'span 2' : 'span 1', cursor: 'pointer' }}>
-                <img src={img.src} alt={`gallery-${i}`} style={{ width: '100%', height: '100%', objectFit: 'cover' }} referrerPolicy="no-referrer" loading="lazy" />
-              </div>
-            ))}
+            {productsLoading
+              ? Array.from({ length: 6 }).map((_, i) => (
+                  <div key={i} style={{
+                    borderRadius: 16,
+                    border: '1px solid #1E1E3A',
+                    gridRow: i === 0 || i === 3 ? 'span 2' : 'span 1',
+                    background: 'linear-gradient(90deg, #0f0f1e 25%, #1a1a36 50%, #0f0f1e 75%)',
+                    backgroundSize: '200% 100%',
+                    animation: 'shimmer 1.5s infinite',
+                  }} />
+                ))
+              : (() => {
+                  const items: Array<{ id: string; name: string; imgUrl: string; price: number }> =
+                    featuredProducts.length >= 4
+                      ? featuredProducts.slice(0, 6).map(p => ({
+                          id: p.id,
+                          name: p.name,
+                          imgUrl: p.main_image || p.images?.[0] || '',
+                          price: p.price,
+                        }))
+                      : GALLERY.map(g => ({ id: '', name: '', imgUrl: g.src, price: 0 }));
+
+                  return items.map((item, i) => {
+                    const isTall = i === 0 || i === 3;
+                    const Tag = item.id ? 'a' : 'div';
+                    return (
+                      <Tag
+                        key={item.id || i}
+                        {...(item.id ? { href: `/shop/product/${item.id}` } : {})}
+                        className="gallery-zoom"
+                        style={{
+                          overflow: 'hidden',
+                          borderRadius: 16,
+                          border: '1px solid #1E1E3A',
+                          gridRow: isTall ? 'span 2' : 'span 1',
+                          cursor: item.id ? 'pointer' : 'default',
+                          position: 'relative',
+                          display: 'block',
+                          textDecoration: 'none',
+                        }}
+                      >
+                        <img
+                          src={item.imgUrl}
+                          alt={item.name || `gallery-${i}`}
+                          style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+                          referrerPolicy="no-referrer"
+                          loading="lazy"
+                        />
+                        {item.id && (
+                          <div className="prod-overlay" style={{
+                            position: 'absolute', bottom: 0, left: 0, right: 0,
+                            background: 'linear-gradient(to top, rgba(8,8,15,0.85), transparent)',
+                            padding: '28px 14px 12px',
+                          }}>
+                            <p style={{ color: '#F0ECE0', fontSize: 13, fontWeight: 600, marginBottom: 2 }}>{item.name}</p>
+                            <p style={{ color: '#F0CC6E', fontSize: 12, fontWeight: 700 }}>₪{item.price}</p>
+                          </div>
+                        )}
+                      </Tag>
+                    );
+                  });
+                })()
+            }
           </div>
         </div>
       </section>
