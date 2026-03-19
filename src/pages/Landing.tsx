@@ -170,7 +170,7 @@ export default function Landing() {
   return (
     <div
       dir="rtl"
-      style={{ fontFamily: "'Inter', sans-serif", background: '#08080F', color: '#F0ECE0', overflowX: 'hidden' }}
+      style={{ fontFamily: "'Inter', sans-serif", background: '#FDF8F9', color: '#F0ECE0', overflowX: 'hidden' }}
     >
       <style>{`
         .serif { font-family: 'Playfair Display', Georgia, serif !important; }
@@ -331,7 +331,7 @@ export default function Landing() {
       </section>
 
       {/* ── Event Packages ────────────────────────────────────────────── */}
-      <section id="collections" style={{ padding: '96px 24px', background: '#fdf2f8' }}>
+      <section id="collections" style={{ padding: '96px 24px' }}>
         <div style={{ maxWidth: 1152, margin: '0 auto' }}>
 
           {/* Section header */}
@@ -347,85 +347,45 @@ export default function Landing() {
             </p>
           </div>
 
-          {/* Cards grid */}
+          {/* Cards grid — only renders cards for products that actually exist */}
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: 28 }}>
-            {packagesLoading
-              ? Array.from({ length: 3 }).map((_, i) => (
-                  <div key={i} style={{
-                    borderRadius: 24, height: 390,
-                    background: 'linear-gradient(90deg, #f9d0e8 25%, #fce4f1 50%, #f9d0e8 75%)',
-                    backgroundSize: '200% 100%',
-                    animation: 'shimmer 1.5s infinite',
-                  }} />
-                ))
-              : packages.length > 0
-                ? packages.map(prod => {
-                    const imgUrl = prod.main_image || prod.images?.[0] || '';
-                    return (
-                      <a
-                        key={prod.id}
-                        href={`/shop/product/${prod.id}`}
-                        className="pkg-lift"
-                        style={{
-                          display: 'block', textDecoration: 'none', borderRadius: 24,
-                          overflow: 'hidden', background: '#fff',
-                          border: '1px solid rgba(255,154,158,0.22)',
-                          boxShadow: '0 4px 28px rgba(255,154,158,0.14)',
-                        }}
-                      >
-                        <div style={{ aspectRatio: '4/3', overflow: 'hidden', position: 'relative' }}>
-                          <img
-                            src={imgUrl} alt={prod.name}
-                            style={{ width: '100%', height: '100%', objectFit: 'cover', transition: 'transform 0.5s ease' }}
-                            onMouseEnter={e => { (e.target as HTMLImageElement).style.transform = 'scale(1.06)'; }}
-                            onMouseLeave={e => { (e.target as HTMLImageElement).style.transform = 'scale(1)'; }}
-                          />
-                          <div style={{ position: 'absolute', inset: 0, background: 'linear-gradient(to top, rgba(255,154,158,0.3) 0%, transparent 55%)' }} />
-                        </div>
-                        <div style={{ padding: '22px 26px 26px' }}>
-                          <h3 className="serif" style={{ fontSize: 24, fontWeight: 800, color: '#1a1a2e', marginBottom: 10, lineHeight: 1.3 }}>
-                            {prod.name}
-                          </h3>
-                          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                            <span style={{ fontSize: 22, fontWeight: 700, color: '#e879a0' }}>₪{prod.price}</span>
-                            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, color: '#ff9a9e', fontSize: 14, fontWeight: 600 }}>
-                              גלה עכשיו <ChevronLeft size={15} />
-                            </span>
-                          </div>
-                        </div>
-                      </a>
-                    );
-                  })
-                : COLLECTIONS.map(cat => (
-                    <a key={cat.title} href={SHOP_URL}
-                      className="pkg-lift"
-                      style={{
-                        display: 'block', textDecoration: 'none', borderRadius: 24,
-                        overflow: 'hidden', background: '#fff',
-                        border: '1px solid rgba(255,154,158,0.22)',
-                        boxShadow: '0 4px 28px rgba(255,154,158,0.14)',
-                      }}
-                    >
-                      <div style={{ aspectRatio: '4/3', overflow: 'hidden', position: 'relative' }}>
-                        <img src={cat.image} alt={cat.title}
-                          style={{ width: '100%', height: '100%', objectFit: 'cover', transition: 'transform 0.5s ease' }}
-                          onMouseEnter={e => { (e.target as HTMLImageElement).style.transform = 'scale(1.06)'; }}
-                          onMouseLeave={e => { (e.target as HTMLImageElement).style.transform = 'scale(1)'; }}
-                        />
-                        <div style={{ position: 'absolute', inset: 0, background: 'linear-gradient(to top, rgba(255,154,158,0.3) 0%, transparent 55%)' }} />
-                      </div>
-                      <div style={{ padding: '22px 26px 26px' }}>
-                        <span style={{ fontSize: 30, display: 'block', marginBottom: 10 }}>{cat.emoji}</span>
-                        <h3 className="serif" style={{ fontSize: 24, fontWeight: 800, color: '#1a1a2e', marginBottom: 8 }}>{cat.title}</h3>
-                        <p style={{ color: '#777', fontSize: 15, marginBottom: 6, lineHeight: 1.6 }}>{cat.subtitle}</p>
-                        <p style={{ color: '#999', fontSize: 14, lineHeight: 1.65, marginBottom: 16 }}>{cat.desc}</p>
-                        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, color: '#ff9a9e', fontSize: 14, fontWeight: 600 }}>
-                          גלה עכשיו <ChevronLeft size={15} />
-                        </span>
-                      </div>
-                    </a>
-                  ))
-            }
+            {packages.map(prod => {
+              const imgUrl = prod.main_image || prod.images?.[0] || '';
+              return (
+                <a
+                  key={prod.id}
+                  href={`/shop/product/${prod.id}`}
+                  className="pkg-lift"
+                  style={{
+                    display: 'block', textDecoration: 'none', borderRadius: 24,
+                    overflow: 'hidden', background: '#fff',
+                    border: '1px solid rgba(255,154,158,0.22)',
+                    boxShadow: '0 4px 28px rgba(255,154,158,0.14)',
+                  }}
+                >
+                  <div style={{ aspectRatio: '4/3', overflow: 'hidden', position: 'relative' }}>
+                    <img
+                      src={imgUrl} alt={prod.name}
+                      style={{ width: '100%', height: '100%', objectFit: 'cover', transition: 'transform 0.5s ease' }}
+                      onMouseEnter={e => { (e.target as HTMLImageElement).style.transform = 'scale(1.06)'; }}
+                      onMouseLeave={e => { (e.target as HTMLImageElement).style.transform = 'scale(1)'; }}
+                    />
+                    <div style={{ position: 'absolute', inset: 0, background: 'linear-gradient(to top, rgba(255,154,158,0.3) 0%, transparent 55%)' }} />
+                  </div>
+                  <div style={{ padding: '22px 26px 26px' }}>
+                    <h3 className="serif" style={{ fontSize: 24, fontWeight: 800, color: '#1a1a2e', marginBottom: 10, lineHeight: 1.3 }}>
+                      {prod.name}
+                    </h3>
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                      <span style={{ fontSize: 22, fontWeight: 700, color: '#e879a0' }}>₪{prod.price}</span>
+                      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, color: '#ff9a9e', fontSize: 14, fontWeight: 600 }}>
+                        גלה עכשיו <ChevronLeft size={15} />
+                      </span>
+                    </div>
+                  </div>
+                </a>
+              );
+            })}
           </div>
 
           {/* CTA */}
