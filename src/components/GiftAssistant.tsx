@@ -1,0 +1,322 @@
+import React, { useState, useRef, useEffect } from 'react';
+import { Sparkles, X, Send, Loader2 } from 'lucide-react';
+import { motion, AnimatePresence } from 'motion/react';
+import { getFunctions, httpsCallable } from 'firebase/functions';
+import { app } from '../firebase';
+
+interface RecommendedProduct {
+  id: string;
+  name: string;
+  price: number;
+  main_image: string | null;
+}
+
+interface AssistantResponse {
+  answer: string;
+  products: RecommendedProduct[];
+}
+
+interface Message {
+  role: 'user' | 'assistant';
+  text: string;
+  products?: RecommendedProduct[];
+}
+
+interface GiftAssistantProps {
+  onNavigateToProduct?: (productId: string) => void;
+}
+
+const functions = getFunctions(app);
+const askGiftAssistant = httpsCallable<{ query: string }, AssistantResponse>(
+  functions,
+  'askGiftAssistant'
+);
+
+export default function GiftAssistant({ onNavigateToProduct }: GiftAssistantProps) {
+  const [open, setOpen] = useState(false);
+  const [messages, setMessages] = useState<Message[]>([
+    {
+      role: 'assistant',
+      text: 'שלום! אני עוזר המתנות של טוני ✨\nספר לי למה אתה מחפש מתנה ואמצא לך את המושלמת.',
+    },
+  ]);
+  const [input, setInput] = useState('');
+  const [loading, setLoading] = useState(false);
+  const bottomRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (open) {
+      bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+      inputRef.current?.focus();
+    }
+  }, [open, messages]);
+
+  async function handleSend() {
+    const q = input.trim();
+    if (!q || loading) return;
+    setInput('');
+    setMessages(prev => [...prev, { role: 'user', text: q }]);
+    setLoading(true);
+    try {
+      const result = await askGiftAssistant({ query: q });
+      const { answer, products } = result.data;
+      setMessages(prev => [...prev, { role: 'assistant', text: answer, products }]);
+    } catch {
+      setMessages(prev => [
+        ...prev,
+        { role: 'assistant', text: 'מצטער, אירעה שגיאה. נסה שוב.' },
+      ]);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  function handleProductClick(id: string) {
+    if (onNavigateToProduct) {
+      onNavigateToProduct(id);
+      setOpen(false);
+    } else {
+      window.location.href = `/shop/product/${id}`;
+    }
+  }
+
+  return (
+    <>
+      {/* ── FAB ─────────────────────────────────────────────────────── */}
+      <AnimatePresence>
+        {!open && (
+          <motion.button
+            key="fab"
+            initial={{ opacity: 0, scale: 0.5 }}
+            animate={{ opacity: 1, scale: 1 }}
+            exit={{ opacity: 0, scale: 0.5 }}
+            transition={{ type: 'spring', stiffness: 260, damping: 20 }}
+            onClick={() => setOpen(true)}
+            aria-label="פתח עוזר מתנות"
+            style={{
+              position: 'fixed',
+              bottom: 28,
+              right: 28,
+              zIndex: 200,
+              width: 58,
+              height: 58,
+              borderRadius: '50%',
+              background: 'linear-gradient(135deg,#ff9a9e,#fecfef)',
+              border: 'none',
+              cursor: 'pointer',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              boxShadow: '0 4px 20px rgba(255,154,158,0.55)',
+              transition: 'transform 0.2s ease',
+            }}
+            onMouseEnter={e => ((e.currentTarget as HTMLButtonElement).style.transform = 'scale(1.12)')}
+            onMouseLeave={e => ((e.currentTarget as HTMLButtonElement).style.transform = 'scale(1)')}
+          >
+            <Sparkles size={26} color="white" />
+          </motion.button>
+        )}
+      </AnimatePresence>
+
+      {/* ── Chat window ─────────────────────────────────────────────── */}
+      <AnimatePresence>
+        {open && (
+          <motion.div
+            key="chat"
+            initial={{ opacity: 0, y: 40, scale: 0.95 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={{ opacity: 0, y: 40, scale: 0.95 }}
+            transition={{ type: 'spring', stiffness: 320, damping: 28 }}
+            style={{
+              position: 'fixed',
+              bottom: 28,
+              right: 28,
+              zIndex: 300,
+              width: 'min(380px, calc(100vw - 32px))',
+              height: 'min(560px, calc(100dvh - 120px))',
+              background: '#FFFCFD',
+              borderRadius: 24,
+              boxShadow: '0 20px 60px rgba(0,0,0,0.15)',
+              display: 'flex',
+              flexDirection: 'column',
+              overflow: 'hidden',
+              border: '1px solid #fecfef',
+            }}
+          >
+            {/* Header */}
+            <div style={{
+              background: 'linear-gradient(135deg,#ff9a9e,#fecfef)',
+              padding: '14px 18px',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              flexShrink: 0,
+            }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                <div style={{
+                  width: 36, height: 36, borderRadius: '50%',
+                  background: 'rgba(255,255,255,0.3)',
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                }}>
+                  <Sparkles size={18} color="white" />
+                </div>
+                <div>
+                  <p style={{ margin: 0, color: 'white', fontWeight: 700, fontSize: 15 }}>עוזר המתנות של טוני</p>
+                  <p style={{ margin: 0, color: 'rgba(255,255,255,0.85)', fontSize: 11 }}>AI • מופעל ע״י Gemini</p>
+                </div>
+              </div>
+              <button
+                onClick={() => setOpen(false)}
+                style={{ background: 'rgba(255,255,255,0.25)', border: 'none', cursor: 'pointer', borderRadius: '50%', width: 30, height: 30, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+              >
+                <X size={16} color="white" />
+              </button>
+            </div>
+
+            {/* Messages */}
+            <div style={{ flex: 1, overflowY: 'auto', padding: '16px 14px', display: 'flex', flexDirection: 'column', gap: 12 }}>
+              {messages.map((msg, i) => (
+                <div key={i} style={{ display: 'flex', flexDirection: 'column', alignItems: msg.role === 'user' ? 'flex-start' : 'flex-end' }}>
+                  <div style={{
+                    maxWidth: '85%',
+                    padding: '10px 14px',
+                    borderRadius: msg.role === 'user' ? '18px 18px 18px 4px' : '18px 18px 4px 18px',
+                    background: msg.role === 'user' ? 'white' : 'linear-gradient(135deg,#fff0f5,#fff5f8)',
+                    border: msg.role === 'user' ? '1px solid #f0e6ea' : '1px solid #fecfef',
+                    fontSize: 13.5,
+                    lineHeight: 1.6,
+                    color: '#3a3a3a',
+                    whiteSpace: 'pre-wrap',
+                    direction: 'rtl',
+                    textAlign: 'right',
+                  }}>
+                    {msg.text}
+                  </div>
+
+                  {/* Product cards */}
+                  {msg.products && msg.products.length > 0 && (
+                    <div style={{ display: 'flex', gap: 8, marginTop: 8, overflowX: 'auto', paddingBottom: 4, maxWidth: '100%' }}>
+                      {msg.products.map(p => (
+                        <button
+                          key={p.id}
+                          onClick={() => handleProductClick(p.id)}
+                          style={{
+                            flexShrink: 0,
+                            width: 110,
+                            background: 'white',
+                            border: '1px solid #fecfef',
+                            borderRadius: 14,
+                            overflow: 'hidden',
+                            cursor: 'pointer',
+                            textAlign: 'right',
+                            padding: 0,
+                            transition: 'transform 0.15s, box-shadow 0.15s',
+                            boxShadow: '0 2px 8px rgba(255,154,158,0.1)',
+                          }}
+                          onMouseEnter={e => {
+                            (e.currentTarget as HTMLButtonElement).style.transform = 'translateY(-2px)';
+                            (e.currentTarget as HTMLButtonElement).style.boxShadow = '0 6px 16px rgba(255,154,158,0.25)';
+                          }}
+                          onMouseLeave={e => {
+                            (e.currentTarget as HTMLButtonElement).style.transform = 'translateY(0)';
+                            (e.currentTarget as HTMLButtonElement).style.boxShadow = '0 2px 8px rgba(255,154,158,0.1)';
+                          }}
+                        >
+                          <div style={{ width: '100%', height: 80, background: '#FFF5F7', overflow: 'hidden' }}>
+                            {p.main_image
+                              ? <img src={p.main_image} alt={p.name} style={{ width: '100%', height: '100%', objectFit: 'cover' }} referrerPolicy="no-referrer" />
+                              : <div style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 24 }}>🎁</div>
+                            }
+                          </div>
+                          <div style={{ padding: '6px 8px' }}>
+                            <p style={{ margin: 0, fontSize: 11, fontWeight: 600, color: '#3a3a3a', lineHeight: 1.3, direction: 'rtl' }}>{p.name}</p>
+                            <p style={{ margin: '2px 0 0', fontSize: 12, color: '#ff9a9e', fontWeight: 700 }}>₪{p.price}</p>
+                          </div>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              ))}
+
+              {/* Thinking indicator */}
+              {loading && (
+                <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+                  <div style={{
+                    padding: '10px 16px',
+                    background: 'linear-gradient(135deg,#fff0f5,#fff5f8)',
+                    border: '1px solid #fecfef',
+                    borderRadius: '18px 18px 4px 18px',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 8,
+                    color: '#b07080',
+                    fontSize: 13,
+                  }}>
+                    <Loader2 size={14} style={{ animation: 'spin 1s linear infinite' }} />
+                    חושב...
+                  </div>
+                </div>
+              )}
+              <div ref={bottomRef} />
+            </div>
+
+            {/* Input */}
+            <div style={{
+              padding: '12px 14px',
+              borderTop: '1px solid #fce4ec',
+              background: 'white',
+              display: 'flex',
+              gap: 8,
+              flexShrink: 0,
+            }}>
+              <input
+                ref={inputRef}
+                value={input}
+                onChange={e => setInput(e.target.value)}
+                onKeyDown={e => e.key === 'Enter' && !e.shiftKey && handleSend()}
+                placeholder="לדוגמה: מתנה לאמא בת 50..."
+                disabled={loading}
+                style={{
+                  flex: 1,
+                  border: '1.5px solid #fce4ec',
+                  borderRadius: 999,
+                  padding: '10px 16px',
+                  fontSize: 13,
+                  outline: 'none',
+                  background: '#fff5f7',
+                  color: '#3a3a3a',
+                  direction: 'rtl',
+                }}
+                onFocus={e => (e.target.style.borderColor = '#ff9a9e')}
+                onBlur={e => (e.target.style.borderColor = '#fce4ec')}
+              />
+              <button
+                onClick={handleSend}
+                disabled={loading || !input.trim()}
+                style={{
+                  width: 40,
+                  height: 40,
+                  borderRadius: '50%',
+                  background: loading || !input.trim() ? '#fce4ec' : 'linear-gradient(135deg,#ff9a9e,#fecfef)',
+                  border: 'none',
+                  cursor: loading || !input.trim() ? 'default' : 'pointer',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  flexShrink: 0,
+                  transition: 'background 0.2s',
+                }}
+              >
+                <Send size={16} color={loading || !input.trim() ? '#d4a0b0' : 'white'} style={{ transform: 'scaleX(-1)' }} />
+              </button>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      <style>{`@keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }`}</style>
+    </>
+  );
+}

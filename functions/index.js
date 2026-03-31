@@ -1,10 +1,12 @@
 const { setGlobalOptions } = require("firebase-functions");
-const { onRequest } = require("firebase-functions/v2/https");
-const { onDocumentCreated } = require("firebase-functions/v2/firestore");
+const { onRequest, onCall, HttpsError } = require("firebase-functions/v2/https");
+const { onDocumentCreated, onDocumentWritten } = require("firebase-functions/v2/firestore");
 const { defineSecret } = require("firebase-functions/params");
 const logger = require("firebase-functions/logger");
 const admin = require("firebase-admin");
+const { FieldValue } = require("firebase-admin/firestore");
 const axios = require("axios");
+const { GoogleGenerativeAI } = require("@google/generative-ai");
 
 admin.initializeApp();
 // Data lives in the named database "default" (not the standard "(default)")
@@ -16,6 +18,7 @@ setGlobalOptions({ maxInstances: 10 });
 const telegramBotToken = defineSecret("TELEGRAM_BOT_TOKEN");
 const telegramChatId = defineSecret("TELEGRAM_CHAT_ID");
 const telegramWebhookSecret = defineSecret("TELEGRAM_WEBHOOK_SECRET");
+const geminiApiKey = defineSecret("GEMINI_API_KEY");
 
 // ── Helper: normalize Israeli phone to 05XXXXXXXX ─────────────────────────────
 function normalizePhone(phone) {
@@ -344,3 +347,182 @@ async function telegramApi(botToken, method, payload) {
   const response = await axios.post(url, payload);
   return response.data;
 }
+
+// ── Helper: build embeddable text from a product document ────────────────────
+function buildProductText(data) {
+  return [
+    data.name        || "",
+    data.description || "",
+    data.category    || "",
+    data.price != null ? `מחיר: ${data.price} שקל` : "",
+  ].filter(Boolean).join(". ");
+}
+
+// ── Helper: call Gemini text-embedding-004 and return the float array ─────────
+async function embedText(apiKey, text) {
+  const genAI = new GoogleGenerativeAI(apiKey);
+  const model = genAI.getGenerativeModel({ model: "text-embedding-004" });
+  const result = await model.embedContent(text);
+  return result.embedding.values; // float[]
+}
+
+// ── Firestore trigger — auto-embed whenever a product is created or updated ───
+exports.generateProductEmbedding = onDocumentWritten(
+  { document: "products/{productId}", database: "default", secrets: [geminiApiKey] },
+  async (event) => {
+    // Document deleted — nothing to embed
+    if (!event.data.after.exists) return;
+
+    const newData = event.data.after.data();
+    const oldData = event.data.before.exists ? event.data.before.data() : null;
+
+    // Skip if only embeddingVector changed (prevents infinite loop)
+    const contentFields = ["name", "description", "category", "price"];
+    if (oldData) {
+      const hasContentChange = contentFields.some(f => oldData[f] !== newData[f]);
+      if (!hasContentChange) {
+        logger.info(`Product ${event.params.productId}: no content change, skipping embedding`);
+        return;
+      }
+    }
+
+    const text = buildProductText(newData);
+    if (!text.trim()) {
+      logger.warn(`Product ${event.params.productId}: empty text, skipping embedding`);
+      return;
+    }
+
+    try {
+      const embedding = await embedText(geminiApiKey.value(), text);
+      await db.collection("products").doc(event.params.productId).update({
+        embeddingVector: FieldValue.vector(embedding),
+      });
+      logger.info(`Product ${event.params.productId}: embedding stored (${embedding.length} dims)`);
+    } catch (err) {
+      logger.error(`Product ${event.params.productId}: embedding failed`, err);
+    }
+  }
+);
+
+// ── HTTP endpoint — one-time backfill for all existing products ───────────────
+// Call once: POST /backfillProductEmbeddings  (protected by Firebase App Check
+// or run manually via the Firebase console / curl with a valid ID token)
+exports.backfillProductEmbeddings = onRequest(
+  { secrets: [geminiApiKey], timeoutSeconds: 540, memory: "512MiB" },
+  async (req, res) => {
+    // Simple method guard — only allow POST to reduce accidental runs
+    if (req.method !== "POST") {
+      res.status(405).send("Method Not Allowed — use POST");
+      return;
+    }
+
+    const API_KEY = geminiApiKey.value();
+    const snapshot = await db.collection("products").get();
+    const docs = snapshot.docs;
+
+    logger.info(`Backfill: processing ${docs.length} products`);
+
+    let success = 0;
+    let skipped = 0;
+    let failed  = 0;
+
+    for (const doc of docs) {
+      const data = doc.data();
+      const text = buildProductText(data);
+
+      if (!text.trim()) {
+        skipped++;
+        continue;
+      }
+
+      try {
+        const embedding = await embedText(API_KEY, text);
+        await db.collection("products").doc(doc.id).update({
+          embeddingVector: FieldValue.vector(embedding),
+        });
+        success++;
+        logger.info(`Backfill: embedded product ${doc.id}`);
+      } catch (err) {
+        failed++;
+        logger.error(`Backfill: failed product ${doc.id}`, err);
+      }
+
+      // Small delay to stay within Gemini free-tier rate limits (60 RPM)
+      await new Promise(r => setTimeout(r, 1100));
+    }
+
+    res.json({
+      total: docs.length,
+      success,
+      skipped,
+      failed,
+    });
+  }
+);
+
+// ── Callable — AI Gift Assistant ──────────────────────────────────────────────
+exports.askGiftAssistant = onCall(
+  { secrets: [geminiApiKey] },
+  async (request) => {
+    const { query } = request.data;
+    if (!query || typeof query !== "string" || !query.trim()) {
+      throw new HttpsError("invalid-argument", "query is required");
+    }
+
+    const API_KEY = geminiApiKey.value();
+    const genAI = new GoogleGenerativeAI(API_KEY);
+
+    // 1. Embed the user's query
+    const embModel = genAI.getGenerativeModel({ model: "text-embedding-004" });
+    const embResult = await embModel.embedContent(query.trim());
+    const queryEmbedding = embResult.embedding.values;
+
+    // 2. Vector similarity search — top 3 products
+    let snap;
+    try {
+      const vectorQuery = db.collection("products").findNearest({
+        vectorField: "embeddingVector",
+        queryVector: FieldValue.vector(queryEmbedding),
+        limit: 3,
+        distanceMeasure: "COSINE",
+      });
+      snap = await vectorQuery.get();
+    } catch (err) {
+      logger.error("Vector search failed:", err);
+      throw new HttpsError("internal", "Vector search failed. Make sure the Firestore index exists.");
+    }
+
+    if (snap.empty) {
+      return { answer: "לא מצאתי מוצרים מתאימים כרגע. נסה לפרט יותר.", products: [] };
+    }
+
+    const foundProducts = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+
+    // 3. Build LLM prompt with product context
+    const productContext = foundProducts
+      .map((p, i) => `${i + 1}. ${p.name} — ₪${p.price}. ${p.description || ""}`)
+      .join("\n");
+
+    const chatModel = genAI.getGenerativeModel({
+      model: "gemini-1.5-flash",
+      systemInstruction:
+        "You are a helpful gift consultant for Tony, a luxury gift shop. " +
+        "Recommend these products and explain why they fit the customer's request. " +
+        "Be concise, warm, and friendly. Always answer in Hebrew.",
+    });
+
+    const chatResult = await chatModel.generateContent(
+      `בקשת הלקוח: "${query}"\n\nמוצרים רלוונטיים שמצאתי:\n${productContext}\n\nהמלץ על המוצרים האלה והסבר בקצרה למה כל אחד מתאים.`
+    );
+
+    return {
+      answer: chatResult.response.text(),
+      products: foundProducts.map(p => ({
+        id: p.id,
+        name: p.name,
+        price: p.price,
+        main_image: p.main_image || null,
+      })),
+    };
+  }
+);

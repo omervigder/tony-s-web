@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import AccessibilityWidget from './components/AccessibilityWidget';
+import GiftAssistant from './components/GiftAssistant';
 import { ShoppingCart, Package, Settings as SettingsIcon, Plus, Trash2, Camera, ChevronRight, ChevronLeft, CheckCircle2, X, Menu, Loader2, Pencil, ChevronDown, Copy, Star, MessageCircle, Gift, Box } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Product, Category, Order, Settings, CartItem, Coupon, SiteContent, Review } from './types';
@@ -3206,6 +3207,9 @@ export default function App() {
           </>
         )}
       </AnimatePresence>
+
+      {/* ── AI Gift Assistant ──────────────────────────────────────── */}
+      <GiftAssistant onNavigateToProduct={(id) => { navigateTo('product', id); }} />
 
       {/* ── Smart WhatsApp Floating Bubble ─────────────────────────── */}
       <AnimatePresence>

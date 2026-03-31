@@ -18,7 +18,10 @@
       "Bash(cd \"C:\\\\Users\\\\omerv\\\\PycharmProjects\\\\Tony\" && npx tsc --noEmit 2>&1 | head -40)",
       "Bash(cd:*)",
       "Bash(firebase deploy:*)",
-      "Bash(npx firebase:*)"
+      "Bash(npx firebase:*)",
+      "Bash(where gcloud:*)",
+      "Bash(wc:*)",
+      "Bash(npx tsc:*)"
     ]
   }
 }

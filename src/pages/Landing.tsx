@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import AccessibilityWidget from '../components/AccessibilityWidget';
+import GiftAssistant from '../components/GiftAssistant';
 import { db } from '../firebase';
 import { collection, query, where, getDocs, limit, orderBy } from 'firebase/firestore';
 import { AnimatePresence, motion } from 'motion/react';
@@ -753,6 +754,7 @@ export default function Landing() {
       </AnimatePresence>
 
       <AccessibilityWidget />
+      <GiftAssistant />
     </div>
   );
 }
