@@ -462,67 +462,78 @@ exports.backfillProductEmbeddings = onRequest(
 
 // ── Callable — AI Gift Assistant ──────────────────────────────────────────────
 exports.askGiftAssistant = onCall(
-  { secrets: [geminiApiKey] },
+  { secrets: [geminiApiKey], cors: true },
   async (request) => {
     const { query } = request.data;
     if (!query || typeof query !== "string" || !query.trim()) {
       throw new HttpsError("invalid-argument", "query is required");
     }
 
+    // Validate secret is available before doing any work
     const API_KEY = geminiApiKey.value();
-    const genAI = new GoogleGenerativeAI(API_KEY);
+    if (!API_KEY) {
+      logger.error("GEMINI_API_KEY secret is empty or not bound to this function");
+      throw new HttpsError("internal", "Server configuration error — API key missing");
+    }
 
-    // 1. Embed the user's query
-    const embModel = genAI.getGenerativeModel({ model: "text-embedding-004" });
-    const embResult = await embModel.embedContent(query.trim());
-    const queryEmbedding = embResult.embedding.values;
-
-    // 2. Vector similarity search — top 3 products
-    let snap;
     try {
+      const genAI = new GoogleGenerativeAI(API_KEY);
+
+      // 1. Embed the user's query
+      logger.info(`askGiftAssistant: embedding query "${query.trim()}"`);
+      const embModel = genAI.getGenerativeModel({ model: "text-embedding-004" });
+      const embResult = await embModel.embedContent(query.trim());
+      const queryEmbedding = embResult.embedding.values;
+
+      // 2. Vector similarity search — top 3 products
+      logger.info("askGiftAssistant: running vector search");
       const vectorQuery = db.collection("products").findNearest({
         vectorField: "embeddingVector",
         queryVector: FieldValue.vector(queryEmbedding),
         limit: 3,
         distanceMeasure: "COSINE",
       });
-      snap = await vectorQuery.get();
+      const snap = await vectorQuery.get();
+
+      if (snap.empty) {
+        return { answer: "לא מצאתי מוצרים מתאימים כרגע. נסה לפרט יותר.", products: [] };
+      }
+
+      const foundProducts = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+
+      // 3. Build LLM prompt with product context
+      const productContext = foundProducts
+        .map((p, i) => `${i + 1}. ${p.name} — ₪${p.price}. ${p.description || ""}`)
+        .join("\n");
+
+      logger.info("askGiftAssistant: calling gemini-1.5-flash");
+      const chatModel = genAI.getGenerativeModel({
+        model: "gemini-1.5-flash",
+        systemInstruction:
+          "You are a helpful gift consultant for Tony, a luxury gift shop. " +
+          "Recommend these products and explain why they fit the customer's request. " +
+          "Be concise, warm, and friendly. Always answer in Hebrew.",
+      });
+
+      const chatResult = await chatModel.generateContent(
+        `בקשת הלקוח: "${query}"\n\nמוצרים רלוונטיים שמצאתי:\n${productContext}\n\nהמלץ על המוצרים האלה והסבר בקצרה למה כל אחד מתאים.`
+      );
+
+      return {
+        answer: chatResult.response.text(),
+        products: foundProducts.map(p => ({
+          id: p.id,
+          name: p.name,
+          price: p.price,
+          main_image: p.main_image || null,
+        })),
+      };
     } catch (err) {
-      logger.error("Vector search failed:", err);
-      throw new HttpsError("internal", "Vector search failed. Make sure the Firestore index exists.");
+      // Log the full error so it's visible in Firebase console
+      logger.error("askGiftAssistant internal error:", err?.message ?? err, { stack: err?.stack });
+      // Re-throw HttpsErrors as-is; wrap everything else into a structured response
+      if (err instanceof HttpsError) throw err;
+      throw new HttpsError("internal", `Gift assistant error: ${err?.message ?? "unknown"}`);
     }
-
-    if (snap.empty) {
-      return { answer: "לא מצאתי מוצרים מתאימים כרגע. נסה לפרט יותר.", products: [] };
-    }
-
-    const foundProducts = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-
-    // 3. Build LLM prompt with product context
-    const productContext = foundProducts
-      .map((p, i) => `${i + 1}. ${p.name} — ₪${p.price}. ${p.description || ""}`)
-      .join("\n");
-
-    const chatModel = genAI.getGenerativeModel({
-      model: "gemini-1.5-flash",
-      systemInstruction:
-        "You are a helpful gift consultant for Tony, a luxury gift shop. " +
-        "Recommend these products and explain why they fit the customer's request. " +
-        "Be concise, warm, and friendly. Always answer in Hebrew.",
-    });
-
-    const chatResult = await chatModel.generateContent(
-      `בקשת הלקוח: "${query}"\n\nמוצרים רלוונטיים שמצאתי:\n${productContext}\n\nהמלץ על המוצרים האלה והסבר בקצרה למה כל אחד מתאים.`
-    );
-
-    return {
-      answer: chatResult.response.text(),
-      products: foundProducts.map(p => ({
-        id: p.id,
-        name: p.name,
-        price: p.price,
-        main_image: p.main_image || null,
-      })),
-    };
   }
 );
