@@ -358,12 +358,12 @@ function buildProductText(data) {
   ].filter(Boolean).join(". ");
 }
 
-// ── Helper: call Gemini embedding-001 and return the float array ──────────────
+// ── Helper: call Gemini text-embedding-004 and return the float array ─────────
 async function embedText(apiKey, text) {
   const genAI = new GoogleGenerativeAI(apiKey);
-  const model = genAI.getGenerativeModel({ model: "embedding-001" });
-  const result = await model.embedContent(text);
-  return result.embedding.values; // float[]
+  const model = genAI.getGenerativeModel({ model: "text-embedding-004" });
+  const embeddingResult = await model.embedContent(text);
+  return embeddingResult.embedding.values; // float[]
 }
 
 // ── Firestore trigger — auto-embed whenever a product is created or updated ───
@@ -481,7 +481,7 @@ exports.askGiftAssistant = onCall(
 
       // 1. Embed the user's query
       logger.info(`askGiftAssistant: embedding query "${query.trim()}"`);
-      const embModel = genAI.getGenerativeModel({ model: "embedding-001" });
+      const embModel = genAI.getGenerativeModel({ model: "text-embedding-004" });
       const embResult = await embModel.embedContent(query.trim());
       const queryEmbedding = embResult.embedding.values;
 
