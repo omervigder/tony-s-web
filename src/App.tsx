@@ -3209,7 +3209,7 @@ export default function App() {
       </AnimatePresence>
 
       {/* ── AI Gift Assistant ──────────────────────────────────────── */}
-      <GiftAssistant onNavigateToProduct={(id) => { navigateTo('product', id); }} />
+      <GiftAssistant onNavigateToProduct={(id) => { fetchProductDetails(id); }} />
 
       {/* ── Smart WhatsApp Floating Bubble ─────────────────────────── */}
       <AnimatePresence>
