@@ -276,6 +276,7 @@ export default function GiftAssistant({ onNavigateToProduct }: GiftAssistantProp
                 onChange={e => setInput(e.target.value)}
                 onKeyDown={e => e.key === 'Enter' && !e.shiftKey && handleSend()}
                 placeholder="לדוגמה: מתנה לאמא בת 50..."
+                maxLength={250}
                 disabled={loading}
                 style={{
                   flex: 1,
