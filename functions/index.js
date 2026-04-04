@@ -506,6 +506,7 @@ exports.askGiftAssistant = onCall(
         .join("\n");
 
       logger.info("askGiftAssistant: calling gemini-1.5-flash");
+      const genAI = new GoogleGenerativeAI(API_KEY);
       const chatModel = genAI.getGenerativeModel({
         model: "gemini-1.5-flash",
         systemInstruction:
