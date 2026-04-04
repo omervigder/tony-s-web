@@ -505,10 +505,10 @@ exports.askGiftAssistant = onCall(
         .map((p, i) => `${i + 1}. ${p.name} — ₪${p.price}. ${p.description || ""}`)
         .join("\n");
 
-      logger.info("askGiftAssistant: calling gemini-1.5-flash");
+      logger.info("askGiftAssistant: calling gemini-2.0-flash");
       const genAI = new GoogleGenerativeAI(API_KEY);
       const chatModel = genAI.getGenerativeModel({
-        model: "gemini-1.5-flash",
+        model: "gemini-2.0-flash",
         systemInstruction:
           "You are a helpful gift consultant for Tony, a luxury gift shop. " +
           "Recommend these products and explain why they fit the customer's request. " +
