@@ -510,13 +510,18 @@ exports.askGiftAssistant = onCall(
       const chatModel = genAI.getGenerativeModel({
         model: "gemini-2.5-flash",
         systemInstruction:
-          "You are a helpful gift consultant for Tony, a luxury gift shop. " +
-          "Recommend these products and explain why they fit the customer's request. " +
-          "Be concise, warm, and friendly. Always answer in Hebrew.",
+          "את יועצת מתנות של טוני — חנות מתנות יוקרתית ובוטיקית. " +
+          "כתבי בעברית טבעית, קצרה ואלגנטית. " +
+          "חל איסור מוחלט על שימוש ב-Markdown: אין כוכביות (** או *), אין תגי # ואין רשימות. " +
+          "פתחי במשפט אחד קצר ועל ידידותי. " +
+          "לכל מוצר — משפט אחד בלבד שמסביר בצורה שיחותית למה הוא מתאים. " +
+          "אל תציינו מחירים. אל תחזרי על שם המוצר המדויק — התייחסי אליו בטבעיות. " +
+          "השתמשי באמוג׳י ✨ 🎁 💝 👇 במקום עיצוב טקסט. " +
+          "הכרטיסיות של המוצרים מוצגות אוטומטית מתחת להודעה — אין צורך לפרט.",
       });
 
       const chatResult = await chatModel.generateContent(
-        `בקשת הלקוח: "${query}"\n\nמוצרים רלוונטיים שמצאתי:\n${productContext}\n\nהמלץ על המוצרים האלה והסבר בקצרה למה כל אחד מתאים.`
+        `בקשת הלקוח: "${query}"\n\nמוצרים רלוונטיים:\n${productContext}\n\nהמלצי עליהם בצורה טבעית וקצרה.`
       );
 
       return {

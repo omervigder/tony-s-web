@@ -163,7 +163,6 @@ export default function GiftAssistant({ onNavigateToProduct }: GiftAssistantProp
                 </div>
                 <div>
                   <p style={{ margin: 0, color: 'white', fontWeight: 700, fontSize: 15 }}>עוזר המתנות של טוני</p>
-                  <p style={{ margin: 0, color: 'rgba(255,255,255,0.85)', fontSize: 11 }}>AI • מופעל ע״י Gemini</p>
                 </div>
               </div>
               <button
