@@ -358,12 +358,15 @@ function buildProductText(data) {
   ].filter(Boolean).join(". ");
 }
 
-// ── Helper: call Gemini text-embedding-004 and return the float array ─────────
+// ── Helper: call Gemini gemini-embedding-001 and return the float array ─────────
 async function embedText(apiKey, text) {
-  const genAI = new GoogleGenerativeAI(apiKey);
-  const model = genAI.getGenerativeModel({ model: "text-embedding-004" });
-  const embeddingResult = await model.embedContent(text);
-  return embeddingResult.embedding.values; // float[]
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-embedding-001:embedContent?key=${apiKey}`;
+  const response = await axios.post(url, {
+    model: "models/gemini-embedding-001",
+    content: { parts: [{ text }] },
+    outputDimensionality: 768,
+  });
+  return response.data.embedding.values; // float[]
 }
 
 // ── Firestore trigger — auto-embed whenever a product is created or updated ───
@@ -477,13 +480,9 @@ exports.askGiftAssistant = onCall(
     }
 
     try {
-      const genAI = new GoogleGenerativeAI(API_KEY);
-
       // 1. Embed the user's query
       logger.info(`askGiftAssistant: embedding query "${query.trim()}"`);
-      const embModel = genAI.getGenerativeModel({ model: "text-embedding-004" });
-      const embResult = await embModel.embedContent(query.trim());
-      const queryEmbedding = embResult.embedding.values;
+      const queryEmbedding = await embedText(API_KEY, query.trim());
 
       // 2. Vector similarity search — top 3 products
       logger.info("askGiftAssistant: running vector search");
