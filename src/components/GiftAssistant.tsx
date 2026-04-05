@@ -42,6 +42,7 @@ export default function GiftAssistant({ onNavigateToProduct }: GiftAssistantProp
   ]);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
+  const [inputError, setInputError] = useState('');
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -55,6 +56,12 @@ export default function GiftAssistant({ onNavigateToProduct }: GiftAssistantProp
   async function handleSend() {
     const q = input.trim();
     if (!q || loading) return;
+
+    if (q.length < 3) {
+      setInputError('אנא הכנס לפחות 3 תווים');
+      return;
+    }
+    setInputError('');
     setInput('');
     setMessages(prev => [...prev, { role: 'user', text: q }]);
     setLoading(true);
@@ -62,11 +69,12 @@ export default function GiftAssistant({ onNavigateToProduct }: GiftAssistantProp
       const result = await askGiftAssistant({ query: q });
       const { answer, products } = result.data;
       setMessages(prev => [...prev, { role: 'assistant', text: answer, products }]);
-    } catch {
-      setMessages(prev => [
-        ...prev,
-        { role: 'assistant', text: 'מצטער, אירעה שגיאה. נסה שוב.' },
-      ]);
+    } catch (err: any) {
+      const code: string = err?.code ?? '';
+      const errMsg = code === 'functions/resource-exhausted'
+        ? 'שלחת יותר מדי בקשות. נסה שוב בעוד דקה. ⏳'
+        : 'מצטער, אירעה שגיאה. נסה שוב.';
+      setMessages(prev => [...prev, { role: 'assistant', text: errMsg }]);
     } finally {
       setLoading(false);
     }
@@ -263,17 +271,25 @@ export default function GiftAssistant({ onNavigateToProduct }: GiftAssistantProp
 
             {/* Input */}
             <div style={{
-              padding: '12px 14px',
+              padding: '8px 14px 12px',
               borderTop: '1px solid #fce4ec',
               background: 'white',
-              display: 'flex',
-              gap: 8,
               flexShrink: 0,
             }}>
+              {/* Validation error + char counter */}
+              <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 6 }}>
+                <span style={{ color: '#e57373', fontSize: 11, direction: 'rtl' }}>
+                  {inputError}
+                </span>
+                <span style={{ color: input.length >= 230 ? '#e57373' : '#c0a0b0', fontSize: 11 }}>
+                  {input.length}/250
+                </span>
+              </div>
+              <div style={{ display: 'flex', gap: 8 }}>
               <input
                 ref={inputRef}
                 value={input}
-                onChange={e => setInput(e.target.value)}
+                onChange={e => { setInput(e.target.value); if (inputError) setInputError(''); }}
                 onKeyDown={e => e.key === 'Enter' && !e.shiftKey && handleSend()}
                 placeholder="לדוגמה: מתנה לאמא בת 50..."
                 maxLength={250}
@@ -311,6 +327,7 @@ export default function GiftAssistant({ onNavigateToProduct }: GiftAssistantProp
               >
                 <Send size={16} color={loading || !input.trim() ? '#d4a0b0' : 'white'} style={{ transform: 'scaleX(-1)' }} />
               </button>
+              </div>
             </div>
           </motion.div>
         )}

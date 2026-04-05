@@ -15,6 +15,25 @@ db.settings({ databaseId: "default" });
 
 setGlobalOptions({ maxInstances: 10 });
 
+// ── Rate limiting — in-memory per Cloud Function instance ────────────────────
+// Caps askGiftAssistant to 5 calls per UID/IP per 60-second window.
+// Note: resets on cold start; for cross-instance limits use Firestore counters.
+const _rateLimitMap = new Map();
+const RATE_LIMIT_MAX = 5;
+const RATE_WINDOW_MS = 60_000;
+
+function isRateLimited(key) {
+  const now = Date.now();
+  const rec = _rateLimitMap.get(key);
+  if (!rec || now - rec.windowStart >= RATE_WINDOW_MS) {
+    _rateLimitMap.set(key, { count: 1, windowStart: now });
+    return false;
+  }
+  if (rec.count >= RATE_LIMIT_MAX) return true;
+  rec.count++;
+  return false;
+}
+
 const telegramBotToken = defineSecret("TELEGRAM_BOT_TOKEN");
 const telegramChatId = defineSecret("TELEGRAM_CHAT_ID");
 const telegramWebhookSecret = defineSecret("TELEGRAM_WEBHOOK_SECRET");
@@ -474,12 +493,22 @@ exports.askGiftAssistant = onCall(
       // throw new HttpsError("unauthenticated", "App Check token missing");
     }
 
-    const { query } = request.data;
-    if (!query || typeof query !== "string" || !query.trim()) {
-      throw new HttpsError("invalid-argument", "query is required");
+    // ── Rate limit check ─────────────────────────────────────────────────────
+    const rateLimitKey = request.auth?.uid ?? request.rawRequest?.ip ?? "anon";
+    if (isRateLimited(rateLimitKey)) {
+      logger.warn("askGiftAssistant: rate limit exceeded");
+      throw new HttpsError("resource-exhausted", "יותר מדי בקשות. נסה שוב בעוד דקה.");
     }
-    // Truncate to 250 chars to prevent token draining
+
+    // ── Input validation ─────────────────────────────────────────────────────
+    const { query } = request.data;
+    if (!query || typeof query !== "string") {
+      throw new HttpsError("invalid-argument", "query must be a non-empty string");
+    }
     const safeQuery = query.trim().slice(0, 250);
+    if (safeQuery.length < 3) {
+      throw new HttpsError("invalid-argument", "השאלה קצרה מדי — אנא פרט יותר.");
+    }
 
     // Validate secret is available before doing any work
     const API_KEY = geminiApiKey.value();
@@ -489,8 +518,8 @@ exports.askGiftAssistant = onCall(
     }
 
     try {
-      // 1. Embed the user's query
-      logger.info(`askGiftAssistant: embedding query "${safeQuery}"`);
+      // 1. Embed the user's query — log length only, never the raw content
+      logger.info(`askGiftAssistant: embedding query (${safeQuery.length} chars)`);
       const queryEmbedding = await embedText(API_KEY, safeQuery);
 
       // 2. Vector similarity search — top 3 products
@@ -545,11 +574,10 @@ exports.askGiftAssistant = onCall(
         })),
       };
     } catch (err) {
-      // Log the full error so it's visible in Firebase console
+      // Log full error server-side; never expose raw messages to the client
       logger.error("askGiftAssistant internal error:", err?.message ?? err, { stack: err?.stack });
-      // Re-throw HttpsErrors as-is; wrap everything else into a structured response
       if (err instanceof HttpsError) throw err;
-      throw new HttpsError("internal", `Gift assistant error: ${err?.message ?? "unknown"}`);
+      throw new HttpsError("internal", "Gift assistant is temporarily unavailable. Please try again.");
     }
   }
 );
@@ -568,7 +596,7 @@ exports.grantAdminIfWhitelisted = onCall({ enforceAppCheck: false }, async (requ
     const adminDoc = await db.collection("admins").doc(email).get();
     if (adminDoc.exists) {
       await admin.auth().setCustomUserClaims(uid, { admin: true });
-      logger.info(`grantAdminIfWhitelisted: granted admin to ${email}`);
+      logger.info(`grantAdminIfWhitelisted: admin claim granted (uid=${uid})`);
       return { isAdmin: true };
     }
     return { isAdmin: false };

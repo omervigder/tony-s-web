@@ -75,9 +75,17 @@ function GoogleLoginScreen() {
     try {
       await signInWithPopup(auth, googleProvider);
     } catch (err: any) {
-      if (err?.code !== 'auth/popup-closed-by-user' && err?.code !== 'auth/cancelled-popup-request') {
-        setError('שגיאה בהתחברות. נסה שוב.');
-      }
+      const code: string = err?.code ?? '';
+      // Silently ignore user-dismissed popup
+      if (code === 'auth/popup-closed-by-user' || code === 'auth/cancelled-popup-request') return;
+      // Map known error codes to user-friendly Hebrew messages
+      const msg: Record<string, string> = {
+        'auth/invalid-action-code':  'הקישור אינו תקין. בקש קישור חדש.',
+        'auth/expired-action-code':  'הקישור פג תוקף. בקש קישור חדש.',
+        'auth/user-disabled':        'המשתמש חסום. פנה למנהל.',
+        'auth/network-request-failed': 'בעיית רשת. בדוק חיבור לאינטרנט.',
+      };
+      setError(msg[code] ?? 'שגיאה בהתחברות. נסה שוב.');
     } finally {
       setLoading(false);
     }
@@ -1103,18 +1111,37 @@ export default function Admin() {
   const [categories, setCategories] = useState<Category[]>([]);
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [settings, setSettings] = useState<StoreSettings>({ pickup_address: '', delivery_cost: '0', bit_phone: '' });
+  const [dataError, setDataError] = useState('');
 
   useEffect(() => {
     if (!user) return;
-    const unsubO = onSnapshot(query(collection(db, 'orders'), orderBy('created_at', 'desc')),
-      snap => setOrders(snap.docs.map(d => ({ id: d.id, ...d.data() } as Order))));
-    const unsubP = onSnapshot(query(collection(db, 'products'), orderBy('created_at', 'desc')),
-      snap => setProducts(snap.docs.map(d => ({ id: d.id, ...d.data() } as Product))));
-    const unsubC = onSnapshot(collection(db, 'categories'),
-      snap => setCategories(snap.docs.map(d => ({ id: d.id, ...d.data() } as Category))));
-    const unsubCust = onSnapshot(collection(db, 'customers'),
-      snap => setCustomers(snap.docs.map(d => ({ id: d.id, ...d.data() } as Customer))));
-    getDoc(doc(db, 'settings', 'store')).then(d => { if (d.exists()) setSettings(d.data() as StoreSettings); });
+    const onErr = (label: string) => (err: Error) => {
+      console.error(`[Admin] ${label} listener error:`, err);
+      setDataError(`שגיאה בטעינת נתונים (${label}). רענן את הדף.`);
+    };
+    const unsubO = onSnapshot(
+      query(collection(db, 'orders'), orderBy('created_at', 'desc')),
+      snap => setOrders(snap.docs.map(d => ({ id: d.id, ...d.data() } as Order))),
+      onErr('orders')
+    );
+    const unsubP = onSnapshot(
+      query(collection(db, 'products'), orderBy('created_at', 'desc')),
+      snap => setProducts(snap.docs.map(d => ({ id: d.id, ...d.data() } as Product))),
+      onErr('products')
+    );
+    const unsubC = onSnapshot(
+      collection(db, 'categories'),
+      snap => setCategories(snap.docs.map(d => ({ id: d.id, ...d.data() } as Category))),
+      onErr('categories')
+    );
+    const unsubCust = onSnapshot(
+      collection(db, 'customers'),
+      snap => setCustomers(snap.docs.map(d => ({ id: d.id, ...d.data() } as Customer))),
+      onErr('customers')
+    );
+    getDoc(doc(db, 'settings', 'store'))
+      .then(d => { if (d.exists()) setSettings(d.data() as StoreSettings); })
+      .catch(err => console.error('[Admin] settings fetch error:', err));
     return () => { unsubO(); unsubP(); unsubC(); unsubCust(); };
   }, [user]);
 
@@ -1206,6 +1233,12 @@ export default function Admin() {
 
         {/* Main Content */}
         <main className="flex-1 p-4 md:p-6 min-w-0 pb-24 md:pb-6">
+          {dataError && (
+            <div className="mb-4 flex items-center justify-between gap-3 bg-red-500/10 border border-red-500/30 rounded-xl px-4 py-3 text-red-400 text-sm" dir="rtl">
+              <span>{dataError}</span>
+              <button onClick={() => setDataError('')} className="text-red-400/60 hover:text-red-400 transition-colors text-lg leading-none">×</button>
+            </div>
+          )}
           {activeTab === 'orders' && <OrdersView orders={orders} />}
           {activeTab === 'analytics' && <AnalyticsView orders={orders} products={products} categories={categories} />}
           {activeTab === 'products' && <ProductsView products={products} categories={categories} />}

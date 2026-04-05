@@ -6,6 +6,36 @@ service cloud.firestore {
       return request.auth != null && request.auth.token.admin == true;
     }
 
+    // ── Schema validation — guest-submitted order ─────────────────────────
+    function isValidOrderCreate() {
+      let d = request.resource.data;
+      return d.customer_name is string
+          && d.customer_name.size() >= 1
+          && d.customer_name.size() <= 100
+          && d.customer_phone is string
+          && d.customer_phone.size() >= 7
+          && d.customer_phone.size() <= 20
+          && d.delivery_method in ['pickup', 'delivery']
+          && d.total_price is number
+          && d.total_price >= 0
+          && d.items is list;
+    }
+
+    // ── Schema validation — guest-submitted review ────────────────────────
+    function isValidReviewCreate() {
+      let d = request.resource.data;
+      return d.product_id is string
+          && d.product_id.size() > 0
+          && d.customer_name is string
+          && d.customer_name.size() >= 1
+          && d.customer_name.size() <= 100
+          && d.rating is int
+          && d.rating >= 1
+          && d.rating <= 5
+          && d.message is string
+          && d.message.size() <= 1000;
+    }
+
     // ── Public catalogue — guests browse freely ───────────────────────────
     match /products/{id} {
       allow read: if true;
@@ -23,9 +53,10 @@ service cloud.firestore {
       allow write: if isAdmin();
     }
 
-    // ── Reviews — guests read and submit ─────────────────────────────────
+    // ── Reviews — guests read and submit (schema-validated) ──────────────
     match /reviews/{id} {
-      allow read, create: if true;
+      allow read: if true;
+      allow create: if isValidReviewCreate();
       allow update, delete: if isAdmin();
     }
 
@@ -41,10 +72,9 @@ service cloud.firestore {
       allow write: if isAdmin();
     }
 
-    // ── Orders — guests can place orders; only admin can read them ─────────
-    // This protects all customer PII (names, phones, addresses).
+    // ── Orders — schema-validated guest create; admin read/update/delete ──
     match /orders/{id} {
-      allow create: if true;
+      allow create: if isValidOrderCreate();
       allow read, update, delete: if isAdmin();
     }
 
