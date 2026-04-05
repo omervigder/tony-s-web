@@ -3,7 +3,7 @@ service cloud.firestore {
   match /databases/{database}/documents {
 
     function isAdmin() {
-      return request.auth != null;
+      return request.auth != null && request.auth.token.admin == true;
     }
 
     // ── Public catalogue — guests browse freely ───────────────────────────
@@ -46,6 +46,16 @@ service cloud.firestore {
     match /orders/{id} {
       allow create: if true;
       allow read, update, delete: if isAdmin();
+    }
+
+    // ── Admins registry — admin eyes only ────────────────────────────────
+    match /admins/{email} {
+      allow read, write: if isAdmin();
+    }
+
+    // ── Customer CRM (populated by Cloud Function) — admin eyes only ──────
+    match /customers/{phone} {
+      allow read, write: if isAdmin();
     }
 
     // ── Deny everything not explicitly listed ─────────────────────────────

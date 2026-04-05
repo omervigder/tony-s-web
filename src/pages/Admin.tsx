@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import { auth, db, storage } from '../firebase';
-import { signInWithEmailAndPassword, signOut, onAuthStateChanged, type User } from 'firebase/auth';
+import { auth, db, storage, googleProvider } from '../firebase';
+import { signInWithPopup, signOut } from 'firebase/auth';
 import {
   collection, query, orderBy, onSnapshot,
   doc, updateDoc, addDoc, deleteDoc, setDoc, getDoc
@@ -17,6 +17,7 @@ import {
   MessageCircle, DollarSign, CheckCircle2, Download, ChevronDown, ChevronUp, Users
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
+import { useAuth } from '../contexts/AuthContext';
 
 /* ─────────────────────────────── Types ─────────────────────────────── */
 interface OrderItem { id: string; name: string; price: number; quantity: number; selectedVariations?: Record<string, string>; }
@@ -64,19 +65,22 @@ const toDate = (v: any): Date => {
 };
 
 /* ─────────────────────────────── Login ──────────────────────────────── */
-function LoginScreen({ onLogin }: { onLogin: (e: string, p: string) => Promise<void> }) {
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
-  const [error, setError] = useState('');
+function GoogleLoginScreen() {
+  const [error, setError]     = useState('');
   const [loading, setLoading] = useState(false);
 
-  const handle = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const handle = async () => {
     setError('');
     setLoading(true);
-    try { await onLogin(email, password); }
-    catch { setError('שם משתמש או סיסמה שגויים'); }
-    finally { setLoading(false); }
+    try {
+      await signInWithPopup(auth, googleProvider);
+    } catch (err: any) {
+      if (err?.code !== 'auth/popup-closed-by-user' && err?.code !== 'auth/cancelled-popup-request') {
+        setError('שגיאה בהתחברות. נסה שוב.');
+      }
+    } finally {
+      setLoading(false);
+    }
   };
 
   return (
@@ -88,31 +92,27 @@ function LoginScreen({ onLogin }: { onLogin: (e: string, p: string) => Promise<v
             <Package size={28} style={{ color: GOLD }} />
           </div>
           <h1 className="text-2xl font-bold text-white">Tony Admin</h1>
-          <p className="text-gray-500 text-sm mt-1">ניהול מתקדם לעסק שלך</p>
+          <p className="text-gray-500 text-sm mt-1">כניסה לפאנל ניהול</p>
         </div>
-        <form onSubmit={handle} className="bg-[#0f0f24] border border-[#252550] rounded-2xl p-6 space-y-4">
-          <div>
-            <label className="block text-sm text-gray-400 mb-1.5">אימייל</label>
-            <input type="email" value={email} onChange={e => setEmail(e.target.value)} required
-              className="w-full bg-[#070712] border border-[#252550] rounded-xl p-3 text-white outline-none text-sm transition-colors"
-              style={{ borderColor: email ? `${GOLD}40` : '' }} />
-          </div>
-          <div>
-            <label className="block text-sm text-gray-400 mb-1.5">סיסמה</label>
-            <input type="password" value={password} onChange={e => setPassword(e.target.value)} required
-              className="w-full bg-[#070712] border border-[#252550] rounded-xl p-3 text-white outline-none text-sm transition-colors"
-              style={{ borderColor: password ? `${GOLD}40` : '' }} />
-          </div>
+        <div className="bg-[#0f0f24] border border-[#252550] rounded-2xl p-6 space-y-4">
           {error && <p className="text-red-400 text-sm text-center">{error}</p>}
-          <button type="submit" disabled={loading}
-            className="w-full py-3 rounded-xl font-bold text-black flex items-center justify-center gap-2 disabled:opacity-60 transition-opacity"
-            style={{ background: `linear-gradient(135deg, ${GOLD}, #D4910A)` }}>
-            {loading ? <Loader2 size={18} className="animate-spin" /> : 'כניסה'}
+          <button onClick={handle} disabled={loading}
+            className="w-full py-3 rounded-xl font-bold text-white flex items-center justify-center gap-3 border border-[#252550] bg-[#070712] hover:border-[#F5C518]/40 hover:bg-[#0f0f24] transition-all disabled:opacity-60">
+            {loading ? <Loader2 size={18} className="animate-spin" /> : (
+              <>
+                <svg width="18" height="18" viewBox="0 0 48 48" xmlns="http://www.w3.org/2000/svg">
+                  <path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.08 17.74 9.5 24 9.5z"/>
+                  <path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"/>
+                  <path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"/>
+                  <path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.18 1.48-4.97 2.31-8.16 2.31-6.26 0-11.57-3.58-13.47-8.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/>
+                  <path fill="none" d="M0 0h48v48H0z"/>
+                </svg>
+                כניסה עם Google
+              </>
+            )}
           </button>
-        </form>
-        <p className="text-center text-gray-600 text-xs mt-4">
-          * הגדר משתמש אדמין ב-Firebase Authentication Console
-        </p>
+        </div>
+        <p className="text-center text-gray-600 text-xs mt-4">* כניסה מותרת למנהלים בלבד</p>
       </div>
     </div>
   );
@@ -1095,8 +1095,7 @@ function SettingsView({ settings: init }: { settings: StoreSettings }) {
 
 /* ─────────────────────────────── Main Admin ─────────────────────────── */
 export default function Admin() {
-  const [user, setUser] = useState<User | null>(null);
-  const [authLoading, setAuthLoading] = useState(true);
+  const { user, loading: authLoading } = useAuth();
   const [activeTab, setActiveTab] = useState<TabName>('orders');
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [orders, setOrders] = useState<Order[]>([]);
@@ -1104,10 +1103,6 @@ export default function Admin() {
   const [categories, setCategories] = useState<Category[]>([]);
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [settings, setSettings] = useState<StoreSettings>({ pickup_address: '', delivery_cost: '0', bit_phone: '' });
-
-  useEffect(() => {
-    return onAuthStateChanged(auth, u => { setUser(u); setAuthLoading(false); });
-  }, []);
 
   useEffect(() => {
     if (!user) return;
@@ -1129,9 +1124,7 @@ export default function Admin() {
     </div>
   );
 
-  if (!user) return (
-    <LoginScreen onLogin={(e, p) => signInWithEmailAndPassword(auth, e, p).then(() => {})} />
-  );
+  if (!user) return <GoogleLoginScreen />;
 
   const newOrdersCount = orders.filter(o => o.status === 'חדש').length;
 

@@ -1,7 +1,7 @@
 import { initializeApp } from "firebase/app";
 import { initializeFirestore, collection, addDoc, getDocs, doc, deleteDoc, getDoc, setDoc, query, orderBy } from "firebase/firestore";
 import { getStorage, ref, uploadBytes, getDownloadURL } from "firebase/storage";
-import { getAuth, setPersistence, browserLocalPersistence } from "firebase/auth";
+import { getAuth, setPersistence, browserLocalPersistence, GoogleAuthProvider } from "firebase/auth";
 
 const firebaseConfig = {
   apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
@@ -21,6 +21,7 @@ export const db = initializeFirestore(app, {
 }, 'default');;
 export const storage = getStorage(app);
 export const auth = getAuth(app);
+export const googleProvider = new GoogleAuthProvider();
 // Keep the admin logged in across browser restarts
 setPersistence(auth, browserLocalPersistence).catch(err =>
   console.error("[Firebase] Auth persistence error:", err)

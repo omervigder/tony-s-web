@@ -553,3 +553,27 @@ exports.askGiftAssistant = onCall(
     }
   }
 );
+
+// ── Callable — check admins whitelist and set custom claim ───────────────────
+// Called by the frontend on first admin-route visit if the token lacks the claim.
+exports.grantAdminIfWhitelisted = onCall({ enforceAppCheck: false }, async (request) => {
+  const uid   = request.auth?.uid;
+  const email = request.auth?.token?.email;
+
+  if (!uid || !email) {
+    throw new HttpsError("unauthenticated", "Must be signed in");
+  }
+
+  try {
+    const adminDoc = await db.collection("admins").doc(email).get();
+    if (adminDoc.exists) {
+      await admin.auth().setCustomUserClaims(uid, { admin: true });
+      logger.info(`grantAdminIfWhitelisted: granted admin to ${email}`);
+      return { isAdmin: true };
+    }
+    return { isAdmin: false };
+  } catch (err) {
+    logger.error("grantAdminIfWhitelisted error:", err);
+    throw new HttpsError("internal", "Failed to check admin status");
+  }
+});
