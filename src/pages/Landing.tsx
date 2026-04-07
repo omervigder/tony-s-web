@@ -287,9 +287,9 @@ export default function Landing() {
         <div
           style={{ position: 'relative', zIndex: 10, textAlign: 'center', padding: '0 24px', maxWidth: 860, margin: '0 auto', opacity: heroVisible ? 1 : 0, transition: 'opacity 0.5s ease' }}
         >
-          {/* Badge */}
-          <div className="fade-up-1" style={{ display: 'inline-flex', alignItems: 'center', gap: 8, padding: '6px 18px', borderRadius: 999, border: '1px solid rgba(201,168,76,0.35)', background: 'rgba(201,168,76,0.08)', color: '#F0CC6E', fontSize: 11, letterSpacing: 3, textTransform: 'uppercase', marginBottom: 28 }}>
-            <Sparkles size={12} /> מותג יוקרה ישראלי מוביל
+          {/* Logo */}
+          <div className="fade-up-1" style={{ marginBottom: 24 }}>
+            <img src="/logo.jpeg" alt="Tony Amrami" style={{ height: 90, objectFit: 'contain', filter: 'sepia(1) saturate(2) hue-rotate(5deg) brightness(0.9)', margin: '0 auto' }} />
           </div>
 
           {/* Headline */}
