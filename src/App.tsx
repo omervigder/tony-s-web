@@ -439,15 +439,8 @@ export default function App() {
           >
             <Menu size={24} className="text-gray-500" />
           </button>
-          <div className="flex items-center gap-2 cursor-pointer" onClick={() => navigateTo('user')}>
-            <div className="w-10 h-10 bg-gradient-to-br from-[#ff9a9e] to-[#fecfef] rounded-xl flex items-center justify-center text-white shadow-lg">
-              <Package size={24} />
-            </div>
-            <h1 className="text-xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-[#ff9a9e] to-[#a1c4fd]">
-              {isContentLoading
-                ? <span className="inline-block w-16 h-5 bg-gradient-to-r from-gray-200 to-gray-100 rounded animate-pulse" />
-                : siteContent.storeName}
-            </h1>
+          <div className="flex items-center cursor-pointer" onClick={() => navigateTo('user')}>
+            <img src="/logo.jpeg" alt="Tony Amrami" className="h-10 object-contain" style={{ mixBlendMode: 'multiply' }} />
           </div>
         </div>
 
@@ -1138,11 +1131,8 @@ export default function App() {
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-8 mb-8">
             {/* Brand */}
             <div className="space-y-2">
-              <div className="flex items-center gap-2">
-                <div className="w-8 h-8 bg-gradient-to-br from-[#ff9a9e] to-[#fecfef] rounded-lg flex items-center justify-center">
-                  <Package size={16} className="text-white" />
-                </div>
-                <span className="font-bold text-lg bg-clip-text text-transparent bg-gradient-to-r from-[#ff9a9e] to-[#a1c4fd]">Tony</span>
+              <div className="flex items-center">
+                <img src="/logo.jpeg" alt="Tony Amrami" className="h-10 object-contain" style={{ mixBlendMode: 'multiply' }} />
               </div>
               <p className="text-gray-400 text-sm leading-relaxed">מארזי מתנה יוקרתיים עם מיתוג אישי. לאירועים, לעסקים ולכל רגע מיוחד.</p>
             </div>

@@ -232,21 +232,16 @@ export default function Landing() {
 
       {/* ── Navigation ───────────────────────────────────────────────── */}
       <nav
-        className="sticky top-0 z-40 px-6 py-4 transition-all duration-300"
+        className="sticky top-0 z-40 px-6 py-3 transition-all duration-300"
         style={{
           background: scrolled ? 'rgba(8,8,15,0.95)' : 'transparent',
           backdropFilter: scrolled ? 'blur(20px)' : 'none',
           borderBottom: scrolled ? '1px solid rgba(201,168,76,0.12)' : '1px solid transparent',
+          position: 'sticky',
         }}
       >
-        <div style={{ maxWidth: 1152, margin: '0 auto', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-          <a href="/" style={{ display: 'flex', alignItems: 'center', gap: 10, textDecoration: 'none' }}>
-            <div style={{ width: 38, height: 38, borderRadius: 10, background: 'linear-gradient(135deg,#C9A84C,#F0CC6E)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-              <Gift size={18} color="#08080F" />
-            </div>
-            <span className="serif" style={{ fontSize: 22, fontWeight: 700, color: '#F0CC6E', letterSpacing: 1 }}>Tony</span>
-          </a>
-
+        <div style={{ maxWidth: 1152, margin: '0 auto', display: 'flex', alignItems: 'center', justifyContent: 'space-between', position: 'relative' }}>
+          {/* Left — nav links */}
           <div style={{ display: 'flex', gap: 32, alignItems: 'center' }} className="hidden md:flex">
             {[['#collections', 'קולקציות'], ['#how-it-works', 'איך זה עובד'], ['#gallery', 'גלריה'], ['#testimonials', 'ביקורות']].map(([href, label]) => (
               <a key={href} href={href} style={{ color: '#888', fontSize: 14, textDecoration: 'none', transition: 'color 0.2s' }}
@@ -256,7 +251,21 @@ export default function Landing() {
               </a>
             ))}
           </div>
+          <div className="md:hidden" style={{ width: 40 }} />
 
+          {/* Center — logo absolutely centered */}
+          <a href="/" style={{
+            position: 'absolute', left: '50%', top: '50%',
+            transform: 'translate(-50%, -50%)',
+            display: 'flex', alignItems: 'center', textDecoration: 'none',
+          }}>
+            <img src="/logo.jpeg" alt="Tony Amrami" style={{
+              height: 56, objectFit: 'contain',
+              filter: 'sepia(1) saturate(2) hue-rotate(5deg) brightness(0.9)',
+            }} />
+          </a>
+
+          {/* Right — CTA */}
           <a href={SHOP_URL}
             className="gold-btn"
             style={{ padding: '10px 22px', borderRadius: 12, fontWeight: 700, fontSize: 14, color: '#08080F', textDecoration: 'none', transition: 'transform 0.2s' }}
@@ -654,11 +663,8 @@ export default function Landing() {
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 48, marginBottom: 48 }}>
             {/* Brand */}
             <div>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 14 }}>
-                <div style={{ width: 36, height: 36, borderRadius: 10, background: 'linear-gradient(135deg,#C9A84C,#F0CC6E)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                  <Gift size={16} color="#08080F" />
-                </div>
-                <span className="serif" style={{ fontSize: 20, fontWeight: 700, color: '#F0CC6E' }}>Tony</span>
+              <div style={{ marginBottom: 14 }}>
+                <img src="/logo.jpeg" alt="Tony Amrami" style={{ height: 36, objectFit: 'contain', filter: 'sepia(1) saturate(2) hue-rotate(5deg) brightness(0.9)' }} />
               </div>
               <p style={{ color: '#555', fontSize: 13, lineHeight: 1.7 }}>מארזי מתנה יוקרתיים עם מיתוג אישי. לאירועים, לעסקים ולכל רגע מיוחד.</p>
             </div>
