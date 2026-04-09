@@ -20,9 +20,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setLoading(true);
       if (firebaseUser) {
         try {
-          // Force-refresh to always get the latest custom claims
-          const token = await firebaseUser.getIdTokenResult(true);
-          setIsAdmin(token.claims['admin'] === true);
+          // Only force-refresh if the token expires in < 5 min (avoids unnecessary network call on every load)
+          const token = await firebaseUser.getIdTokenResult(false);
+          const expiresAt = new Date(token.expirationTime).getTime();
+          const needsRefresh = expiresAt - Date.now() < 5 * 60 * 1000;
+          const finalToken = needsRefresh
+            ? await firebaseUser.getIdTokenResult(true)
+            : token;
+          setIsAdmin(finalToken.claims['admin'] === true);
         } catch {
           setIsAdmin(false);
         }

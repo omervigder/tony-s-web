@@ -1,5 +1,5 @@
 import { initializeApp } from "firebase/app";
-import { initializeFirestore, collection, addDoc, getDocs, doc, deleteDoc, getDoc, setDoc, query, orderBy } from "firebase/firestore";
+import { getFirestore, collection, addDoc, getDocs, doc, deleteDoc, getDoc, setDoc, query, orderBy } from "firebase/firestore";
 import { getStorage, ref, uploadBytes, getDownloadURL } from "firebase/storage";
 import { getAuth, setPersistence, browserLocalPersistence, GoogleAuthProvider } from "firebase/auth";
 
@@ -16,9 +16,7 @@ const firebaseConfig = {
 
 export const app = initializeApp(firebaseConfig);
 
-export const db = initializeFirestore(app, {
-  experimentalForceLongPolling: true
-}, 'default');;
+export const db = getFirestore(app);
 export const storage = getStorage(app);
 export const auth = getAuth(app);
 export const googleProvider = new GoogleAuthProvider();
