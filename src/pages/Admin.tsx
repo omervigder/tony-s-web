@@ -1180,8 +1180,8 @@ export default function Admin() {
   useEffect(() => {
     return onAuthStateChanged(auth, async (u) => {
       if (!u) { setUser(null); setUnauthorized(false); return; }
-      const snap = await getDoc(doc(db, 'admins', u.email!));
-      if (snap.exists()) {
+      const snap = await getDoc(doc(db, 'admin', u.email!));
+      if (snap.exists() && snap.data()?.role === 'admin') {
         setUnauthorized(false);
         setUser(u);
       } else {
