@@ -1175,22 +1175,33 @@ export default function Admin() {
   const [settings, setSettings] = useState<StoreSettings>({ pickup_address: '', delivery_cost: '0', bit_phone: '' });
   const [dataError, setDataError] = useState('');
   const [unauthorized, setUnauthorized] = useState(false);
+  const [checkingRole, setCheckingRole] = useState(false);
 
-  // Auth state listener — checks Firestore admins whitelist
+  // Step 1 — Auth resolves instantly from local cache (no network)
   useEffect(() => {
-    return onAuthStateChanged(auth, async (u) => {
-      if (!u) { setUser(null); setUnauthorized(false); return; }
-      const snap = await getDoc(doc(db, 'admin', u.email!));
-      if (snap.exists() && snap.data()?.role === 'admin') {
-        setUnauthorized(false);
-        setUser(u);
-      } else {
-        setUnauthorized(true);
-        setUser(null);
-        await signOut(auth);
-      }
+    return onAuthStateChanged(auth, (u) => {
+      if (!u) { setUser(null); setUnauthorized(false); }
+      else setUser(u as any); // temporarily set; role check below will clear if unauthorized
     });
   }, []);
+
+  // Step 2 — After auth is known, check admin role in Firestore
+  useEffect(() => {
+    if (user === undefined || user === null) return;
+    setCheckingRole(true);
+    getDoc(doc(db, 'admin', (user as any).email!))
+      .then(snap => {
+        if (snap.exists() && snap.data()?.role === 'admin') {
+          setUnauthorized(false);
+        } else {
+          setUser(null);
+          setUnauthorized(true);
+          signOut(auth);
+        }
+      })
+      .catch(() => { setUser(null); setUnauthorized(true); signOut(auth); })
+      .finally(() => setCheckingRole(false));
+  }, [(user as any)?.uid]);
 
   useEffect(() => {
     if (!user) return;
@@ -1224,7 +1235,7 @@ export default function Admin() {
     return () => { unsubO(); unsubP(); unsubC(); unsubCust(); };
   }, [user]);
 
-  if (user === undefined) return (
+  if (user === undefined || checkingRole) return (
     <div className="min-h-screen bg-[#FFF5F7] flex items-center justify-center">
       <Loader2 className="w-10 h-10 animate-spin" style={{ color: GOLD }} />
     </div>

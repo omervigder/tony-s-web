@@ -78,9 +78,15 @@ service cloud.firestore {
       allow read, update, delete: if isAdmin();
     }
 
-    // ── Admins registry — admin eyes only ────────────────────────────────
+    // ── Admins registry ───────────────────────────────────────────────────
     match /admins/{email} {
       allow read, write: if isAdmin();
+    }
+
+    // ── Admin role collection — user can read their own doc to check role ──
+    match /admin/{email} {
+      allow read: if request.auth != null && request.auth.token.email == email;
+      allow write: if isAdmin();
     }
 
     // ── Customer CRM (populated by Cloud Function) — admin eyes only ──────
