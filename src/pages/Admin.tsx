@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { auth, db, storage, googleProvider } from '../firebase';
-import { signInWithPopup, signOut } from 'firebase/auth';
+import { signInWithPopup, signOut, onAuthStateChanged, type User } from 'firebase/auth';
 import {
   collection, query, orderBy, onSnapshot,
   doc, updateDoc, addDoc, deleteDoc, setDoc, getDoc
@@ -17,7 +17,6 @@ import {
   MessageCircle, DollarSign, CheckCircle2, Download, ChevronDown, ChevronUp, Users
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
-import { useAuth } from '../contexts/AuthContext';
 
 /* ─────────────────────────────── Types ─────────────────────────────── */
 interface OrderItem { id: string; name: string; price: number; quantity: number; selectedVariations?: Record<string, string>; }
@@ -65,7 +64,7 @@ const toDate = (v: any): Date => {
 };
 
 /* ─────────────────────────────── Login ──────────────────────────────── */
-function GoogleLoginScreen() {
+function LoginScreen() {
   const [error, setError]     = useState('');
   const [loading, setLoading] = useState(false);
 
@@ -98,34 +97,24 @@ function GoogleLoginScreen() {
         </div>
         <div className="bg-white border border-[#fce4ec] rounded-2xl p-6">
           {error && (
-            <div className="mb-4 bg-red-500/10 border border-red-500/30 rounded-xl px-4 py-2.5 text-red-400 text-sm text-center">
+            <div className="mb-4 bg-red-500/10 border border-red-500/30 rounded-xl px-4 py-2.5 text-red-500 text-sm text-center">
               {error}
             </div>
           )}
-
-          {/* Google Sign-In button — white background for maximum visibility */}
-          <button
-            onClick={handle}
-            disabled={loading}
-            className="w-full flex items-center justify-center gap-3 py-3 px-4 rounded-xl font-medium text-[#3c4043] bg-white hover:bg-gray-50 active:bg-gray-100 border border-gray-300 shadow-sm transition-all disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            {loading ? (
-              <Loader2 size={18} className="animate-spin text-gray-500" />
-            ) : (
+          <button onClick={handle} disabled={loading}
+            className="w-full flex items-center justify-center gap-3 py-3 px-4 rounded-xl font-medium text-[#3c4043] bg-white hover:bg-gray-50 border border-gray-300 shadow-sm transition-all disabled:opacity-50">
+            {loading ? <Loader2 size={18} className="animate-spin text-gray-500" /> : (
               <>
-                {/* Official Google "G" logo */}
-                <svg width="20" height="20" viewBox="0 0 48 48" xmlns="http://www.w3.org/2000/svg">
+                <svg width="20" height="20" viewBox="0 0 48 48">
                   <path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.08 17.74 9.5 24 9.5z"/>
                   <path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"/>
                   <path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"/>
                   <path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.18 1.48-4.97 2.31-8.16 2.31-6.26 0-11.57-3.58-13.47-8.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/>
-                  <path fill="none" d="M0 0h48v48H0z"/>
                 </svg>
-                <span>Sign in with Google</span>
+                כניסה עם Google
               </>
             )}
           </button>
-
           <p className="text-center text-gray-400 text-xs mt-4">* כניסה מותרת למנהלים בלבד</p>
         </div>
       </div>
@@ -1171,7 +1160,7 @@ function SettingsView({ settings: init }: { settings: StoreSettings }) {
 
 /* ─────────────────────────────── Main Admin ─────────────────────────── */
 export default function Admin() {
-  const { user, loading: authLoading } = useAuth();
+  const [user, setUser]           = useState<User | null | undefined>(undefined); // undefined = loading
   const [activeTab, setActiveTab] = useState<TabName>('orders');
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [orders, setOrders] = useState<Order[]>([]);
@@ -1180,6 +1169,11 @@ export default function Admin() {
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [settings, setSettings] = useState<StoreSettings>({ pickup_address: '', delivery_cost: '0', bit_phone: '' });
   const [dataError, setDataError] = useState('');
+
+  // Auth state listener
+  useEffect(() => {
+    return onAuthStateChanged(auth, (u) => setUser(u));
+  }, []);
 
   useEffect(() => {
     if (!user) return;
@@ -1213,13 +1207,13 @@ export default function Admin() {
     return () => { unsubO(); unsubP(); unsubC(); unsubCust(); };
   }, [user]);
 
-  if (authLoading) return (
+  if (user === undefined) return (
     <div className="min-h-screen bg-[#FFF5F7] flex items-center justify-center">
       <Loader2 className="w-10 h-10 animate-spin" style={{ color: GOLD }} />
     </div>
   );
 
-  if (!user) return <GoogleLoginScreen />;
+  if (!user) return <LoginScreen />;
 
   const newOrdersCount = orders.filter(o => o.status === 'חדש').length;
 
