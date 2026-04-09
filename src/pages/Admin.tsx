@@ -64,7 +64,7 @@ const toDate = (v: any): Date => {
 };
 
 /* ─────────────────────────────── Login ──────────────────────────────── */
-function LoginScreen() {
+function LoginScreen({ unauthorized }: { unauthorized: boolean }) {
   const [error, setError]     = useState('');
   const [loading, setLoading] = useState(false);
 
@@ -96,6 +96,11 @@ function LoginScreen() {
           <p className="text-gray-500 text-sm mt-1">כניסה לפאנל ניהול</p>
         </div>
         <div className="bg-white border border-[#fce4ec] rounded-2xl p-6">
+          {unauthorized && (
+            <div className="mb-4 bg-red-500/10 border border-red-500/30 rounded-xl px-4 py-2.5 text-red-500 text-sm text-center">
+              ⛔ החשבון הזה אינו מורשה לגשת לפאנל הניהול.
+            </div>
+          )}
           {error && (
             <div className="mb-4 bg-red-500/10 border border-red-500/30 rounded-xl px-4 py-2.5 text-red-500 text-sm text-center">
               {error}
@@ -1169,10 +1174,22 @@ export default function Admin() {
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [settings, setSettings] = useState<StoreSettings>({ pickup_address: '', delivery_cost: '0', bit_phone: '' });
   const [dataError, setDataError] = useState('');
+  const [unauthorized, setUnauthorized] = useState(false);
 
-  // Auth state listener
+  // Auth state listener — checks Firestore admins whitelist
   useEffect(() => {
-    return onAuthStateChanged(auth, (u) => setUser(u));
+    return onAuthStateChanged(auth, async (u) => {
+      if (!u) { setUser(null); setUnauthorized(false); return; }
+      const snap = await getDoc(doc(db, 'admins', u.email!));
+      if (snap.exists()) {
+        setUnauthorized(false);
+        setUser(u);
+      } else {
+        setUnauthorized(true);
+        setUser(null);
+        await signOut(auth);
+      }
+    });
   }, []);
 
   useEffect(() => {
@@ -1213,7 +1230,7 @@ export default function Admin() {
     </div>
   );
 
-  if (!user) return <LoginScreen />;
+  if (!user) return <LoginScreen unauthorized={unauthorized} />;
 
   const newOrdersCount = orders.filter(o => o.status === 'חדש').length;
 
