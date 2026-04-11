@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { auth, db, storage, googleProvider } from '../firebase';
-import { signInWithPopup, signOut, onAuthStateChanged, type User } from 'firebase/auth';
+import { signInWithRedirect, getRedirectResult, signOut, onAuthStateChanged, type User } from 'firebase/auth';
 import {
   collection, query, orderBy, onSnapshot,
   doc, updateDoc, addDoc, deleteDoc, setDoc, getDoc
@@ -72,18 +72,9 @@ function LoginScreen({ unauthorized }: { unauthorized: boolean }) {
     setError('');
     setLoading(true);
     try {
-      await signInWithPopup(auth, googleProvider);
+      await signInWithRedirect(auth, googleProvider);
     } catch (err: any) {
-      const code: string = err?.code ?? '';
-      if (code === 'auth/popup-closed-by-user' || code === 'auth/cancelled-popup-request') {
-        setLoading(false);
-        return;
-      }
-      const msg: Record<string, string> = {
-        'auth/user-disabled':          'המשתמש חסום. פנה למנהל.',
-        'auth/network-request-failed': 'בעיית רשת. בדוק חיבור לאינטרנט.',
-      };
-      setError(msg[code] ?? 'שגיאה בהתחברות. נסה שוב.');
+      setError('שגיאה בהתחברות. נסה שוב.');
       setLoading(false);
     }
   };
@@ -1178,10 +1169,12 @@ export default function Admin() {
   const [checkingRole, setCheckingRole] = useState(false);
 
   // Step 1 — Auth resolves instantly from local cache (no network)
+  // Also process pending redirect result from signInWithRedirect
   useEffect(() => {
+    getRedirectResult(auth).catch(() => {});
     return onAuthStateChanged(auth, (u) => {
       if (!u) { setUser(null); setUnauthorized(false); }
-      else setUser(u as any); // temporarily set; role check below will clear if unauthorized
+      else setUser(u as any);
     });
   }, []);
 
