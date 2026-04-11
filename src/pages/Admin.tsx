@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import { auth, db, storage, googleProvider } from '../firebase';
-import { signInWithPopup, signOut, onAuthStateChanged, type User } from 'firebase/auth';
+import { auth, db, storage } from '../firebase';
+import { signInWithEmailAndPassword, signOut, onAuthStateChanged, type User } from 'firebase/auth';
 import {
   collection, query, orderBy, onSnapshot,
   doc, updateDoc, addDoc, deleteDoc, setDoc, getDoc
@@ -65,19 +65,28 @@ const toDate = (v: any): Date => {
 
 /* ─────────────────────────────── Login ──────────────────────────────── */
 function LoginScreen({ unauthorized }: { unauthorized: boolean }) {
+  const [email, setEmail]     = useState('');
+  const [pass, setPass]       = useState('');
   const [error, setError]     = useState('');
   const [loading, setLoading] = useState(false);
 
-  const handle = async () => {
+  const handle = async (e: React.FormEvent) => {
+    e.preventDefault();
     setError('');
     setLoading(true);
     try {
-      await signInWithPopup(auth, googleProvider);
+      await signInWithEmailAndPassword(auth, email, pass);
     } catch (err: any) {
       const code: string = err?.code ?? '';
-      if (code !== 'auth/popup-closed-by-user' && code !== 'auth/cancelled-popup-request') {
-        setError('שגיאה בהתחברות. נסה שוב.');
-      }
+      const msgs: Record<string, string> = {
+        'auth/invalid-credential':     'אימייל או סיסמה שגויים.',
+        'auth/user-not-found':         'אימייל או סיסמה שגויים.',
+        'auth/wrong-password':         'אימייל או סיסמה שגויים.',
+        'auth/too-many-requests':      'יותר מדי ניסיונות. נסה שוב מאוחר יותר.',
+        'auth/network-request-failed': 'בעיית רשת.',
+      };
+      setError(msgs[code] ?? 'שגיאה בהתחברות. נסה שוב.');
+    } finally {
       setLoading(false);
     }
   };
@@ -89,33 +98,35 @@ function LoginScreen({ unauthorized }: { unauthorized: boolean }) {
           <img src="/logo.jpeg" alt="Tony Amrami" style={{ mixBlendMode: 'multiply' }} className="h-20 mx-auto mb-2 object-contain" />
           <p className="text-gray-500 text-sm mt-1">כניסה לפאנל ניהול</p>
         </div>
-        <div className="bg-white border border-[#fce4ec] rounded-2xl p-6">
+        <form onSubmit={handle} className="bg-white border border-[#fce4ec] rounded-2xl p-6 space-y-4">
           {unauthorized && (
-            <div className="mb-4 bg-red-500/10 border border-red-500/30 rounded-xl px-4 py-2.5 text-red-500 text-sm text-center">
-              ⛔ החשבון הזה אינו מורשה לגשת לפאנל הניהול.
+            <div className="bg-red-500/10 border border-red-500/30 rounded-xl px-4 py-2.5 text-red-500 text-sm text-center">
+              ⛔ המשתמש הזה אינו מוגדר כמנהל.
             </div>
           )}
           {error && (
-            <div className="mb-4 bg-red-500/10 border border-red-500/30 rounded-xl px-4 py-2.5 text-red-500 text-sm text-center">
+            <div className="bg-red-500/10 border border-red-500/30 rounded-xl px-4 py-2.5 text-red-500 text-sm text-center">
               {error}
             </div>
           )}
-          <button onClick={handle} disabled={loading}
-            className="w-full flex items-center justify-center gap-3 py-3 px-4 rounded-xl font-medium text-[#3c4043] bg-white hover:bg-gray-50 border border-gray-300 shadow-sm transition-all disabled:opacity-50">
-            {loading ? <Loader2 size={18} className="animate-spin text-gray-500" /> : (
-              <>
-                <svg width="20" height="20" viewBox="0 0 48 48">
-                  <path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.08 17.74 9.5 24 9.5z"/>
-                  <path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"/>
-                  <path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"/>
-                  <path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.18 1.48-4.97 2.31-8.16 2.31-6.26 0-11.57-3.58-13.47-8.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/>
-                </svg>
-                כניסה עם Google
-              </>
-            )}
+          <div>
+            <label className="block text-sm text-gray-400 mb-1.5">אימייל</label>
+            <input type="email" value={email} onChange={e => setEmail(e.target.value)}
+              required autoFocus dir="ltr" placeholder="admin@example.com"
+              className="w-full bg-[#FFF5F7] border border-[#fce4ec] rounded-xl px-4 py-3 text-[#3a3a3a] text-sm outline-none focus:border-[#ff9a9e]/60 transition-colors" />
+          </div>
+          <div>
+            <label className="block text-sm text-gray-400 mb-1.5">סיסמה</label>
+            <input type="password" value={pass} onChange={e => setPass(e.target.value)}
+              required dir="ltr" placeholder="••••••••"
+              className="w-full bg-[#FFF5F7] border border-[#fce4ec] rounded-xl px-4 py-3 text-[#3a3a3a] text-sm outline-none focus:border-[#ff9a9e]/60 transition-colors" />
+          </div>
+          <button type="submit" disabled={loading}
+            className="w-full py-3 rounded-xl font-bold text-white flex items-center justify-center gap-2 disabled:opacity-60 transition-all"
+            style={{ background: `linear-gradient(135deg, ${GOLD}, #fecfef)` }}>
+            {loading ? <Loader2 size={18} className="animate-spin" /> : 'כניסה'}
           </button>
-          <p className="text-center text-gray-400 text-xs mt-4">* כניסה מותרת למנהלים בלבד</p>
-        </div>
+        </form>
       </div>
     </div>
   );
