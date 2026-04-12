@@ -78,13 +78,8 @@ service cloud.firestore {
       allow read, update, delete: if isAdmin();
     }
 
-    // ── Admins registry ───────────────────────────────────────────────────
+    // ── Admins registry — user can read their own doc to verify role ────
     match /admins/{email} {
-      allow read, write: if isAdmin();
-    }
-
-    // ── Admin role collection — user can read their own doc to check role ──
-    match /admin/{email} {
       allow read: if request.auth != null && request.auth.token.email == email;
       allow write: if isAdmin();
     }

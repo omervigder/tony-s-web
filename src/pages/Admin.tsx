@@ -1202,7 +1202,7 @@ export default function Admin() {
     }
 
     setCheckingRole(true);
-    getDoc(doc(db, 'admin', email))
+    getDoc(doc(db, 'admins', email))
       .then(snap => {
         if (snap.exists() && snap.data()?.role === 'admin') {
           sessionStorage.setItem(cacheKey, 'true');
