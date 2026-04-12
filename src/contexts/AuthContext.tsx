@@ -1,47 +1,56 @@
 import React, { createContext, useContext, useEffect, useState } from 'react';
-import { onAuthStateChanged, type User } from 'firebase/auth';
-import { auth } from '../firebase';
+import { onAuthStateChanged, signOut, type User } from 'firebase/auth';
+import { doc, getDoc } from 'firebase/firestore';
+import { auth, db } from '../firebase';
 
 interface AuthContextValue {
   user: User | null;
   isAdmin: boolean;
   loading: boolean;
+  accessDenied: boolean;
 }
 
-const AuthContext = createContext<AuthContextValue>({ user: null, isAdmin: false, loading: true });
+const AuthContext = createContext<AuthContextValue>({ user: null, isAdmin: false, loading: true, accessDenied: false });
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
-  const [user, setUser]       = useState<User | null>(null);
-  const [isAdmin, setIsAdmin] = useState(false);
-  const [loading, setLoading] = useState(true);
+  const [user, setUser]             = useState<User | null>(null);
+  const [isAdmin, setIsAdmin]       = useState(false);
+  const [loading, setLoading]       = useState(true);
+  const [accessDenied, setAccessDenied] = useState(false);
 
   useEffect(() => {
     return onAuthStateChanged(auth, async (firebaseUser) => {
       setLoading(true);
-      if (firebaseUser) {
+      if (firebaseUser?.email) {
+        // Clear any prior access-denied message on each new sign-in attempt
+        setAccessDenied(false);
         try {
-          // Only force-refresh if the token expires in < 5 min (avoids unnecessary network call on every load)
-          const token = await firebaseUser.getIdTokenResult(false);
-          const expiresAt = new Date(token.expirationTime).getTime();
-          const needsRefresh = expiresAt - Date.now() < 5 * 60 * 1000;
-          const finalToken = needsRefresh
-            ? await firebaseUser.getIdTokenResult(true)
-            : token;
-          setIsAdmin(finalToken.claims['admin'] === true);
+          const adminDoc = await getDoc(doc(db, 'admins', firebaseUser.email));
+          if (adminDoc.exists() && adminDoc.data()?.role === 'admin') {
+            setUser(firebaseUser);
+            setIsAdmin(true);
+            setLoading(false);
+          } else {
+            // Not in the admin whitelist — flag it then sign out
+            setAccessDenied(true);
+            await signOut(auth);
+            // onAuthStateChanged fires again with null — that callback sets loading=false
+          }
         } catch {
+          setUser(firebaseUser);
           setIsAdmin(false);
+          setLoading(false);
         }
-        setUser(firebaseUser);
       } else {
         setUser(null);
         setIsAdmin(false);
+        setLoading(false);
       }
-      setLoading(false);
     });
   }, []);
 
   return (
-    <AuthContext.Provider value={{ user, isAdmin, loading }}>
+    <AuthContext.Provider value={{ user, isAdmin, loading, accessDenied }}>
       {children}
     </AuthContext.Provider>
   );

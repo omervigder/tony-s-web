@@ -1,4 +1,6 @@
 import React, { useState, useEffect } from 'react';
+import { AuthProvider } from '../contexts/AuthContext';
+import ProtectedRoute from '../components/ProtectedRoute';
 import { db, storage } from '../firebase';
 import {
   collection, query, orderBy, onSnapshot,
@@ -1099,7 +1101,7 @@ function SettingsView({ settings: init }: { settings: StoreSettings }) {
 }
 
 /* ─────────────────────────────── Main Admin ─────────────────────────── */
-export default function Admin() {
+function AdminDashboard() {
   const [activeTab, setActiveTab] = useState<TabName>('orders');
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [orders, setOrders] = useState<Order[]>([]);
@@ -1243,5 +1245,16 @@ export default function Admin() {
         ))}
       </nav>
     </div>
+  );
+}
+
+/* ──────────────────── Protected Admin entry point ───────────────────── */
+export default function Admin() {
+  return (
+    <AuthProvider>
+      <ProtectedRoute>
+        <AdminDashboard />
+      </ProtectedRoute>
+    </AuthProvider>
   );
 }

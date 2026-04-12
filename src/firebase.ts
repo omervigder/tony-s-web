@@ -20,6 +20,7 @@ export const db = initializeFirestore(app, { experimentalForceLongPolling: true 
 export const storage = getStorage(app);
 export const auth = getAuth(app);
 export const googleProvider = new GoogleAuthProvider();
+googleProvider.setCustomParameters({ prompt: 'select_account' });
 // Keep the admin logged in across browser restarts
 setPersistence(auth, browserLocalPersistence).catch(err =>
   console.error("[Firebase] Auth persistence error:", err)
