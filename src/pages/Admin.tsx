@@ -16,7 +16,6 @@ import {
   LogOut, Menu, X, Plus, Trash2, Pencil, Camera, Loader2,
   MessageCircle, DollarSign, CheckCircle2, Download, ChevronDown, ChevronUp, Users
 } from 'lucide-react';
-import * as XLSX from 'xlsx';
 
 /* ─────────────────────────────── Types ─────────────────────────────── */
 interface OrderItem { id: string; name: string; price: number; quantity: number; selectedVariations?: Record<string, string>; }
@@ -382,7 +381,7 @@ function AnalyticsView({ orders, products, categories }: { orders: Order[]; prod
   const orderedProducts   = orderedProductIds.map(id => products.find(p => p.id === id)).filter(Boolean) as Product[];
 
   /* ── Export (completed + filters) ── */
-  const exportToExcel = () => {
+  const exportToExcel = async () => {
     const exportBase = selectedProductId
       ? completedInRange.filter(o =>
           parseItems(o.items).some(i => i.id === selectedProductId || i.name === selProd?.name)
@@ -410,6 +409,7 @@ function AnalyticsView({ orders, products, categories }: { orders: Order[]; prod
     });
 
     if (rows.length === 0) { alert('אין נתונים לייצוא'); return; }
+    const XLSX = await import('xlsx');
     const ws = XLSX.utils.json_to_sheet(rows);
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, 'הזמנות שבוצעו');
@@ -1190,13 +1190,22 @@ export default function Admin() {
     });
   }, []);
 
-  // Step 2 — After auth is known, check admin role in Firestore
+  // Step 2 — Check admin role. Uses sessionStorage cache to skip Firestore on repeat visits.
   useEffect(() => {
     if (user === undefined || user === null) return;
+    const email = (user as any).email!;
+    const cacheKey = `admin_verified_${email}`;
+
+    if (sessionStorage.getItem(cacheKey) === 'true') {
+      setUnauthorized(false);
+      return;
+    }
+
     setCheckingRole(true);
-    getDoc(doc(db, 'admin', (user as any).email!))
+    getDoc(doc(db, 'admin', email))
       .then(snap => {
         if (snap.exists() && snap.data()?.role === 'admin') {
+          sessionStorage.setItem(cacheKey, 'true');
           setUnauthorized(false);
         } else {
           setUser(null);
