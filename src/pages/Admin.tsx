@@ -1,6 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { auth, db, storage } from '../firebase';
-import { signInWithEmailAndPassword, signOut, onAuthStateChanged, type User } from 'firebase/auth';
+import { db, storage } from '../firebase';
 import {
   collection, query, orderBy, onSnapshot,
   doc, updateDoc, addDoc, deleteDoc, setDoc, getDoc
@@ -13,7 +12,7 @@ import {
 } from 'recharts';
 import {
   ShoppingBag, BarChart3, Package, Settings as SettingsIcon,
-  LogOut, Menu, X, Plus, Trash2, Pencil, Camera, Loader2,
+  Menu, X, Plus, Trash2, Pencil, Camera, Loader2,
   MessageCircle, DollarSign, CheckCircle2, Download, ChevronDown, ChevronUp, Users
 } from 'lucide-react';
 
@@ -61,75 +60,6 @@ const toDate = (v: any): Date => {
   if (v?.toDate) return v.toDate();
   return new Date(v);
 };
-
-/* ─────────────────────────────── Login ──────────────────────────────── */
-function LoginScreen({ unauthorized }: { unauthorized: boolean }) {
-  const [email, setEmail]     = useState('');
-  const [pass, setPass]       = useState('');
-  const [error, setError]     = useState('');
-  const [loading, setLoading] = useState(false);
-
-  const handle = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setError('');
-    setLoading(true);
-    try {
-      await signInWithEmailAndPassword(auth, email, pass);
-    } catch (err: any) {
-      const code: string = err?.code ?? '';
-      const msgs: Record<string, string> = {
-        'auth/invalid-credential':     'אימייל או סיסמה שגויים.',
-        'auth/user-not-found':         'אימייל או סיסמה שגויים.',
-        'auth/wrong-password':         'אימייל או סיסמה שגויים.',
-        'auth/too-many-requests':      'יותר מדי ניסיונות. נסה שוב מאוחר יותר.',
-        'auth/network-request-failed': 'בעיית רשת.',
-      };
-      setError(msgs[code] ?? 'שגיאה בהתחברות. נסה שוב.');
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  return (
-    <div dir="rtl" className="min-h-screen bg-[#FFF5F7] flex items-center justify-center p-4">
-      <div className="w-full max-w-sm">
-        <div className="text-center mb-8">
-          <img src="/logo.jpeg" alt="Tony Amrami" style={{ mixBlendMode: 'multiply' }} className="h-20 mx-auto mb-2 object-contain" />
-          <p className="text-gray-500 text-sm mt-1">כניסה לפאנל ניהול</p>
-        </div>
-        <form onSubmit={handle} className="bg-white border border-[#fce4ec] rounded-2xl p-6 space-y-4">
-          {unauthorized && (
-            <div className="bg-red-500/10 border border-red-500/30 rounded-xl px-4 py-2.5 text-red-500 text-sm text-center">
-              ⛔ המשתמש הזה אינו מוגדר כמנהל.
-            </div>
-          )}
-          {error && (
-            <div className="bg-red-500/10 border border-red-500/30 rounded-xl px-4 py-2.5 text-red-500 text-sm text-center">
-              {error}
-            </div>
-          )}
-          <div>
-            <label className="block text-sm text-gray-400 mb-1.5">אימייל</label>
-            <input type="email" value={email} onChange={e => setEmail(e.target.value)}
-              required autoFocus dir="ltr" placeholder="admin@example.com"
-              className="w-full bg-[#FFF5F7] border border-[#fce4ec] rounded-xl px-4 py-3 text-[#3a3a3a] text-sm outline-none focus:border-[#ff9a9e]/60 transition-colors" />
-          </div>
-          <div>
-            <label className="block text-sm text-gray-400 mb-1.5">סיסמה</label>
-            <input type="password" value={pass} onChange={e => setPass(e.target.value)}
-              required dir="ltr" placeholder="••••••••"
-              className="w-full bg-[#FFF5F7] border border-[#fce4ec] rounded-xl px-4 py-3 text-[#3a3a3a] text-sm outline-none focus:border-[#ff9a9e]/60 transition-colors" />
-          </div>
-          <button type="submit" disabled={loading}
-            className="w-full py-3 rounded-xl font-bold text-white flex items-center justify-center gap-2 disabled:opacity-60 transition-all"
-            style={{ background: `linear-gradient(135deg, ${GOLD}, #fecfef)` }}>
-            {loading ? <Loader2 size={18} className="animate-spin" /> : 'כניסה'}
-          </button>
-        </form>
-      </div>
-    </div>
-  );
-}
 
 /* ─────────────────────────────── StatCard ───────────────────────────── */
 function StatCard({ label, value, icon: Icon, color }: { label: string; value: string | number; icon: any; color: string }) {
@@ -1170,7 +1100,6 @@ function SettingsView({ settings: init }: { settings: StoreSettings }) {
 
 /* ─────────────────────────────── Main Admin ─────────────────────────── */
 export default function Admin() {
-  const [user, setUser]           = useState<User | null | undefined>(undefined); // undefined = loading
   const [activeTab, setActiveTab] = useState<TabName>('orders');
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [orders, setOrders] = useState<Order[]>([]);
@@ -1179,46 +1108,8 @@ export default function Admin() {
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [settings, setSettings] = useState<StoreSettings>({ pickup_address: '', delivery_cost: '0', bit_phone: '' });
   const [dataError, setDataError] = useState('');
-  const [unauthorized, setUnauthorized] = useState(false);
-  const [checkingRole, setCheckingRole] = useState(false);
-
-  // Step 1 — Auth resolves instantly from local cache (no network)
-  useEffect(() => {
-    return onAuthStateChanged(auth, (u) => {
-      if (!u) { setUser(null); setUnauthorized(false); }
-      else setUser(u as any);
-    });
-  }, []);
-
-  // Step 2 — Check admin role. Uses sessionStorage cache to skip Firestore on repeat visits.
-  useEffect(() => {
-    if (user === undefined || user === null) return;
-    const email = (user as any).email!;
-    const cacheKey = `admin_verified_${email}`;
-
-    if (sessionStorage.getItem(cacheKey) === 'true') {
-      setUnauthorized(false);
-      return;
-    }
-
-    setCheckingRole(true);
-    getDoc(doc(db, 'admins', email))
-      .then(snap => {
-        if (snap.exists() && snap.data()?.role === 'admin') {
-          sessionStorage.setItem(cacheKey, 'true');
-          setUnauthorized(false);
-        } else {
-          setUser(null);
-          setUnauthorized(true);
-          signOut(auth);
-        }
-      })
-      .catch(() => { setUser(null); setUnauthorized(true); signOut(auth); })
-      .finally(() => setCheckingRole(false));
-  }, [(user as any)?.uid]);
 
   useEffect(() => {
-    if (!user) return;
     const onErr = (label: string) => (err: Error) => {
       console.error(`[Admin] ${label} listener error:`, err);
       setDataError(`שגיאה בטעינת נתונים (${label}). רענן את הדף.`);
@@ -1247,15 +1138,7 @@ export default function Admin() {
       .then(d => { if (d.exists()) setSettings(d.data() as StoreSettings); })
       .catch(err => console.error('[Admin] settings fetch error:', err));
     return () => { unsubO(); unsubP(); unsubC(); unsubCust(); };
-  }, [user]);
-
-  if (user === undefined || checkingRole) return (
-    <div className="min-h-screen bg-[#FFF5F7] flex items-center justify-center">
-      <Loader2 className="w-10 h-10 animate-spin" style={{ color: GOLD }} />
-    </div>
-  );
-
-  if (!user) return <LoginScreen unauthorized={unauthorized} />;
+  }, []);
 
   const newOrdersCount = orders.filter(o => o.status === 'חדש').length;
 
@@ -1303,10 +1186,6 @@ export default function Admin() {
             <img src="/logo.jpeg" alt="Tony Amrami" style={{ mixBlendMode: 'multiply' }} className="h-8 object-contain" />
           </div>
         </div>
-        <button onClick={() => signOut(auth)}
-          className="flex items-center gap-1.5 text-xs text-gray-500 hover:text-red-400 transition-colors px-3 py-1.5 rounded-xl hover:bg-red-500/10">
-          <LogOut size={14} /> יציאה
-        </button>
       </header>
 
       <div className="flex">
