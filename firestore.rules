@@ -88,13 +88,21 @@ service cloud.firestore {
     }
 
     // ── Admins registry ───────────────────────────────────────────────────
+    // A signed-in user may read only their own whitelist entry (the AuthContext
+    // gate); admins may read the full registry. The whitelist is managed
+    // out-of-band (Firebase console / grantAdminIfWhitelisted via the Admin SDK),
+    // so client writes are denied.
     match /admins/{email} {
-      allow read, write: if true;
+      allow read: if isAdmin() || (request.auth != null && request.auth.token.email == email);
+      allow write: if false;
     }
 
     // ── Customer CRM ──────────────────────────────────────────────────────
+    // Read-only to admins; rows are written server-side via the Admin SDK
+    // (which bypasses rules), so client writes are denied.
     match /customers/{phone} {
-      allow read, write: if true;
+      allow read: if isAdmin();
+      allow write: if false;
     }
 
     // ── Deny everything not explicitly listed ─────────────────────────────
