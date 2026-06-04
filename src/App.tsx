@@ -5,10 +5,9 @@ import CheckoutSuccess from './components/CheckoutSuccess';
 import { ShoppingCart, Package, Plus, Trash2, Camera, ChevronRight, ChevronLeft, CheckCircle2, X, Menu, Loader2, ChevronDown, Copy, Star, MessageCircle, Gift, Box } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Product, Category, Settings, CartItem, Coupon, SiteContent, Review } from './types';
-import { db, storage, app } from './firebase';
+import { db, storage } from './firebase';
 import { collection, addDoc, getDocs, doc, getDoc, setDoc, query, orderBy, where } from "firebase/firestore";
 import { ref, uploadBytes, getDownloadURL } from "firebase/storage";
-import { getFunctions, httpsCallable } from 'firebase/functions';
 
 export default function App() {
   const [view, setView] = useState<'user' | 'checkout' | 'success' | 'product' | 'build-box'>('user');
@@ -368,24 +367,25 @@ export default function App() {
       });
       // Telegram notification fires automatically via onOrderCreated Cloud Function trigger
 
-      // 2. Call Cloud Function → get Grow payment URL
-      const fns = getFunctions(app, 'us-central1');
-      const createGrowPaymentFn = httpsCallable<
-        { orderId: string; sum: number; fullName: string; phone: string; email?: string; description: string },
-        { paymentUrl: string }
-      >(fns, 'createGrowPayment');
-
-      const result = await createGrowPaymentFn({
-        orderId: orderDoc.id,
-        sum: finalTotal,
-        fullName: checkoutData.name,
-        phone: checkoutData.phone,
-        ...(checkoutData.email && { email: checkoutData.email }),
-        description: 'הזמנה',
+      // 2. POST to Make.com webhook → get payment URL
+      const response = await fetch("https://hook.eu1.make.com/77c28f0f26ja6igr5wb6356nd89nfqip", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          orderId: orderDoc.id,
+          total_price: finalTotal,
+          customer_name: checkoutData.name,
+          customer_phone: checkoutData.phone,
+        }),
       });
 
-      // 3. Redirect to Grow's hosted payment page — page navigates away here
-      window.location.href = result.data.paymentUrl;
+      if (!response.ok) throw new Error(`Webhook responded with ${response.status}`);
+
+      const responseData = await response.json();
+      if (!responseData.payment_url) throw new Error("No payment_url in webhook response");
+
+      // 3. Redirect to the payment page — page navigates away here
+      window.location.href = responseData.payment_url;
 
     } catch (err) {
       console.error("Checkout error:", err);
