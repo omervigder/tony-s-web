@@ -1,12 +1,14 @@
 import React, { useState, useEffect, useRef } from 'react';
 import AccessibilityWidget from './components/AccessibilityWidget';
 import GiftAssistant from './components/GiftAssistant';
+import CheckoutSuccess from './components/CheckoutSuccess';
 import { ShoppingCart, Package, Plus, Trash2, Camera, ChevronRight, ChevronLeft, CheckCircle2, X, Menu, Loader2, ChevronDown, Copy, Star, MessageCircle, Gift, Box } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Product, Category, Settings, CartItem, Coupon, SiteContent, Review } from './types';
-import { db, storage } from './firebase';
+import { db, storage, app } from './firebase';
 import { collection, addDoc, getDocs, doc, getDoc, setDoc, query, orderBy, where } from "firebase/firestore";
 import { ref, uploadBytes, getDownloadURL } from "firebase/storage";
+import { getFunctions, httpsCallable } from 'firebase/functions';
 
 export default function App() {
   const [view, setView] = useState<'user' | 'checkout' | 'success' | 'product' | 'build-box'>('user');
@@ -35,8 +37,9 @@ export default function App() {
   const [isLoadingReviews, setIsLoadingReviews] = useState(false);
   const [reviewForm, setReviewForm] = useState({ rating: 5, message: '', customerName: '', photoFile: null as File | null, photoPreview: '' });
   const [isSubmittingReview, setIsSubmittingReview] = useState(false);
+  const [isCreatingPayment, setIsCreatingPayment] = useState(false);
 
-  // Saved total for Bit payment link (finalTotal resets to 0 when cart is cleared)
+  // Saved total for success page (finalTotal resets to 0 when cart is cleared)
   const [savedFinalTotal, setSavedFinalTotal] = useState(0);
 
   // Build-A-Box
@@ -149,6 +152,20 @@ export default function App() {
     window.addEventListener('popstate', onPop);
     return () => window.removeEventListener('popstate', onPop);
   }, [products]); // re-bind when products load so fetchProductDetails has fresh closure
+
+  // Detect return from Grow payment redirect — runs immediately on mount before products load
+  useEffect(() => {
+    if (window.location.pathname !== '/shop/success') return;
+    const params = new URLSearchParams(window.location.search);
+    const orderId = params.get('orderId');
+    const response = params.get('response');
+    if (orderId && response === 'success') {
+      setLastOrderId(orderId);
+      setCart([]);               // clear cart now that payment is confirmed
+      setView('success');
+      urlInitDone.current = true; // prevent the products-dependent effect from overriding
+    }
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Initialize view from URL once products are available (handles direct links & refresh)
   useEffect(() => {
@@ -323,7 +340,9 @@ export default function App() {
     if (!checkoutData.name || !checkoutData.phone) return alert("נא למלא את כל השדות");
     if (checkoutData.delivery === 'delivery' && !checkoutData.shippingAddress.trim()) return alert("נא להזין כתובת למשלוח");
 
+    setIsCreatingPayment(true);
     try {
+      // 1. Save order as pending_payment — do NOT show success UI yet
       const orderItems = cart.map(i => ({
         id: i.id, name: i.name, price: i.price, costPrice: i.costPrice ?? 0, quantity: i.quantity,
         ...(i.selectedVariations && Object.keys(i.selectedVariations).length > 0 && { selectedVariations: i.selectedVariations }),
@@ -338,31 +357,40 @@ export default function App() {
         delivery_method: checkoutData.delivery,
         total_price: finalTotal,
         items: orderItems,
-        status: 'חדש',
-        orderStatus: 'Pending',
+        status: 'pending_payment',
+        orderStatus: 'PendingPayment',
         isPaid: false,
         ...(checkoutData.delivery === 'delivery' && { shippingAddress: checkoutData.shippingAddress }),
         created_at: new Date().toISOString(),
-        ...(appliedCoupon && {
-          coupon_code: appliedCoupon.code,
-          discount_amount: discountAmount,
-        }),
+        ...(appliedCoupon && { coupon_code: appliedCoupon.code, discount_amount: discountAmount }),
         ...(dedicationData && { dedication: dedicationData }),
         ...(customerNotes.trim() && { customer_notes: customerNotes.trim() }),
       });
-      setLastOrderId(orderDoc.id);
-      setSavedFinalTotal(finalTotal); // snapshot before cart is cleared
-      setCart([]);
-      setAppliedCoupon(null);
-      setCouponInput('');
-      setCheckoutData({ name: '', phone: '', email: '', delivery: 'pickup', shippingAddress: '' });
-      setDedication({ message: '', cardType: 'digital' });
-      setCustomerNotes('');
-      navigateTo('success');
-      // Telegram notification is sent automatically by the onOrderCreated Cloud Function trigger
+      // Telegram notification fires automatically via onOrderCreated Cloud Function trigger
+
+      // 2. Call Cloud Function → get Grow payment URL
+      const fns = getFunctions(app, 'us-central1');
+      const createGrowPaymentFn = httpsCallable<
+        { orderId: string; sum: number; fullName: string; phone: string; email?: string; description: string },
+        { paymentUrl: string }
+      >(fns, 'createGrowPayment');
+
+      const result = await createGrowPaymentFn({
+        orderId: orderDoc.id,
+        sum: finalTotal,
+        fullName: checkoutData.name,
+        phone: checkoutData.phone,
+        ...(checkoutData.email && { email: checkoutData.email }),
+        description: 'הזמנה',
+      });
+
+      // 3. Redirect to Grow's hosted payment page — page navigates away here
+      window.location.href = result.data.paymentUrl;
+
     } catch (err) {
       console.error("Checkout error:", err);
-      alert("שגיאה בשליחת ההזמנה");
+      alert("שגיאה בתהליך התשלום. אנא נסה שוב.");
+      setIsCreatingPayment(false);
     }
   };
 
@@ -964,9 +992,12 @@ export default function App() {
 
               <button
                 onClick={handleCheckout}
-                className="w-full btn-primary text-lg py-4 shadow-lg"
+                disabled={isCreatingPayment}
+                className="w-full btn-primary text-lg py-4 shadow-lg disabled:opacity-60 disabled:cursor-not-allowed"
               >
-                אישור הזמנה ותשלום
+                {isCreatingPayment
+                  ? <span className="flex items-center justify-center gap-2"><Loader2 size={20} className="animate-spin" />מכין תשלום...</span>
+                  : 'אישור הזמנה ותשלום'}
               </button>
             </div>
           </div>
@@ -1103,25 +1134,7 @@ export default function App() {
         )}
 
         {view === 'success' && (
-          <div className="max-w-md mx-auto text-center space-y-8 py-12">
-            <div className="w-24 h-24 bg-green-100 text-green-500 rounded-full flex items-center justify-center mx-auto shadow-inner">
-              <CheckCircle2 size={48} />
-            </div>
-            <div className="space-y-4">
-              <h2 className="text-3xl font-bold">ההזמנה התקבלה!</h2>
-              <p className="text-gray-500">מספר הזמנה: #{lastOrderId}</p>
-              <p className="text-gray-600">תודה שקנית אצלנו. כעת ניתן לעבור לתשלום ב-Bit.</p>
-            </div>
-            <a
-              href={`https://bitpay.co.il/app/pay?phone=${settings.bit_phone}&amount=${savedFinalTotal}`}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="block w-full bg-[#00b0ff] text-white py-4 rounded-2xl font-bold text-xl shadow-lg hover:bg-[#0091ea] transition-all"
-            >
-              שלם ב-Bit ₪{savedFinalTotal}
-            </a>
-            <button onClick={() => navigateTo('user')} className="text-gray-400 hover:text-gray-600">חזרה לדף הבית</button>
-          </div>
+          <CheckoutSuccess orderId={lastOrderId} onContinueShopping={() => navigateTo('user')} />
         )}
       </main>
 

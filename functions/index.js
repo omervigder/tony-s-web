@@ -38,6 +38,12 @@ const telegramBotToken = defineSecret("TELEGRAM_BOT_TOKEN");
 const telegramChatId = defineSecret("TELEGRAM_CHAT_ID");
 const telegramWebhookSecret = defineSecret("TELEGRAM_WEBHOOK_SECRET");
 const geminiApiKey = defineSecret("GEMINI_API_KEY");
+const growUserId = defineSecret("GROW_USER_ID");
+const growPageCode = defineSecret("GROW_PAGE_CODE");
+
+const GROW_BASE_URL = "https://sandbox.meshulam.co.il/api/light/server/1.0/";
+// Switch to the live URL once Grow approves your integration:
+// const GROW_BASE_URL = "https://meshulam.co.il/api/light/server/1.0/";
 
 // ── Helper: normalize Israeli phone to 05XXXXXXXX ─────────────────────────────
 function normalizePhone(phone) {
@@ -605,3 +611,148 @@ exports.grantAdminIfWhitelisted = onCall({ enforceAppCheck: false }, async (requ
     throw new HttpsError("internal", "Failed to check admin status");
   }
 });
+
+// ── Grow Payments: create payment session ─────────────────────────────────────
+// Called by the frontend at checkout. Returns a paymentUrl to redirect the user to.
+exports.createGrowPayment = onCall(
+  { cors: true, secrets: [growUserId, growPageCode] },
+  async (request) => {
+    const { orderId, sum, fullName, phone, email, description } = request.data;
+
+    if (!orderId || !sum || !fullName || !phone) {
+      throw new HttpsError("invalid-argument", "Missing required payment fields");
+    }
+
+    // Grow requires no special characters in text fields
+    const clean = (s) => String(s || "").replace(/[^\w\u0590-\u05FF\s]/g, " ").trim();
+
+    const PROJECT_ID = process.env.GCLOUD_PROJECT || "tony-amramy-branding";
+    const NOTIFY_URL = `https://us-central1-${PROJECT_ID}.cloudfunctions.net/growPaymentCallback`;
+    // successUrl includes orderId so the frontend can show the right order on return
+    const SUCCESS_URL = `https://tony-amramy-branding.web.app/shop/success?orderId=${orderId}`;
+    const CANCEL_URL  = "https://tony-amramy-branding.web.app/shop/checkout";
+
+    const payload = {
+      pageCode: growPageCode.value(),
+      userId: growUserId.value(),
+      sum: Number(sum),
+      description: clean(description) || "הזמנה",
+      successUrl: SUCCESS_URL,
+      cancelUrl: CANCEL_URL,
+      notifyUrl: NOTIFY_URL,
+      chargeType: 1,
+      pageField: {
+        fullName: clean(fullName),
+        phone: String(phone).replace(/\D/g, ""),
+        ...(email && { email: String(email).trim() }),
+      },
+      transactionTypes: [1], // 1=credit card; add 6=Bit, 13=Apple Pay, 14=Google Pay
+      cField1: orderId,      // echoed back in server callback to identify the order
+    };
+
+    logger.info(`createGrowPayment: orderId=${orderId}, sum=${sum}`);
+
+    const response = await axios.post(`${GROW_BASE_URL}createPaymentProcess`, payload);
+
+    if (!response.data || String(response.data.status) !== "1") {
+      logger.error("Grow createPaymentProcess failed:", JSON.stringify(response.data));
+      const errMsg = response.data?.err?.message || "Payment initialization failed";
+      throw new HttpsError("internal", errMsg);
+    }
+
+    const { paymentLinkProcessToken } = response.data.data;
+
+    // Construct the hosted payment page URL.
+    // Format: https://sandbox.meshulam.co.il/api/light/pay/{token}
+    // If this URL doesn't work, check with Grow support for the correct redirect URL format.
+    const paymentUrl = `${GROW_BASE_URL}pay/${paymentLinkProcessToken}`;
+
+    logger.info(`createGrowPayment: paymentUrl generated for orderId=${orderId}`);
+    return { paymentUrl };
+  }
+);
+
+// ── Grow Payments: server-to-server payment callback ─────────────────────────
+// Grow POSTs here after a transaction completes (success or failure).
+// We verify the payment, update Firestore, then call approveTransaction.
+exports.growPaymentCallback = onRequest(
+  { secrets: [growUserId, growPageCode] },
+  async (req, res) => {
+    if (req.method !== "POST") { res.status(405).send("Method Not Allowed"); return; }
+
+    const body = req.body?.data ?? req.body ?? {};
+    logger.info("growPaymentCallback received:", JSON.stringify(body));
+
+    const {
+      statusCode,
+      transactionId, transactionToken,
+      transactionTypeId, paymentType,
+      sum, firstPaymentSum, periodicalPaymentSum,
+      paymentsNum, allPaymentsNum,
+      paymentDate, asmachta,
+      description, fullName, payerPhone, payerEmail,
+      cardSuffix, cardType, cardTypeCode, cardBrand, cardBrandCode, cardExp,
+      processId, processToken,
+      customFields,
+    } = body;
+
+    const orderId = customFields?.cField1 || body.cField1;
+
+    // statusCode "2" = Paid — promote order from pending_payment to active
+    if (String(statusCode) === "2" && orderId) {
+      try {
+        await db.collection("orders").doc(orderId).update({
+          isPaid: true,
+          status: "חדש",           // now visible as a real order
+          orderStatus: "Processing",
+          paid_at: new Date().toISOString(),
+          payment_confirmation: asmachta || "",
+          payment_sum: Number(sum) || 0,
+          payment_card_suffix: cardSuffix || "",
+          payment_card_brand: cardBrand || "",
+        });
+        logger.info(`Order ${orderId} activated after payment (asmachta=${asmachta})`);
+      } catch (err) {
+        logger.error(`Failed to update order ${orderId}:`, err);
+      }
+    }
+
+    // Call approveTransaction as required by Grow — acknowledgment that we received the callback
+    try {
+      await axios.post(`${GROW_BASE_URL}approveTransaction`, {
+        pageCode: growPageCode.value(),
+        transactionId,
+        transactionToken,
+        transactionTypeId,
+        paymentType,
+        sum,
+        firstPaymentSum: firstPaymentSum || "0",
+        periodicalPaymentSum: periodicalPaymentSum || "0",
+        paymentsNum: paymentsNum || "0",
+        allPaymentsNum: allPaymentsNum || "1",
+        paymentDate,
+        asmachta,
+        description,
+        fullName,
+        payerPhone,
+        payerEmail,
+        cardSuffix,
+        cardType,
+        cardTypeCode,
+        cardBrand,
+        cardBrandCode,
+        cardExp,
+        processId,
+        processToken,
+        paymentLinkProcessId: body.paymentLinkProcessId || "",
+        paymentLinkProcessToken: body.paymentLinkProcessToken || "",
+      });
+      logger.info(`approveTransaction sent for transactionId=${transactionId}`);
+    } catch (err) {
+      // Non-fatal — transaction still processes even if this fails
+      logger.warn("approveTransaction call failed:", err?.message ?? err);
+    }
+
+    res.status(200).send("OK");
+  }
+);
