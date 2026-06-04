@@ -336,8 +336,14 @@ export default function App() {
   const finalTotal = Math.max(0, cartTotal - discountAmount + (checkoutData.delivery === 'delivery' ? Number(settings.delivery_cost) : 0) + cardCost);
 
   const handleCheckout = async () => {
-    if (!checkoutData.name || !checkoutData.phone) return alert("נא למלא את כל השדות");
+    if (!checkoutData.name.trim() || !checkoutData.phone.trim()) return alert("נא למלא את כל השדות");
+    // Mirror firestore.rules isValidOrderCreate(): customer_phone.size() must be 7–20.
+    // Enforce here so a too-short phone surfaces as a clear message, not a Firestore permission error.
+    if (checkoutData.phone.trim().length < 7 || checkoutData.phone.trim().length > 20)
+      return alert("נא להזין מספר טלפון תקין (7 עד 20 תווים)");
     if (checkoutData.delivery === 'delivery' && !checkoutData.shippingAddress.trim()) return alert("נא להזין כתובת למשלוח");
+    // Guard against a NaN/negative total (rules require total_price >= 0), e.g. malformed delivery_cost setting.
+    if (!Number.isFinite(finalTotal) || finalTotal < 0) return alert("שגיאה בחישוב הסכום. רעננו את הדף ונסו שוב.");
 
     setIsCreatingPayment(true);
 

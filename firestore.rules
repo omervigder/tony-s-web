@@ -2,8 +2,15 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
 
+    // Admin = signed-in user whose email is whitelisted in the `admins` collection
+    // with role 'admin'. Mirrors AuthContext.tsx, which gates the admin panel the same
+    // way. (The `admin` custom claim is never set on the client, so a token-claim check
+    // would always be false — we resolve admin status from Firestore instead.)
     function isAdmin() {
-      return request.auth != null && request.auth.token.admin == true;
+      let adminRef = /databases/$(database)/documents/admins/$(request.auth.token.email);
+      return request.auth != null
+          && exists(adminRef)
+          && get(adminRef).data.role == 'admin';
     }
 
     // ── Schema validation — guest-submitted order ─────────────────────────
@@ -74,8 +81,10 @@ service cloud.firestore {
 
     // ── Orders ────────────────────────────────────────────────────────────
     match /orders/{id} {
+      // Guests place orders (schema-validated, no auth required)
       allow create: if isValidOrderCreate();
-      allow read, update, delete: if true;
+      // Only whitelisted admins may read customer PII, mark paid, or delete
+      allow read, update, delete: if isAdmin();
     }
 
     // ── Admins registry ───────────────────────────────────────────────────
