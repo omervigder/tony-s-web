@@ -340,16 +340,19 @@ export default function App() {
     if (checkoutData.delivery === 'delivery' && !checkoutData.shippingAddress.trim()) return alert("נא להזין כתובת למשלוח");
 
     setIsCreatingPayment(true);
+
+    const orderItems = cart.map(i => ({
+      id: i.id, name: i.name, price: i.price, costPrice: i.costPrice ?? 0, quantity: i.quantity,
+      ...(i.selectedVariations && Object.keys(i.selectedVariations).length > 0 && { selectedVariations: i.selectedVariations }),
+    }));
+    const dedicationData = dedication.message.trim()
+      ? { message: dedication.message.trim(), cardType: dedication.cardType }
+      : undefined;
+
+    // ── 1. Save order as pending_payment (Firestore) — do NOT show success UI yet ──
+    let orderDoc;
     try {
-      // 1. Save order as pending_payment — do NOT show success UI yet
-      const orderItems = cart.map(i => ({
-        id: i.id, name: i.name, price: i.price, costPrice: i.costPrice ?? 0, quantity: i.quantity,
-        ...(i.selectedVariations && Object.keys(i.selectedVariations).length > 0 && { selectedVariations: i.selectedVariations }),
-      }));
-      const dedicationData = dedication.message.trim()
-        ? { message: dedication.message.trim(), cardType: dedication.cardType }
-        : undefined;
-      const orderDoc = await addDoc(collection(db, "orders"), {
+      orderDoc = await addDoc(collection(db, "orders"), {
         customer_name: checkoutData.name,
         customer_phone: checkoutData.phone,
         ...(checkoutData.email && { customer_email: checkoutData.email }),
@@ -366,9 +369,17 @@ export default function App() {
         ...(customerNotes.trim() && { customer_notes: customerNotes.trim() }),
       });
       // Telegram notification fires automatically via onOrderCreated Cloud Function trigger
+    } catch (err) {
+      console.error("[Checkout] Firestore order save failed:", err);
+      alert("שגיאה בשמירת ההזמנה. אנא בדקו את חיבור האינטרנט ונסו שוב.");
+      setIsCreatingPayment(false);
+      return;
+    }
 
-      // 2. POST to Make.com webhook → get payment URL
-      const response = await fetch("https://hook.eu1.make.com/77c28f0f26ja6igr5wb6356nd89nfqip", {
+    // ── 2. POST to Make.com webhook (network) → get payment URL ──
+    let response: Response;
+    try {
+      response = await fetch("https://hook.eu1.make.com/77c28f0f26ja6igr5wb6356nd89nfqip", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -378,20 +389,45 @@ export default function App() {
           customer_phone: checkoutData.phone,
         }),
       });
-
-      if (!response.ok) throw new Error(`Webhook responded with ${response.status}`);
-
-      const responseData = await response.json();
-      if (!responseData.payment_url) throw new Error("No payment_url in webhook response");
-
-      // 3. Redirect to the payment page — page navigates away here
-      window.location.href = responseData.payment_url;
-
     } catch (err) {
-      console.error("Checkout error:", err);
-      alert("שגיאה בתהליך התשלום. אנא נסה שוב.");
+      // fetch only rejects on network-level failures (offline, DNS, blocked CORS preflight)
+      console.error("[Checkout] Webhook request failed (network/CORS). Order ID:", orderDoc.id, err);
+      alert("שגיאת רשת ביצירת התשלום. אנא בדקו את חיבור האינטרנט ונסו שוב.");
       setIsCreatingPayment(false);
+      return;
     }
+
+    // ── 3. Validate + parse webhook response, then extract payment_url ──
+    // Read the body once as text so we can log the raw response for debugging.
+    const rawResponse = await response.text();
+
+    if (!response.ok) {
+      console.error(`[Checkout] Webhook returned HTTP ${response.status} ${response.statusText}. Raw response:`, rawResponse);
+      alert("שגיאה ביצירת התשלום (תגובת שרת שגויה). אנא נסו שוב.");
+      setIsCreatingPayment(false);
+      return;
+    }
+
+    let responseData: { payment_url?: string };
+    try {
+      responseData = JSON.parse(rawResponse);
+    } catch (err) {
+      console.error("[Checkout] Webhook response is not valid JSON. Raw response:", rawResponse, err);
+      alert("שגיאה ביצירת התשלום (תגובה לא תקינה מהשרת). אנא נסו שוב.");
+      setIsCreatingPayment(false);
+      return;
+    }
+
+    if (!responseData.payment_url) {
+      console.error("[Checkout] Webhook response is missing payment_url. Parsed response:", responseData, "Raw response:", rawResponse);
+      alert("שגיאה ביצירת קישור התשלום. אנא נסו שוב.");
+      setIsCreatingPayment(false);
+      return;
+    }
+
+    // ── 4. Redirect to the payment page — page navigates away here ──
+    console.log("[Checkout] Redirecting to payment URL for order", orderDoc.id, "→", responseData.payment_url);
+    window.location.href = responseData.payment_url;
   };
 
   // ── Coupon: storefront ──────────────────────────────────────────────────────
