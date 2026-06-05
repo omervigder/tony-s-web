@@ -5,10 +5,9 @@ import CheckoutSuccess from './components/CheckoutSuccess';
 import { ShoppingCart, Package, Plus, Trash2, Camera, ChevronRight, ChevronLeft, CheckCircle2, X, Menu, Loader2, ChevronDown, Copy, Star, MessageCircle, Gift, Box } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Product, Category, Settings, CartItem, Coupon, SiteContent, Review } from './types';
-import { db, storage, app } from './firebase';
+import { db, storage } from './firebase';
 import { collection, addDoc, getDocs, doc, getDoc, setDoc, query, orderBy, where } from "firebase/firestore";
 import { ref, uploadBytes, getDownloadURL } from "firebase/storage";
-import { getFunctions, httpsCallable } from 'firebase/functions';
 
 export default function App() {
   const [view, setView] = useState<'user' | 'checkout' | 'success' | 'product' | 'build-box'>('user');
@@ -337,20 +336,29 @@ export default function App() {
   const finalTotal = Math.max(0, cartTotal - discountAmount + (checkoutData.delivery === 'delivery' ? Number(settings.delivery_cost) : 0) + cardCost);
 
   const handleCheckout = async () => {
-    if (!checkoutData.name || !checkoutData.phone) return alert("נא למלא את כל השדות");
+    if (!checkoutData.name.trim() || !checkoutData.phone.trim()) return alert("נא למלא את כל השדות");
+    // Mirror firestore.rules isValidOrderCreate(): customer_phone.size() must be 7–20.
+    // Enforce here so a too-short phone surfaces as a clear message, not a Firestore permission error.
+    if (checkoutData.phone.trim().length < 7 || checkoutData.phone.trim().length > 20)
+      return alert("נא להזין מספר טלפון תקין (7 עד 20 תווים)");
     if (checkoutData.delivery === 'delivery' && !checkoutData.shippingAddress.trim()) return alert("נא להזין כתובת למשלוח");
+    // Guard against a NaN/negative total (rules require total_price >= 0), e.g. malformed delivery_cost setting.
+    if (!Number.isFinite(finalTotal) || finalTotal < 0) return alert("שגיאה בחישוב הסכום. רעננו את הדף ונסו שוב.");
 
     setIsCreatingPayment(true);
+
+    const orderItems = cart.map(i => ({
+      id: i.id, name: i.name, price: i.price, costPrice: i.costPrice ?? 0, quantity: i.quantity,
+      ...(i.selectedVariations && Object.keys(i.selectedVariations).length > 0 && { selectedVariations: i.selectedVariations }),
+    }));
+    const dedicationData = dedication.message.trim()
+      ? { message: dedication.message.trim(), cardType: dedication.cardType }
+      : undefined;
+
+    // ── 1. Save order as pending_payment (Firestore) — do NOT show success UI yet ──
+    let orderDoc;
     try {
-      // 1. Save order as pending_payment — do NOT show success UI yet
-      const orderItems = cart.map(i => ({
-        id: i.id, name: i.name, price: i.price, costPrice: i.costPrice ?? 0, quantity: i.quantity,
-        ...(i.selectedVariations && Object.keys(i.selectedVariations).length > 0 && { selectedVariations: i.selectedVariations }),
-      }));
-      const dedicationData = dedication.message.trim()
-        ? { message: dedication.message.trim(), cardType: dedication.cardType }
-        : undefined;
-      const orderDoc = await addDoc(collection(db, "orders"), {
+      orderDoc = await addDoc(collection(db, "orders"), {
         customer_name: checkoutData.name,
         customer_phone: checkoutData.phone,
         ...(checkoutData.email && { customer_email: checkoutData.email }),
@@ -367,31 +375,65 @@ export default function App() {
         ...(customerNotes.trim() && { customer_notes: customerNotes.trim() }),
       });
       // Telegram notification fires automatically via onOrderCreated Cloud Function trigger
-
-      // 2. Call Cloud Function → get Grow payment URL
-      const fns = getFunctions(app, 'us-central1');
-      const createGrowPaymentFn = httpsCallable<
-        { orderId: string; sum: number; fullName: string; phone: string; email?: string; description: string },
-        { paymentUrl: string }
-      >(fns, 'createGrowPayment');
-
-      const result = await createGrowPaymentFn({
-        orderId: orderDoc.id,
-        sum: finalTotal,
-        fullName: checkoutData.name,
-        phone: checkoutData.phone,
-        ...(checkoutData.email && { email: checkoutData.email }),
-        description: 'הזמנה',
-      });
-
-      // 3. Redirect to Grow's hosted payment page — page navigates away here
-      window.location.href = result.data.paymentUrl;
-
     } catch (err) {
-      console.error("Checkout error:", err);
-      alert("שגיאה בתהליך התשלום. אנא נסה שוב.");
+      console.error("[Checkout] Firestore order save failed:", err);
+      alert("שגיאה בשמירת ההזמנה. אנא בדקו את חיבור האינטרנט ונסו שוב.");
       setIsCreatingPayment(false);
+      return;
     }
+
+    // ── 2. POST to Make.com webhook (network) → get payment URL ──
+    let response: Response;
+    try {
+      response = await fetch("https://hook.eu1.make.com/77c28f0f26ja6igr5wb6356nd89nfqip", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          orderId: orderDoc.id,
+          total_price: finalTotal,
+          customer_name: checkoutData.name,
+          customer_phone: checkoutData.phone,
+        }),
+      });
+    } catch (err) {
+      // fetch only rejects on network-level failures (offline, DNS, blocked CORS preflight)
+      console.error("[Checkout] Webhook request failed (network/CORS). Order ID:", orderDoc.id, err);
+      alert("שגיאת רשת ביצירת התשלום. אנא בדקו את חיבור האינטרנט ונסו שוב.");
+      setIsCreatingPayment(false);
+      return;
+    }
+
+    // ── 3. Validate + parse webhook response, then extract payment_url ──
+    // Read the body once as text so we can log the raw response for debugging.
+    const rawResponse = await response.text();
+
+    if (!response.ok) {
+      console.error(`[Checkout] Webhook returned HTTP ${response.status} ${response.statusText}. Raw response:`, rawResponse);
+      alert("שגיאה ביצירת התשלום (תגובת שרת שגויה). אנא נסו שוב.");
+      setIsCreatingPayment(false);
+      return;
+    }
+
+    let responseData: { payment_url?: string };
+    try {
+      responseData = JSON.parse(rawResponse);
+    } catch (err) {
+      console.error("[Checkout] Webhook response is not valid JSON. Raw response:", rawResponse, err);
+      alert("שגיאה ביצירת התשלום (תגובה לא תקינה מהשרת). אנא נסו שוב.");
+      setIsCreatingPayment(false);
+      return;
+    }
+
+    if (!responseData.payment_url) {
+      console.error("[Checkout] Webhook response is missing payment_url. Parsed response:", responseData, "Raw response:", rawResponse);
+      alert("שגיאה ביצירת קישור התשלום. אנא נסו שוב.");
+      setIsCreatingPayment(false);
+      return;
+    }
+
+    // ── 4. Redirect to the payment page — page navigates away here ──
+    console.log("[Checkout] Redirecting to payment URL for order", orderDoc.id, "→", responseData.payment_url);
+    window.location.href = responseData.payment_url;
   };
 
   // ── Coupon: storefront ──────────────────────────────────────────────────────
