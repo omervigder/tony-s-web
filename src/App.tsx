@@ -336,6 +336,13 @@ export default function App() {
   const cardCost = dedication.message.trim() && dedication.cardType === 'printed' ? Number(settings.printed_card_price || 15) : 0;
   const finalTotal = Math.max(0, cartTotal - discountAmount + (checkoutData.delivery === 'delivery' ? Number(settings.delivery_cost) : 0) + cardCost);
 
+  // Format ₪ amounts — rounds to 2 decimals and trims trailing zeros so
+  // float imprecision (e.g. 0.1+0.2 = 0.30000000000000004) never reaches the UI.
+  const formatPrice = (n: number | string | undefined | null): string => {
+    const num = Number(n) || 0;
+    return num.toFixed(2).replace(/\.?0+$/, '');
+  };
+
   // Validation rules (kept strict so the Make.com pipeline gets clean data)
   const NAME_RE = /^[֐-׿a-zA-Z][֐-׿a-zA-Z\s'\-]{1,99}$/;
   const isValidName = (s: string) => {
@@ -630,7 +637,7 @@ export default function App() {
                     <h3 className="text-lg font-bold mb-2">{product.name}</h3>
                     <p className="text-gray-500 text-sm mb-4 line-clamp-2">{product.description}</p>
                     <div className="flex justify-between items-center mt-auto">
-                      <span className="text-xl font-bold text-[#ff9a9e]">₪{product.price}</span>
+                      <span className="text-xl font-bold text-[#ff9a9e]">₪{formatPrice(product.price)}</span>
                       <button
                         onClick={(e) => { e.stopPropagation(); addToCart(product); }}
                         className="btn-primary flex items-center gap-2"
@@ -677,7 +684,7 @@ export default function App() {
               </div>
               <div className="space-y-6">
                 <h2 className="text-4xl font-bold">{selectedProduct.name}</h2>
-                <p className="text-xl text-[#ff9a9e] font-bold">₪{selectedProduct.price}</p>
+                <p className="text-xl text-[#ff9a9e] font-bold">₪{formatPrice(selectedProduct.price)}</p>
                 <div className="prose prose-pink">
                   <p className="text-gray-600 text-lg leading-relaxed">{selectedProduct.description}</p>
                 </div>
@@ -907,20 +914,23 @@ export default function App() {
                   <input
                     id="checkout-phone"
                     type="tel"
-                    inputMode="tel"
-                    placeholder="050-1234567"
+                    inputMode="numeric"
+                    placeholder="0501234567"
+                    maxLength={13}
                     aria-invalid={!!formErrors.phone}
                     className={`w-full p-3 rounded-xl border focus:ring-2 focus:ring-[#ff9a9e] focus:border-transparent outline-none ${formErrors.phone ? 'border-red-400' : 'border-gray-200'}`}
                     value={checkoutData.phone}
                     onChange={e => {
-                      setCheckoutData(prev => ({ ...prev, phone: e.target.value }));
+                      // Strip everything except digits and a leading '+' (for +972…)
+                      const cleaned = e.target.value.replace(/[^\d+]/g, '').replace(/(?!^)\+/g, '');
+                      setCheckoutData(prev => ({ ...prev, phone: cleaned }));
                       if (formErrors.phone) setFormErrors(prev => ({ ...prev, phone: undefined }));
                     }}
                     onBlur={e => setFormErrors(prev => ({ ...prev, phone: e.target.value && !isValidPhone(e.target.value) ? PHONE_ERROR : undefined }))}
                   />
                   {formErrors.phone
                     ? <p className="text-xs text-red-500 mt-1">{formErrors.phone}</p>
-                    : <p className="text-xs text-gray-400 mt-1">מספר נייד ישראלי המתחיל ב-05 (לדוגמה 050-1234567)</p>}
+                    : <p className="text-xs text-gray-400 mt-1">מספר נייד ישראלי המתחיל ב-05 (ספרות בלבד, לדוגמה 0501234567)</p>}
                 </div>
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">אימייל (אופציונלי)</label>
@@ -980,7 +990,7 @@ export default function App() {
                     onClick={() => setDedication(prev => ({ ...prev, cardType: prev.cardType === 'printed' ? 'digital' : 'printed' }))}
                     className={`w-full p-3 rounded-xl border text-sm font-medium transition-all ${dedication.cardType === 'printed' ? 'bg-[#ff9a9e] text-white border-[#ff9a9e] shadow-sm' : 'bg-white text-gray-500 border-gray-200 hover:border-[#ff9a9e]'}`}
                   >
-                    🖨️ כרטיס מודפס פרימיום<br/><span className="text-xs font-normal opacity-75">+₪{settings.printed_card_price || 15}</span>
+                    🖨️ כרטיס מודפס פרימיום<br/><span className="text-xs font-normal opacity-75">+₪{formatPrice(settings.printed_card_price || 15)}</span>
                   </button>
                 </div>
               </div>
@@ -1003,7 +1013,7 @@ export default function App() {
                 {appliedCoupon ? (
                   <div className="flex items-center justify-between bg-green-50 border border-green-200 rounded-xl px-4 py-3">
                     <span className="text-green-700 font-semibold">
-                      ✅ {appliedCoupon.code} — {appliedCoupon.type === 'percent' ? `${appliedCoupon.value}% הנחה` : `₪${appliedCoupon.value} הנחה`}
+                      ✅ {appliedCoupon.code} — {appliedCoupon.type === 'percent' ? `${appliedCoupon.value}% הנחה` : `₪${formatPrice(appliedCoupon.value)} הנחה`}
                     </span>
                     <button onClick={removeAppliedCoupon} className="text-gray-400 hover:text-red-500 mr-2">
                       <X size={16} />
@@ -1045,18 +1055,18 @@ export default function App() {
                 {checkoutData.delivery === 'delivery' && (
                   <div className="flex justify-between text-gray-500">
                     <span>דמי משלוח:</span>
-                    <span>₪{settings.delivery_cost}</span>
+                    <span>₪{formatPrice(settings.delivery_cost)}</span>
                   </div>
                 )}
                 {cardCost > 0 && (
                   <div className="flex justify-between text-gray-500">
                     <span>כרטיס ברכה מודפס:</span>
-                    <span>+₪{cardCost}</span>
+                    <span>+₪{formatPrice(cardCost)}</span>
                   </div>
                 )}
                 <div className="flex justify-between text-xl font-bold pt-2">
                   <span>סה"כ לתשלום:</span>
-                  <span>₪{finalTotal}</span>
+                  <span>₪{formatPrice(finalTotal)}</span>
                 </div>
               </div>
 
@@ -1117,7 +1127,7 @@ export default function App() {
                         </div>
                         <div className="p-3">
                           <p className="font-semibold text-sm">{box.name}</p>
-                          <p className="text-[#ff9a9e] font-bold text-sm">₪{box.price}</p>
+                          <p className="text-[#ff9a9e] font-bold text-sm">₪{formatPrice(box.price)}</p>
                         </div>
                       </div>
                     ))}
@@ -1147,7 +1157,7 @@ export default function App() {
                         </div>
                         <div className="p-3 space-y-2">
                           <p className="font-semibold text-sm leading-tight">{product.name}</p>
-                          <p className="text-[#ff9a9e] font-bold text-sm">₪{product.price}</p>
+                          <p className="text-[#ff9a9e] font-bold text-sm">₪{formatPrice(product.price)}</p>
                           {inBundle ? (
                             <div className="flex items-center justify-between">
                               <button onClick={() => updateBundleQty(product.id, -1)} className="w-7 h-7 rounded-full border flex items-center justify-center hover:bg-gray-100 text-gray-400"><Minus size={14} /></button>
@@ -1178,17 +1188,17 @@ export default function App() {
                 <div className="space-y-2 text-sm">
                   <div className="flex justify-between text-gray-600">
                     <span>בסיס: {selectedBoxBase.name}</span>
-                    <span>₪{selectedBoxBase.price}</span>
+                    <span>₪{formatPrice(selectedBoxBase.price)}</span>
                   </div>
                   {bundleItems.map(bi => (
                     <div key={bi.product.id} className="flex justify-between text-gray-600">
                       <span>{bi.product.name} × {bi.qty}</span>
-                      <span>₪{bi.product.price * bi.qty}</span>
+                      <span>₪{formatPrice(bi.product.price * bi.qty)}</span>
                     </div>
                   ))}
                   <div className="border-t pt-2 flex justify-between font-bold text-lg">
                     <span>סה"כ:</span>
-                    <span className="text-[#ff9a9e]">₪{bundleTotal}</span>
+                    <span className="text-[#ff9a9e]">₪{formatPrice(bundleTotal)}</span>
                   </div>
                 </div>
                 <button
@@ -1196,7 +1206,7 @@ export default function App() {
                   className="w-full btn-primary py-4 text-lg flex items-center justify-center gap-2"
                 >
                   <ShoppingCart size={20} />
-                  הוסף מארז לסל — ₪{bundleTotal}
+                  הוסף מארז לסל — ₪{formatPrice(bundleTotal)}
                 </button>
               </div>
             )}
@@ -1352,7 +1362,7 @@ export default function App() {
                             {Object.entries(item.selectedVariations).map(([k, v]) => `${k}: ${v}`).join(' | ')}
                           </p>
                         )}
-                        <p className="text-[#ff9a9e] font-bold">₪{item.price}</p>
+                        <p className="text-[#ff9a9e] font-bold">₪{formatPrice(item.price)}</p>
                         <div className="flex items-center gap-3 mt-2">
                           <button
                             onClick={() => updateQuantity(item.id, -1, item.selectedVariations)}
