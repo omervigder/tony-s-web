@@ -192,7 +192,7 @@ function StatementModal({ onClose }: { onClose:()=>void }) {
         <p style={{color:'#9ca3af',fontSize:13,marginBottom:24}}>עדכון: {new Date().toLocaleDateString('he-IL')}</p>
         {[
           ['מחויבות','Tony מחויבת לנגישות דיגיטלית לפי תקנות שוויון זכויות לאנשים עם מוגבלות (תשע"ג-2013) ורמת AA של WCAG 2.1.'],
-          ['פנייה','נתקלת בבעיית נגישות? צור קשר: 052-583-0758 או דרך WhatsApp.'],
+          ['פנייה','נתקלת בבעיית נגישות? צור קשר: 052-626-8436 או דרך WhatsApp.'],
         ].map(([t,b])=>(
           <div key={t} style={{marginBottom:20}}>
             <h2 style={{fontSize:15,fontWeight:700,color:'#1d4ed8',marginBottom:6}}>{t}</h2>
@@ -447,7 +447,7 @@ export default function AccessibilityWidget() {
               onClick={()=>setOpen(false)}>
               <span>📄</span> הצהרת נגישות
             </a>
-            <a href="https://wa.me/972525830758" target="_blank" rel="noopener noreferrer"
+            <a href="https://wa.me/972526268436" target="_blank" rel="noopener noreferrer"
               style={{fontSize:12,color:'#16a34a',textDecoration:'none',display:'flex',alignItems:'center',gap:6,fontWeight:600}}>
               <span>💬</span> צריכים עזרה? דברו איתנו
             </a>

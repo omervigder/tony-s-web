@@ -115,6 +115,10 @@ async function sendOrderToTelegram(orderId, order, pickupAddress, BOT_TOKEN, CHA
     ? `⭐ *לקוח חוזר! (הזמנה ${totalOrders})*\n\n`
     : '';
 
+  const paymentLine = order.payment_confirmation
+    ? `✅ *סטטוס תשלום:* שולם\n🧾 *אסמכתא:* ${order.payment_confirmation}`
+    : `💳 *סטטוס תשלום:* ממתין לאישור`;
+
   const message =
 `${returningBadge}📦 *הזמנה חדשה! #${orderId.slice(-6)}*
 
@@ -126,7 +130,7 @@ ${deliveryLine}
 ${itemsList}
 
 💰 *סה"כ לתשלום: ₪${Number(order.total_price).toFixed(2)}*
-💳 *סטטוס תשלום:* ממתין לאישור${dedicationLine}${notesLine}
+${paymentLine}${dedicationLine}${notesLine}
 
 💬 [שלח WhatsApp ללקוח](${whatsappLink})`;
 
@@ -157,6 +161,12 @@ exports.onOrderCreated = onDocumentCreated(
     const orderId = event.params.orderId;
     // Data comes directly from the trigger — document is guaranteed to exist
     const order = event.data.data();
+
+    // Skip Telegram for orders still awaiting payment — growPaymentCallback will fire it after Grow confirms.
+    if (order.status === 'pending_payment' || order.isPaid === false) {
+      logger.info(`onOrderCreated: skipping Telegram for ${orderId} (awaiting payment)`);
+      return;
+    }
 
     const BOT_TOKEN = telegramBotToken.value();
     const CHAT_ID = telegramChatId.value();
@@ -676,7 +686,7 @@ exports.createGrowPayment = onCall(
 // Grow POSTs here after a transaction completes (success or failure).
 // We verify the payment, update Firestore, then call approveTransaction.
 exports.growPaymentCallback = onRequest(
-  { secrets: [growUserId, growPageCode] },
+  { secrets: [growUserId, growPageCode, telegramBotToken, telegramChatId] },
   async (req, res) => {
     if (req.method !== "POST") { res.status(405).send("Method Not Allowed"); return; }
 
@@ -712,6 +722,42 @@ exports.growPaymentCallback = onRequest(
           payment_card_brand: cardBrand || "",
         });
         logger.info(`Order ${orderId} activated after payment (asmachta=${asmachta})`);
+
+        // Send the Telegram notification now that payment is confirmed
+        try {
+          const updatedSnap = await db.collection("orders").doc(orderId).get();
+          const updatedOrder = updatedSnap.data() || {};
+
+          let pickupAddress = "";
+          if (updatedOrder.delivery_method !== "delivery") {
+            try {
+              const settingsSnap = await db.collection("settings").doc("store").get();
+              if (settingsSnap.exists) pickupAddress = settingsSnap.data().pickup_address || "";
+            } catch (e) {
+              logger.warn("growPaymentCallback: could not read pickup_address:", e);
+            }
+          }
+
+          let totalOrders = 1;
+          try {
+            totalOrders = await upsertCustomer(updatedOrder);
+          } catch (e) {
+            logger.warn(`growPaymentCallback: upsertCustomer failed for ${orderId}:`, e);
+          }
+
+          await sendOrderToTelegram(
+            orderId,
+            updatedOrder,
+            pickupAddress,
+            telegramBotToken.value(),
+            telegramChatId.value(),
+            totalOrders,
+          );
+          logger.info(`Telegram notification sent for paid order ${orderId}`);
+        } catch (err) {
+          // Non-fatal — payment is still processed even if Telegram fails
+          logger.error(`Failed to send Telegram for paid order ${orderId}:`, err);
+        }
       } catch (err) {
         logger.error(`Failed to update order ${orderId}:`, err);
       }
