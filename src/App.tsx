@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import AccessibilityWidget from './components/AccessibilityWidget';
 import GiftAssistant from './components/GiftAssistant';
 import CheckoutSuccess from './components/CheckoutSuccess';
-import { ShoppingCart, Package, Plus, Trash2, Camera, ChevronRight, ChevronLeft, CheckCircle2, X, Menu, Loader2, ChevronDown, Copy, Star, MessageCircle, Gift, Box } from 'lucide-react';
+import { ShoppingCart, Package, Plus, Minus, Trash2, Camera, ChevronRight, CheckCircle2, X, Menu, Loader2, ChevronDown, Copy, Star, MessageCircle, Gift, Box } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Product, Category, Settings, CartItem, Coupon, SiteContent, Review } from './types';
 import { db, storage } from './firebase';
@@ -37,6 +37,7 @@ export default function App() {
   const [reviewForm, setReviewForm] = useState({ rating: 5, message: '', customerName: '', photoFile: null as File | null, photoPreview: '' });
   const [isSubmittingReview, setIsSubmittingReview] = useState(false);
   const [isCreatingPayment, setIsCreatingPayment] = useState(false);
+  const [formErrors, setFormErrors] = useState<{ name?: string; phone?: string }>({});
 
   // Saved total for success page (finalTotal resets to 0 when cart is cleared)
   const [savedFinalTotal, setSavedFinalTotal] = useState(0);
@@ -282,7 +283,7 @@ export default function App() {
 
   // WhatsApp smart message
   const getWhatsAppLink = () => {
-    const phone = '972525830758';
+    const phone = '972526268436';
     let msg = 'היי, אשמח לעזרה בבחירת מתנה';
     if (view === 'product' && selectedProduct) {
       msg = `היי טוני, יש לי שאלה לגבי ${selectedProduct.name}`;
@@ -335,12 +336,33 @@ export default function App() {
   const cardCost = dedication.message.trim() && dedication.cardType === 'printed' ? Number(settings.printed_card_price || 15) : 0;
   const finalTotal = Math.max(0, cartTotal - discountAmount + (checkoutData.delivery === 'delivery' ? Number(settings.delivery_cost) : 0) + cardCost);
 
+  // Format ₪ amounts — rounds to 2 decimals and trims trailing zeros so
+  // float imprecision (e.g. 0.1+0.2 = 0.30000000000000004) never reaches the UI.
+  const formatPrice = (n: number | string | undefined | null): string => {
+    const num = Number(n) || 0;
+    return num.toFixed(2).replace(/\.?0+$/, '');
+  };
+
+  // Validation rules (kept strict so the Make.com pipeline gets clean data)
+  const NAME_RE = /^[֐-׿a-zA-Z][֐-׿a-zA-Z\s'\-]{1,99}$/;
+  const isValidName = (s: string) => {
+    const t = s.trim();
+    return NAME_RE.test(t) && t.split(/\s+/).filter(w => w.length >= 2).length >= 2;
+  };
+  const normalizePhone = (s: string) => s.replace(/[\s\-()]/g, '').replace(/^\+972/, '0');
+  const isValidPhone = (s: string) => /^05\d{8}$/.test(normalizePhone(s));
+
+  const NAME_ERROR = 'נא להזין שם פרטי ומשפחה (לפחות 2 אותיות בכל מילה)';
+  const PHONE_ERROR = 'מספר נייד ישראלי לא תקין — חייב להתחיל ב-05 ולכלול 10 ספרות';
+
   const handleCheckout = async () => {
-    if (!checkoutData.name.trim() || !checkoutData.phone.trim()) return alert("נא למלא את כל השדות");
-    // Mirror firestore.rules isValidOrderCreate(): customer_phone.size() must be 7–20.
-    // Enforce here so a too-short phone surfaces as a clear message, not a Firestore permission error.
-    if (checkoutData.phone.trim().length < 7 || checkoutData.phone.trim().length > 20)
-      return alert("נא להזין מספר טלפון תקין (7 עד 20 תווים)");
+    const nameErr = isValidName(checkoutData.name) ? undefined : NAME_ERROR;
+    const phoneErr = isValidPhone(checkoutData.phone) ? undefined : PHONE_ERROR;
+    if (nameErr || phoneErr) {
+      setFormErrors({ name: nameErr, phone: phoneErr });
+      document.getElementById(nameErr ? 'checkout-name' : 'checkout-phone')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      return;
+    }
     if (checkoutData.delivery === 'delivery' && !checkoutData.shippingAddress.trim()) return alert("נא להזין כתובת למשלוח");
     // Guard against a NaN/negative total (rules require total_price >= 0), e.g. malformed delivery_cost setting.
     if (!Number.isFinite(finalTotal) || finalTotal < 0) return alert("שגיאה בחישוב הסכום. רעננו את הדף ונסו שוב.");
@@ -391,8 +413,8 @@ export default function App() {
         body: JSON.stringify({
           orderId: orderDoc.id,
           total_price: finalTotal,
-          customer_name: checkoutData.name,
-          customer_phone: checkoutData.phone,
+          customer_name: checkoutData.name.trim(),
+          customer_phone: normalizePhone(checkoutData.phone),
         }),
       });
     } catch (err) {
@@ -615,7 +637,7 @@ export default function App() {
                     <h3 className="text-lg font-bold mb-2">{product.name}</h3>
                     <p className="text-gray-500 text-sm mb-4 line-clamp-2">{product.description}</p>
                     <div className="flex justify-between items-center mt-auto">
-                      <span className="text-xl font-bold text-[#ff9a9e]">₪{product.price}</span>
+                      <span className="text-xl font-bold text-[#ff9a9e]">₪{formatPrice(product.price)}</span>
                       <button
                         onClick={(e) => { e.stopPropagation(); addToCart(product); }}
                         className="btn-primary flex items-center gap-2"
@@ -662,7 +684,7 @@ export default function App() {
               </div>
               <div className="space-y-6">
                 <h2 className="text-4xl font-bold">{selectedProduct.name}</h2>
-                <p className="text-xl text-[#ff9a9e] font-bold">₪{selectedProduct.price}</p>
+                <p className="text-xl text-[#ff9a9e] font-bold">₪{formatPrice(selectedProduct.price)}</p>
                 <div className="prose prose-pink">
                   <p className="text-gray-600 text-lg leading-relaxed">{selectedProduct.description}</p>
                 </div>
@@ -699,7 +721,7 @@ export default function App() {
                       onClick={() => setProductQuantity(Math.max(1, productQuantity - 1))}
                       className="w-10 h-10 rounded-full bg-white shadow-sm flex items-center justify-center text-gray-500 hover:text-[#ff9a9e] transition-colors"
                     >
-                      <ChevronRight size={20} />
+                      <Minus size={20} />
                     </button>
                     <input
                       type="number"
@@ -712,7 +734,7 @@ export default function App() {
                       onClick={() => setProductQuantity(productQuantity + 1)}
                       className="w-10 h-10 rounded-full bg-white shadow-sm flex items-center justify-center text-gray-500 hover:text-[#ff9a9e] transition-colors"
                     >
-                      <ChevronLeft size={20} />
+                      <Plus size={20} />
                     </button>
                   </div>
                 </div>
@@ -871,20 +893,44 @@ export default function App() {
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">שם מלא</label>
                   <input
+                    id="checkout-name"
                     type="text"
-                    className="w-full p-3 rounded-xl border-gray-200 border focus:ring-2 focus:ring-[#ff9a9e] focus:border-transparent outline-none"
+                    placeholder="ישראל ישראלי"
+                    aria-invalid={!!formErrors.name}
+                    className={`w-full p-3 rounded-xl border focus:ring-2 focus:ring-[#ff9a9e] focus:border-transparent outline-none ${formErrors.name ? 'border-red-400' : 'border-gray-200'}`}
                     value={checkoutData.name}
-                    onChange={e => setCheckoutData(prev => ({ ...prev, name: e.target.value }))}
+                    onChange={e => {
+                      setCheckoutData(prev => ({ ...prev, name: e.target.value }));
+                      if (formErrors.name) setFormErrors(prev => ({ ...prev, name: undefined }));
+                    }}
+                    onBlur={e => setFormErrors(prev => ({ ...prev, name: e.target.value && !isValidName(e.target.value) ? NAME_ERROR : undefined }))}
                   />
+                  {formErrors.name
+                    ? <p className="text-xs text-red-500 mt-1">{formErrors.name}</p>
+                    : <p className="text-xs text-gray-400 mt-1">שם פרטי + משפחה, בעברית או באנגלית</p>}
                 </div>
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">מספר טלפון</label>
                   <input
+                    id="checkout-phone"
                     type="tel"
-                    className="w-full p-3 rounded-xl border-gray-200 border focus:ring-2 focus:ring-[#ff9a9e] focus:border-transparent outline-none"
+                    inputMode="numeric"
+                    placeholder="0501234567"
+                    maxLength={13}
+                    aria-invalid={!!formErrors.phone}
+                    className={`w-full p-3 rounded-xl border focus:ring-2 focus:ring-[#ff9a9e] focus:border-transparent outline-none ${formErrors.phone ? 'border-red-400' : 'border-gray-200'}`}
                     value={checkoutData.phone}
-                    onChange={e => setCheckoutData(prev => ({ ...prev, phone: e.target.value }))}
+                    onChange={e => {
+                      // Strip everything except digits and a leading '+' (for +972…)
+                      const cleaned = e.target.value.replace(/[^\d+]/g, '').replace(/(?!^)\+/g, '');
+                      setCheckoutData(prev => ({ ...prev, phone: cleaned }));
+                      if (formErrors.phone) setFormErrors(prev => ({ ...prev, phone: undefined }));
+                    }}
+                    onBlur={e => setFormErrors(prev => ({ ...prev, phone: e.target.value && !isValidPhone(e.target.value) ? PHONE_ERROR : undefined }))}
                   />
+                  {formErrors.phone
+                    ? <p className="text-xs text-red-500 mt-1">{formErrors.phone}</p>
+                    : <p className="text-xs text-gray-400 mt-1">מספר נייד ישראלי המתחיל ב-05 (ספרות בלבד, לדוגמה 0501234567)</p>}
                 </div>
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">אימייל (אופציונלי)</label>
@@ -938,22 +984,14 @@ export default function App() {
                 />
                 <div>
                   <p className="text-sm font-medium text-gray-700 mb-2">סוג כרטיס ברכה:</p>
-                  <div className="flex gap-3">
-                    <button
-                      type="button"
-                      onClick={() => setDedication(prev => ({ ...prev, cardType: 'digital' }))}
-                      className={`flex-1 p-3 rounded-xl border text-sm font-medium transition-all ${dedication.cardType === 'digital' ? 'bg-[#ff9a9e] text-white border-[#ff9a9e] shadow-sm' : 'bg-white text-gray-500 border-gray-200 hover:border-[#ff9a9e]'}`}
-                    >
-                      📱 כרטיס דיגיטלי<br/><span className="text-xs font-normal opacity-75">חינם</span>
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setDedication(prev => ({ ...prev, cardType: 'printed' }))}
-                      className={`flex-1 p-3 rounded-xl border text-sm font-medium transition-all ${dedication.cardType === 'printed' ? 'bg-[#ff9a9e] text-white border-[#ff9a9e] shadow-sm' : 'bg-white text-gray-500 border-gray-200 hover:border-[#ff9a9e]'}`}
-                    >
-                      🖨️ כרטיס מודפס פרימיום<br/><span className="text-xs font-normal opacity-75">+₪{settings.printed_card_price || 15}</span>
-                    </button>
-                  </div>
+                  {/* Toggle: 'printed' = opt-in (charged), 'digital' = not opted in (no card, no charge) */}
+                  <button
+                    type="button"
+                    onClick={() => setDedication(prev => ({ ...prev, cardType: prev.cardType === 'printed' ? 'digital' : 'printed' }))}
+                    className={`w-full p-3 rounded-xl border text-sm font-medium transition-all ${dedication.cardType === 'printed' ? 'bg-[#ff9a9e] text-white border-[#ff9a9e] shadow-sm' : 'bg-white text-gray-500 border-gray-200 hover:border-[#ff9a9e]'}`}
+                  >
+                    🖨️ כרטיס מודפס פרימיום<br/><span className="text-xs font-normal opacity-75">+₪{formatPrice(settings.printed_card_price || 15)}</span>
+                  </button>
                 </div>
               </div>
 
@@ -975,7 +1013,7 @@ export default function App() {
                 {appliedCoupon ? (
                   <div className="flex items-center justify-between bg-green-50 border border-green-200 rounded-xl px-4 py-3">
                     <span className="text-green-700 font-semibold">
-                      ✅ {appliedCoupon.code} — {appliedCoupon.type === 'percent' ? `${appliedCoupon.value}% הנחה` : `₪${appliedCoupon.value} הנחה`}
+                      ✅ {appliedCoupon.code} — {appliedCoupon.type === 'percent' ? `${appliedCoupon.value}% הנחה` : `₪${formatPrice(appliedCoupon.value)} הנחה`}
                     </span>
                     <button onClick={removeAppliedCoupon} className="text-gray-400 hover:text-red-500 mr-2">
                       <X size={16} />
@@ -1017,18 +1055,18 @@ export default function App() {
                 {checkoutData.delivery === 'delivery' && (
                   <div className="flex justify-between text-gray-500">
                     <span>דמי משלוח:</span>
-                    <span>₪{settings.delivery_cost}</span>
+                    <span>₪{formatPrice(settings.delivery_cost)}</span>
                   </div>
                 )}
                 {cardCost > 0 && (
                   <div className="flex justify-between text-gray-500">
                     <span>כרטיס ברכה מודפס:</span>
-                    <span>+₪{cardCost}</span>
+                    <span>+₪{formatPrice(cardCost)}</span>
                   </div>
                 )}
                 <div className="flex justify-between text-xl font-bold pt-2">
                   <span>סה"כ לתשלום:</span>
-                  <span>₪{finalTotal}</span>
+                  <span>₪{formatPrice(finalTotal)}</span>
                 </div>
               </div>
 
@@ -1089,7 +1127,7 @@ export default function App() {
                         </div>
                         <div className="p-3">
                           <p className="font-semibold text-sm">{box.name}</p>
-                          <p className="text-[#ff9a9e] font-bold text-sm">₪{box.price}</p>
+                          <p className="text-[#ff9a9e] font-bold text-sm">₪{formatPrice(box.price)}</p>
                         </div>
                       </div>
                     ))}
@@ -1119,12 +1157,12 @@ export default function App() {
                         </div>
                         <div className="p-3 space-y-2">
                           <p className="font-semibold text-sm leading-tight">{product.name}</p>
-                          <p className="text-[#ff9a9e] font-bold text-sm">₪{product.price}</p>
+                          <p className="text-[#ff9a9e] font-bold text-sm">₪{formatPrice(product.price)}</p>
                           {inBundle ? (
                             <div className="flex items-center justify-between">
-                              <button onClick={() => updateBundleQty(product.id, -1)} className="w-7 h-7 rounded-full border flex items-center justify-center hover:bg-gray-100 text-gray-400"><ChevronRight size={14} /></button>
+                              <button onClick={() => updateBundleQty(product.id, -1)} className="w-7 h-7 rounded-full border flex items-center justify-center hover:bg-gray-100 text-gray-400"><Minus size={14} /></button>
                               <span className="font-bold text-sm">{inBundle.qty}</span>
-                              <button onClick={() => updateBundleQty(product.id, 1)} className="w-7 h-7 rounded-full border flex items-center justify-center hover:bg-gray-100 text-gray-400"><ChevronLeft size={14} /></button>
+                              <button onClick={() => updateBundleQty(product.id, 1)} className="w-7 h-7 rounded-full border flex items-center justify-center hover:bg-gray-100 text-gray-400"><Plus size={14} /></button>
                               <button onClick={() => removeBundleItem(product.id)} className="text-red-300 hover:text-red-500"><X size={14} /></button>
                             </div>
                           ) : (
@@ -1150,17 +1188,17 @@ export default function App() {
                 <div className="space-y-2 text-sm">
                   <div className="flex justify-between text-gray-600">
                     <span>בסיס: {selectedBoxBase.name}</span>
-                    <span>₪{selectedBoxBase.price}</span>
+                    <span>₪{formatPrice(selectedBoxBase.price)}</span>
                   </div>
                   {bundleItems.map(bi => (
                     <div key={bi.product.id} className="flex justify-between text-gray-600">
                       <span>{bi.product.name} × {bi.qty}</span>
-                      <span>₪{bi.product.price * bi.qty}</span>
+                      <span>₪{formatPrice(bi.product.price * bi.qty)}</span>
                     </div>
                   ))}
                   <div className="border-t pt-2 flex justify-between font-bold text-lg">
                     <span>סה"כ:</span>
-                    <span className="text-[#ff9a9e]">₪{bundleTotal}</span>
+                    <span className="text-[#ff9a9e]">₪{formatPrice(bundleTotal)}</span>
                   </div>
                 </div>
                 <button
@@ -1168,7 +1206,7 @@ export default function App() {
                   className="w-full btn-primary py-4 text-lg flex items-center justify-center gap-2"
                 >
                   <ShoppingCart size={20} />
-                  הוסף מארז לסל — ₪{bundleTotal}
+                  הוסף מארז לסל — ₪{formatPrice(bundleTotal)}
                 </button>
               </div>
             )}
@@ -1324,13 +1362,13 @@ export default function App() {
                             {Object.entries(item.selectedVariations).map(([k, v]) => `${k}: ${v}`).join(' | ')}
                           </p>
                         )}
-                        <p className="text-[#ff9a9e] font-bold">₪{item.price}</p>
+                        <p className="text-[#ff9a9e] font-bold">₪{formatPrice(item.price)}</p>
                         <div className="flex items-center gap-3 mt-2">
                           <button
                             onClick={() => updateQuantity(item.id, -1, item.selectedVariations)}
                             className="w-8 h-8 rounded-full border flex items-center justify-center hover:bg-gray-100 transition-colors text-gray-400"
                           >
-                            <ChevronRight size={16} />
+                            <Minus size={16} />
                           </button>
                           <input
                             type="number"
@@ -1343,7 +1381,7 @@ export default function App() {
                             onClick={() => updateQuantity(item.id, 1, item.selectedVariations)}
                             className="w-8 h-8 rounded-full border flex items-center justify-center hover:bg-gray-100 transition-colors text-gray-400"
                           >
-                            <ChevronLeft size={16} />
+                            <Plus size={16} />
                           </button>
                         </div>
                       </div>

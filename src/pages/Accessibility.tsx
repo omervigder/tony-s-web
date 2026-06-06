@@ -67,8 +67,8 @@ export default function AccessibilityPage() {
         <Section title="פנייה בנושא נגישות">
           <p>נתקלת בבעיית נגישות, קושי בגישה לתוכן, או יש לך הצעה לשיפור? נשמח לשמוע ולסייע בהקדם האפשרי:</p>
           <div style={{ marginTop: 16, display: 'flex', flexDirection: 'column', gap: 10 }}>
-            <ContactItem icon="📞" label="טלפון" value="052-583-0758" href="tel:+972525830758" />
-            <ContactItem icon="💬" label="WhatsApp" value="שיחה ישירה" href="https://wa.me/972525830758" />
+            <ContactItem icon="📞" label="טלפון" value="052-626-8436" href="tel:+972526268436" />
+            <ContactItem icon="💬" label="WhatsApp" value="שיחה ישירה" href="https://wa.me/972526268436" />
           </div>
           <p style={{ marginTop: 16, color: '#888', fontSize: 13 }}>
             נשתדל להגיב תוך 2 ימי עסקים.

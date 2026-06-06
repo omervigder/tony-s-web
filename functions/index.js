@@ -1,6 +1,6 @@
 const { setGlobalOptions } = require("firebase-functions");
 const { onRequest, onCall, HttpsError } = require("firebase-functions/v2/https");
-const { onDocumentCreated, onDocumentWritten } = require("firebase-functions/v2/firestore");
+const { onDocumentCreated, onDocumentUpdated, onDocumentWritten } = require("firebase-functions/v2/firestore");
 const { defineSecret } = require("firebase-functions/params");
 const logger = require("firebase-functions/logger");
 const admin = require("firebase-admin");
@@ -115,6 +115,10 @@ async function sendOrderToTelegram(orderId, order, pickupAddress, BOT_TOKEN, CHA
     ? `⭐ *לקוח חוזר! (הזמנה ${totalOrders})*\n\n`
     : '';
 
+  const paymentLine = order.payment_confirmation
+    ? `✅ *סטטוס תשלום:* שולם\n🧾 *אסמכתא:* ${order.payment_confirmation}`
+    : `💳 *סטטוס תשלום:* ממתין לאישור`;
+
   const message =
 `${returningBadge}📦 *הזמנה חדשה! #${orderId.slice(-6)}*
 
@@ -126,7 +130,7 @@ ${deliveryLine}
 ${itemsList}
 
 💰 *סה"כ לתשלום: ₪${Number(order.total_price).toFixed(2)}*
-💳 *סטטוס תשלום:* ממתין לאישור${dedicationLine}${notesLine}
+${paymentLine}${dedicationLine}${notesLine}
 
 💬 [שלח WhatsApp ללקוח](${whatsappLink})`;
 
@@ -158,6 +162,12 @@ exports.onOrderCreated = onDocumentCreated(
     // Data comes directly from the trigger — document is guaranteed to exist
     const order = event.data.data();
 
+    // Skip Telegram for orders still awaiting payment — growPaymentCallback will fire it after Grow confirms.
+    if (order.status === 'pending_payment' || order.isPaid === false) {
+      logger.info(`onOrderCreated: skipping Telegram for ${orderId} (awaiting payment)`);
+      return;
+    }
+
     const BOT_TOKEN = telegramBotToken.value();
     const CHAT_ID = telegramChatId.value();
 
@@ -185,6 +195,56 @@ exports.onOrderCreated = onDocumentCreated(
       logger.info(`Telegram notification sent for order ${orderId}`);
     } catch (err) {
       logger.error(`Failed to send Telegram notification for order ${orderId}:`, err);
+    }
+  }
+);
+
+// ── Firestore trigger — fires when an order transitions to paid ──────────────
+// Decoupled from the payment provider: Make.com, growPaymentCallback, or an
+// admin manually flipping isPaid all converge here. Uses a telegram_sent flag
+// for idempotency (the doc may be updated again later for shipping, etc.).
+exports.onOrderPaid = onDocumentUpdated(
+  { document: "orders/{orderId}", database: "default", secrets: [telegramBotToken, telegramChatId] },
+  async (event) => {
+    const orderId = event.params.orderId;
+    const before = event.data.before.data();
+    const after = event.data.after.data();
+
+    const becamePaid = !before.isPaid && after.isPaid === true;
+    if (!becamePaid) return;
+
+    if (after.telegram_sent === true) {
+      logger.info(`onOrderPaid: ${orderId} already notified, skipping`);
+      return;
+    }
+
+    const BOT_TOKEN = telegramBotToken.value();
+    const CHAT_ID = telegramChatId.value();
+
+    let pickupAddress = "";
+    if (after.delivery_method !== "delivery") {
+      try {
+        const settingsSnap = await db.collection("settings").doc("store").get();
+        if (settingsSnap.exists) pickupAddress = settingsSnap.data().pickup_address || "";
+      } catch (e) {
+        logger.warn("onOrderPaid: could not read pickup_address:", e);
+      }
+    }
+
+    let totalOrders = 1;
+    try {
+      totalOrders = await upsertCustomer(after);
+    } catch (e) {
+      logger.warn(`onOrderPaid: upsertCustomer failed for ${orderId}:`, e);
+    }
+
+    try {
+      await sendOrderToTelegram(orderId, after, pickupAddress, BOT_TOKEN, CHAT_ID, totalOrders);
+      // Mark sent so any subsequent update (status changes, admin edits) won't re-fire.
+      await event.data.after.ref.update({ telegram_sent: true });
+      logger.info(`onOrderPaid: Telegram sent for ${orderId}`);
+    } catch (err) {
+      logger.error(`onOrderPaid: failed to send Telegram for ${orderId}:`, err);
     }
   }
 );
@@ -712,6 +772,7 @@ exports.growPaymentCallback = onRequest(
           payment_card_brand: cardBrand || "",
         });
         logger.info(`Order ${orderId} activated after payment (asmachta=${asmachta})`);
+        // Telegram fires via the onOrderPaid Firestore trigger once isPaid flips.
       } catch (err) {
         logger.error(`Failed to update order ${orderId}:`, err);
       }

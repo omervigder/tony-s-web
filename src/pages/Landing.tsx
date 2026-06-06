@@ -16,7 +16,7 @@ interface Coupon {
 }
 
 /* ─── Constants ──────────────────────────────────────────────────────── */
-const WHATSAPP = '972525830758';
+const WHATSAPP = '972526268436';
 const SHOP_URL = '/shop';
 
 const TESTIMONIALS = [
