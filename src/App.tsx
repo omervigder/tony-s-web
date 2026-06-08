@@ -131,12 +131,12 @@ export default function App() {
 
   // ── URL-based navigation ───────────────────────────────────────────────────
   const VIEW_URLS: Record<string, string> = {
-    user: '/shop', checkout: '/shop/checkout', success: '/shop/success', 'build-box': '/shop/build-box',
+    user: '/', checkout: '/checkout', success: '/success', 'build-box': '/build-box',
   };
   const navigateTo = (newView: typeof view, productId?: string) => {
     const url = newView === 'product' && productId
-      ? `/shop/product/${productId}`
-      : VIEW_URLS[newView] ?? '/shop';
+      ? `/product/${productId}`
+      : VIEW_URLS[newView] ?? '/';
     window.history.pushState({ view: newView, productId: productId ?? null }, '', url);
     setView(newView);
   };
@@ -153,18 +153,16 @@ export default function App() {
     return () => window.removeEventListener('popstate', onPop);
   }, [products]); // re-bind when products load so fetchProductDetails has fresh closure
 
-  // Detect return from Grow payment redirect — runs immediately on mount before products load
+  // Detect return from Grow payment redirect — runs immediately on mount before products load.
+  // Trigger on the /success path itself (not on a specific query param) so the success page and
+  // cart-clear are reliable regardless of which params Grow appends to the redirect.
   useEffect(() => {
-    if (window.location.pathname !== '/shop/success') return;
-    const params = new URLSearchParams(window.location.search);
-    const orderId = params.get('orderId');
-    const response = params.get('response');
-    if (orderId && response === 'success') {
-      setLastOrderId(orderId);
-      setCart([]);               // clear cart now that payment is confirmed
-      setView('success');
-      urlInitDone.current = true; // prevent the products-dependent effect from overriding
-    }
+    if (window.location.pathname !== '/success') return;
+    const orderId = new URLSearchParams(window.location.search).get('orderId');
+    if (orderId) setLastOrderId(orderId);
+    setCart([]);                // clear cart now that the customer has returned from payment
+    setView('success');
+    urlInitDone.current = true; // prevent the products-dependent effect from overriding
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Initialize view from URL once products are available (handles direct links & refresh)
@@ -173,13 +171,13 @@ export default function App() {
     urlInitDone.current = true;
     const path = window.location.pathname;
     window.history.replaceState({ view: 'user', productId: null }, '', path);
-    if (path.startsWith('/shop/product/')) {
-      fetchProductDetails(path.replace('/shop/product/', ''));
-    } else if (path === '/shop/checkout') {
+    if (path.startsWith('/product/')) {
+      fetchProductDetails(path.replace('/product/', ''));
+    } else if (path === '/checkout') {
       setView('checkout');
-    } else if (path === '/shop/success') {
+    } else if (path === '/success') {
       setView('success');
-    } else if (path === '/shop/build-box') {
+    } else if (path === '/build-box') {
       setView('build-box');
     }
   }, [products]);
@@ -1234,7 +1232,7 @@ export default function App() {
             <div className="space-y-2">
               <h4 className="font-bold text-gray-700 text-sm">ניווט מהיר</h4>
               <div className="flex flex-col gap-1.5">
-                {[['/', 'דף הבית'], ['/shop', 'החנות']].map(([href, label]) => (
+                {[['/', 'החנות']].map(([href, label]) => (
                   <a key={href} href={href} className="text-sm text-gray-500 hover:text-[#ff9a9e] transition-colors">{label}</a>
                 ))}
               </div>

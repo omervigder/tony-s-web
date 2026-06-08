@@ -689,8 +689,8 @@ exports.createGrowPayment = onCall(
     const PROJECT_ID = process.env.GCLOUD_PROJECT || "tony-amramy-branding";
     const NOTIFY_URL = `https://us-central1-${PROJECT_ID}.cloudfunctions.net/growPaymentCallback`;
     // successUrl includes orderId so the frontend can show the right order on return
-    const SUCCESS_URL = `https://tony-amramy-branding.web.app/shop/success?orderId=${orderId}`;
-    const CANCEL_URL  = "https://tony-amramy-branding.web.app/shop/checkout";
+    const SUCCESS_URL = `https://tony-amrami.com/success?orderId=${orderId}`;
+    const CANCEL_URL  = "https://tony-amrami.com/checkout";
 
     const payload = {
       pageCode: growPageCode.value(),
