@@ -85,7 +85,7 @@ export default function GiftAssistant({ onNavigateToProduct }: GiftAssistantProp
       onNavigateToProduct(id);
       setOpen(false);
     } else {
-      window.location.href = `/shop/product/${id}`;
+      window.location.href = `/product/${id}`;
     }
   }
 
