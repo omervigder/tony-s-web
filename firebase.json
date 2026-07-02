@@ -8,7 +8,7 @@
     "rules": "database.rules.json"
   },
   "hosting": {
-    "site": "tony-amramy-branding",
+    "site": "my-store-app-14f06",
     "public": "dist",
     "ignore": [
       "firebase.json",
