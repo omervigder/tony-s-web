@@ -4,7 +4,7 @@ import { auth, googleProvider } from '../firebase';
 import { useAuth } from '../contexts/AuthContext';
 import { Loader2 } from 'lucide-react';
 
-const PINK = '#ff9a9e';
+const PINK = '#1A1A18';
 
 export default function AdminLogin() {
   const { accessDenied } = useAuth();
@@ -32,8 +32,8 @@ export default function AdminLogin() {
     : error;
 
   return (
-    <div dir="rtl" className="min-h-screen bg-[#FFF5F7] flex items-center justify-center p-4">
-      <div className="bg-white border border-[#fce4ec] rounded-2xl p-8 w-full max-w-sm shadow-sm">
+    <div dir="rtl" className="min-h-screen bg-cream flex items-center justify-center p-4">
+      <div className="bg-white border border-line rounded-2xl p-8 w-full max-w-sm shadow-sm">
 
         {/* Logo + title */}
         <div className="flex flex-col items-center mb-8">
@@ -43,7 +43,7 @@ export default function AdminLogin() {
             className="h-16 object-contain mb-4"
             style={{ mixBlendMode: 'multiply' }}
           />
-          <h1 className="text-xl font-bold text-[#3a3a3a]">כניסה למנהלים</h1>
+          <h1 className="text-xl font-bold text-ink">כניסה למנהלים</h1>
           <p className="text-gray-400 text-sm mt-1">פורטל ניהול Tony Amrami</p>
         </div>
 
@@ -59,7 +59,7 @@ export default function AdminLogin() {
         <button
           onClick={handleGoogleLogin}
           disabled={loading}
-          className="w-full flex items-center justify-center gap-3 py-3 px-4 rounded-xl border border-[#fce4ec] bg-white hover:bg-[#FFF5F7] hover:border-[#ff9a9e]/40 transition-all text-[#3a3a3a] font-medium disabled:opacity-60 disabled:cursor-not-allowed"
+          className="w-full flex items-center justify-center gap-3 py-3 px-4 rounded-xl border border-line bg-white hover:bg-cream hover:border-ink/40 transition-all text-ink font-medium disabled:opacity-60 disabled:cursor-not-allowed"
         >
           {loading ? (
             <Loader2 size={18} className="animate-spin" style={{ color: PINK }} />

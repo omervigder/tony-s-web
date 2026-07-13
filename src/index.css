@@ -1,51 +1,66 @@
 @import "tailwindcss";
 
 @theme {
-  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-sans: "Assistant", "Heebo", ui-sans-serif, system-ui, sans-serif;
+
+  --color-cream: #EDE9E3;
+  --color-surface: #FFFFFF;
+  --color-sand: #E7D7C9;
+  --color-ink: #1A1A18;
+  --color-body: #2F2F2D;
+  --color-muted: #8E8C88;
+  --color-line: #E2E2E2;
+  --color-line-strong: #BEBAB6;
 }
 
 body {
   direction: rtl;
-  background-color: #FFF5F7;
-  color: #4a4a4a;
+  background-color: var(--color-cream);
+  color: var(--color-body);
 }
 
-.pastel-card {
-  background: #FFFCFD;
-  border-radius: 1.5rem;
-  box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.05), 0 8px 10px -6px rgba(0, 0, 0, 0.05);
-  transition: transform 0.2s ease, box-shadow 0.2s ease;
+/* Flat, shadowless card — depth comes from the cream/white contrast and a thin rule. */
+.surface-card {
+  background: var(--color-surface);
+  border: 1px solid var(--color-line);
+  transition: border-color 0.3s ease;
 }
 
-.pastel-card:hover {
-  transform: translateY(-2px);
-  box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.08), 0 10px 10px -5px rgba(0, 0, 0, 0.04);
+.surface-card:hover {
+  border-color: var(--color-line-strong);
 }
 
 .btn-primary {
-  background-color: #ff9a9e;
-  color: white;
+  background-color: var(--color-ink);
+  color: var(--color-cream);
+  border: 1px solid var(--color-ink);
   padding: 0.75rem 1.5rem;
-  border-radius: 9999px;
-  font-weight: 600;
-  transition: all 0.2s;
+  border-radius: 200px;
+  font-weight: 500;
+  transition: all 0.2s ease;
 }
 
 .btn-primary:hover {
-  background-color: #fecfef;
-  color: #ff9a9e;
+  background-color: transparent;
+  color: var(--color-ink);
+}
+
+.btn-primary:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
 }
 
 .btn-secondary {
-  background-color: #a1c4fd;
-  color: white;
+  background-color: transparent;
+  color: var(--color-ink);
+  border: 1px solid var(--color-ink);
   padding: 0.75rem 1.5rem;
-  border-radius: 9999px;
-  font-weight: 600;
-  transition: all 0.2s;
+  border-radius: 200px;
+  font-weight: 500;
+  transition: all 0.2s ease;
 }
 
 .btn-secondary:hover {
-  background-color: #c2e9fb;
-  color: #a1c4fd;
+  background-color: var(--color-ink);
+  color: var(--color-cream);
 }

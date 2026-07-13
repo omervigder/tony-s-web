@@ -9,7 +9,7 @@ export default function AccessibilityPage() {
       {/* Header */}
       <header style={{ background: '#fff', borderBottom: '1px solid #f0f0f0', padding: '18px 24px', display: 'flex', alignItems: 'center', gap: 16 }}>
         <a href="/" aria-label="חזרה לדף הבית"
-          style={{ color: '#ff9a9e', textDecoration: 'none', fontWeight: 700, fontSize: 14, display: 'flex', alignItems: 'center', gap: 6 }}>
+          style={{ color: '#1A1A18', textDecoration: 'none', fontWeight: 700, fontSize: 14, display: 'flex', alignItems: 'center', gap: 6 }}>
           ← חזרה לדף הבית
         </a>
         <span style={{ color: '#ddd' }}>|</span>
@@ -94,7 +94,7 @@ export default function AccessibilityPage() {
             ['/shipping', 'משלוחים והחזרות'],
           ].map(([href, label]) => (
             <a key={href} href={href}
-              style={{ color: '#ff9a9e', fontSize: 13, textDecoration: 'none', padding: '3px 10px', borderRadius: 999, border: '1px solid #ffe0e8', transition: 'background 0.2s' }}
+              style={{ color: '#1A1A18', fontSize: 13, textDecoration: 'none', padding: '3px 10px', borderRadius: 999, border: '1px solid #ffe0e8', transition: 'background 0.2s' }}
               onMouseEnter={e => (e.currentTarget.style.background = '#fff5f7')}
               onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}>
               {label}
@@ -110,7 +110,7 @@ export default function AccessibilityPage() {
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <section style={{ marginBottom: 40 }} aria-label={title}>
-      <h2 style={{ fontSize: 20, fontWeight: 800, color: '#ff9a9e', marginBottom: 14,
+      <h2 style={{ fontSize: 20, fontWeight: 800, color: '#1A1A18', marginBottom: 14,
                    paddingBottom: 10, borderBottom: '2px solid #ffe0e8' }}>
         {title}
       </h2>
@@ -132,7 +132,7 @@ function ContactItem({ icon, label, value, href }: { icon: string; label: string
       <span style={{ fontSize: 22 }}>{icon}</span>
       <span>
         <span style={{ fontSize: 12, color: '#888', display: 'block' }}>{label}</span>
-        <span style={{ fontWeight: 700, color: '#ff9a9e' }}>{value}</span>
+        <span style={{ fontWeight: 700, color: '#1A1A18' }}>{value}</span>
       </span>
     </a>
   );

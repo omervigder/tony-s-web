@@ -13,7 +13,7 @@ export default function CheckoutSuccess({ orderId, onContinueShopping }: Checkou
       id: i,
       x: Math.random() * 100,
       delay: Math.random() * 0.6,
-      color: ['#ff9a9e', '#a1c4fd', '#ffecd2', '#d4fc79', '#fbc2eb'][i % 5],
+      color: ['#1A1A18', '#2F2F2D', '#ffecd2', '#d4fc79', '#fbc2eb'][i % 5],
     }))
   );
 
@@ -39,7 +39,7 @@ export default function CheckoutSuccess({ orderId, onContinueShopping }: Checkou
         initial={{ opacity: 0, scale: 0.85, y: 24 }}
         animate={{ opacity: 1, scale: 1, y: 0 }}
         transition={{ type: 'spring', stiffness: 260, damping: 20 }}
-        className="pastel-card max-w-md w-full mx-auto text-center p-10 space-y-8 relative"
+        className="surface-card max-w-md w-full mx-auto text-center p-10 space-y-8 relative"
       >
         {/* Checkmark */}
         <motion.div
@@ -59,9 +59,9 @@ export default function CheckoutSuccess({ orderId, onContinueShopping }: Checkou
           className="space-y-3"
         >
           <div className="flex items-center justify-center gap-2">
-            <Sparkles size={18} className="text-[#ff9a9e]" />
+            <Sparkles size={18} className="text-ink" />
             <h2 className="text-3xl font-bold text-gray-800">תודה על הרכישה!</h2>
-            <Sparkles size={18} className="text-[#ff9a9e]" />
+            <Sparkles size={18} className="text-ink" />
           </div>
           <p className="text-lg text-gray-700 font-medium">התשלום התקבל בהצלחה</p>
           {displayOrderId && (

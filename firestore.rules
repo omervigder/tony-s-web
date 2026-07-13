@@ -67,6 +67,12 @@ service cloud.firestore {
       allow update, delete: if isAdmin();
     }
 
+    // ── Branding catalog (מיתוג) — guests need the labels and surcharges ──
+    match /branding_options/{id} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
     // ── Store settings & content — guests need delivery cost, address ─────
     match /settings/{id} {
       allow read: if true;

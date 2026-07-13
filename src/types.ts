@@ -8,6 +8,34 @@ export interface ProductVariation {
   values: string[];
 }
 
+/** A color the product is offered in, optionally bound to one of the product's images. */
+export interface ProductColorOption {
+  name: string;
+  hex: string;
+  imageUrl?: string;
+}
+
+/** A length (אורך) option; priceDelta may be 0. */
+export interface ProductLengthOption {
+  label: string;
+  priceDelta: number;
+}
+
+/** Global branding catalog — Firestore collection `branding_options`. */
+export interface BrandingOption {
+  id: string;
+  label: string;
+  extraCost: number;
+  isActive?: boolean;
+}
+
+/** Per-line option selections, shared by CartItem and OrderItem. */
+export interface SelectedOptions {
+  selectedColor?: ProductColorOption;
+  selectedLength?: { label: string; priceDelta: number };
+  selectedBranding?: { id: string; label: string; extraCost: number };
+}
+
 export interface Product {
   id: string;
   name: string;
@@ -19,6 +47,9 @@ export interface Product {
   main_image: string;
   images: string[];
   variations?: ProductVariation[];
+  colorOptions?: ProductColorOption[];
+  lengthOptions?: ProductLengthOption[];
+  brandingOptionIds?: string[];
   isBoxBase?: boolean;
   created_at?: Date;
 }
@@ -28,10 +59,13 @@ export interface Category {
   name: string;
 }
 
-export interface OrderItem {
+export interface OrderItem extends SelectedOptions {
   id: string;
   name: string;
+  /** Unit price actually charged — base price plus any length/branding surcharge. */
   price: number;
+  /** The product's base price at the time of the order. */
+  basePrice?: number;
   costPrice?: number;
   quantity: number;
   selectedVariations?: Record<string, string>;
@@ -47,7 +81,7 @@ export interface Order {
   total_price: number;
   items: OrderItem[];
   status: string;
-  orderStatus: 'Pending' | 'Processing' | 'Shipped' | 'Completed' | 'Cancelled';
+  orderStatus: 'Pending' | 'PendingPayment' | 'Processing' | 'Shipped' | 'Completed' | 'Cancelled';
   isPaid: boolean;
   shippingAddress?: string;
   created_at: string;
@@ -84,9 +118,11 @@ export interface Settings {
   printed_card_price?: string;
 }
 
-export interface CartItem extends Product {
+export interface CartItem extends Product, SelectedOptions {
   quantity: number;
   selectedVariations?: Record<string, string>;
+  /** base price + length delta + branding surcharge. Absent on carts persisted before options shipped. */
+  unitPrice?: number;
   bundleItems?: { id: string; name: string; price: number; quantity: number }[];
 }
 
