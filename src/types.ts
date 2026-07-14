@@ -36,11 +36,22 @@ export interface SelectedOptions {
   selectedBranding?: { id: string; label: string; extraCost: number };
 }
 
+/** A price reduction on a product. `value` is a percentage (1–99) or a ₪ amount. */
+export interface ProductDiscount {
+  type: 'percent' | 'fixed';
+  value: number;
+  isActive: boolean;
+  /** Optional sale name shown on the storefront, e.g. "מבצע קיץ". */
+  label?: string;
+}
+
 export interface Product {
   id: string;
   name: string;
   description: string;
+  /** List price, before any discount. Read the charged price through `effectivePrice()`. */
   price: number;
+  discount?: ProductDiscount;
   costPrice?: number;
   alt_text?: string;
   category_id: string;
@@ -64,8 +75,10 @@ export interface OrderItem extends SelectedOptions {
   name: string;
   /** Unit price actually charged — base price plus any length/branding surcharge. */
   price: number;
-  /** The product's base price at the time of the order. */
+  /** The base price the charge was built from — already discounted, if a discount applied. */
   basePrice?: number;
+  /** The pre-discount list price. Present only when the line was discounted. */
+  listPrice?: number;
   costPrice?: number;
   quantity: number;
   selectedVariations?: Record<string, string>;
@@ -89,6 +102,22 @@ export interface Order {
   discount_amount?: number;
   dedication?: { message: string; cardType: 'digital' | 'printed' };
   customer_notes?: string;
+  /** Archived orders are hidden from the admin list and excluded from analytics. */
+  isArchived?: boolean;
+}
+
+/** A promotional image the admin uploads — shown on the homepage or as an arrival popup. */
+export interface SiteBanner {
+  id: string;
+  imageUrl: string;
+  placement: 'home' | 'popup';
+  /** Optional click-through target. */
+  linkUrl?: string;
+  /** Alt text / accessible name. */
+  title?: string;
+  isActive: boolean;
+  sortOrder: number;
+  created_at?: any;
 }
 
 export interface Review {

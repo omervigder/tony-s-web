@@ -4,7 +4,8 @@ import GiftAssistant from './components/GiftAssistant';
 import CheckoutSuccess from './components/CheckoutSuccess';
 import { ShoppingCart, Package, Plus, Minus, Trash2, Camera, ChevronRight, CheckCircle2, X, Menu, Loader2, ChevronDown, Copy, Star, MessageCircle, Gift, Box, Check, Instagram } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
-import { Product, Category, Settings, CartItem, Coupon, SiteContent, Review, BrandingOption, SelectedOptions, ProductColorOption, ProductLengthOption } from './types';
+import { Product, Category, Settings, CartItem, Coupon, SiteContent, Review, BrandingOption, SelectedOptions, ProductColorOption, ProductLengthOption, SiteBanner } from './types';
+import { effectivePrice } from './lib/pricing';
 import { db, storage } from './firebase';
 import { collection, addDoc, getDocs, doc, getDoc, setDoc, query, orderBy, where } from "firebase/firestore";
 import { ref, uploadBytes, getDownloadURL } from "firebase/storage";
@@ -18,6 +19,46 @@ const WhatsAppIcon = ({ size = 20 }: { size?: number }) => (
     <path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z" />
   </svg>
 );
+
+// Format ₪ amounts — rounds to 2 decimals and trims trailing zeros so
+// float imprecision (e.g. 0.1+0.2 = 0.30000000000000004) never reaches the UI.
+const formatPrice = (n: number | string | undefined | null): string => {
+  const num = Number(n) || 0;
+  return num.toFixed(2).replace(/\.?0+$/, '');
+};
+
+/** A product's price. On sale, the list price is struck through and the saving badged.
+ *  `surcharge` is any length/branding extra the shopper has already picked. */
+const PriceTag = ({
+  product, surcharge = 0, size = 'md',
+}: { product: Product; surcharge?: number; size?: 'md' | 'lg' }) => {
+  const p = effectivePrice(product);
+  const big = size === 'lg' ? 'text-2xl' : 'text-xl';
+
+  return (
+    <span className="flex items-center gap-2 flex-wrap">
+      <span className={`${big} font-semibold text-ink`}>₪{formatPrice(p.final + surcharge)}</span>
+      {p.isDiscounted && (
+        <>
+          <span className="text-sm text-muted line-through">₪{formatPrice(p.list + surcharge)}</span>
+          <span className="text-xs font-bold px-1.5 py-0.5 bg-ink text-cream">-{p.percentOff}%</span>
+          {p.label && <span className="text-xs text-muted">{p.label}</span>}
+        </>
+      )}
+    </span>
+  );
+};
+
+/** The compact price used inside the Build-A-Box picker tiles. */
+const BundlePrice = ({ product }: { product: Product }) => {
+  const p = effectivePrice(product);
+  return (
+    <p className="text-ink font-bold text-sm flex items-center gap-1.5">
+      ₪{formatPrice(p.final)}
+      {p.isDiscounted && <span className="text-muted font-normal line-through">₪{formatPrice(p.list)}</span>}
+    </p>
+  );
+};
 
 export default function App() {
   const [view, setView] = useState<'user' | 'checkout' | 'success' | 'product' | 'build-box'>('user');
@@ -87,6 +128,10 @@ export default function App() {
   const [siteContent, setSiteContent] = useState<SiteContent>(DEFAULT_CONTENT);
   const [isContentLoading, setIsContentLoading] = useState(true);
 
+  // Admin-uploaded promo images: a strip on the homepage, and an arrival popup.
+  const [banners, setBanners] = useState<SiteBanner[]>([]);
+  const [activePopup, setActivePopup] = useState<SiteBanner | null>(null);
+
   // Toast
   const [toast, setToast] = useState<string | null>(null);
 
@@ -110,12 +155,49 @@ export default function App() {
     localStorage.setItem('tony_store_cart', JSON.stringify(cart));
   }, [cart]);
 
+  const homeBanners = banners.filter(b => b.placement === 'home');
+
+  // Arrival popup — the first active popup banner, shown once per browser session.
+  // The key carries the banner id, so a newly uploaded popup still greets someone
+  // who dismissed the previous one.
+  const popupSeenKey = (id: string) => `tony_popup_seen_${id}`;
+
+  useEffect(() => {
+    const banner = banners.find(b => b.placement === 'popup');
+    if (!banner) return;
+    try {
+      if (sessionStorage.getItem(popupSeenKey(banner.id))) return;
+    } catch { /* Safari private mode — just show it */ }
+    const timer = setTimeout(() => setActivePopup(banner), 1500);
+    return () => clearTimeout(timer);
+  }, [banners]);
+
+  const dismissPopup = () => {
+    if (activePopup) {
+      try { sessionStorage.setItem(popupSeenKey(activePopup.id), '1'); } catch { /* ignore */ }
+    }
+    setActivePopup(null);
+  };
+
+  useEffect(() => {
+    if (!activePopup) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') dismissPopup(); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [activePopup]);
+
   const fetchData = async () => {
     try {
-      const [productsSnapshot, categoriesSnapshot, brandingSnapshot, settingsDoc, contentDoc] = await Promise.all([
+      const [productsSnapshot, categoriesSnapshot, brandingSnapshot, bannersSnapshot, settingsDoc, contentDoc] = await Promise.all([
         getDocs(query(collection(db, "products"), orderBy("created_at", "desc"))),
         getDocs(collection(db, "categories")),
         getDocs(collection(db, "branding_options")),
+        // Banners are decoration — a failed read (e.g. rules not deployed yet) must not
+        // take the catalogue down with it, so this one settles to null instead of rejecting.
+        getDocs(collection(db, "site_banners")).catch(err => {
+          console.error("[Banners] fetch failed:", err);
+          return null;
+        }),
         getDoc(doc(db, "settings", "store")),
         getDoc(doc(db, "settings", "content")),
       ]);
@@ -126,6 +208,13 @@ export default function App() {
         (brandingSnapshot.docs.map(d => ({ id: d.id, ...d.data() })) as BrandingOption[])
           .filter(b => b.isActive !== false)
       );
+      if (bannersSnapshot) {
+        setBanners(
+          (bannersSnapshot.docs.map(d => ({ id: d.id, ...d.data() })) as SiteBanner[])
+            .filter(b => b.isActive && b.imageUrl)
+            .sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0))
+        );
+      }
       if (settingsDoc.exists()) setSettings(settingsDoc.data() as Settings);
       if (contentDoc.exists()) setSiteContent(prev => ({ ...prev, ...contentDoc.data() as SiteContent }));
     } catch (err) {
@@ -263,8 +352,9 @@ export default function App() {
     }
   };
 
-  // Build-A-Box helpers
-  const bundleTotal = (selectedBoxBase?.price || 0) + bundleItems.reduce((sum, bi) => sum + bi.product.price * bi.qty, 0);
+  // Build-A-Box helpers — a discounted product is discounted inside a bundle too.
+  const bundleTotal = (selectedBoxBase ? effectivePrice(selectedBoxBase).final : 0)
+    + bundleItems.reduce((sum, bi) => sum + effectivePrice(bi.product).final * bi.qty, 0);
   const addBundleItem = (product: Product) => {
     setBundleItems(prev => {
       const existing = prev.find(bi => bi.product.id === product.id);
@@ -284,14 +374,20 @@ export default function App() {
       ...selectedBoxBase,
       id: `bundle_${Date.now()}`,
       name: `מארז אישי — ${selectedBoxBase.name}`,
+      // bundleTotal already has every discount applied. Carrying the box base's own
+      // discount onto the bundle would discount the whole bundle a second time.
       price: bundleTotal,
+      discount: undefined,
       images: selectedBoxBase.images,
     };
     const cartBundle: CartItem = {
       ...bundleProduct,
       quantity: 1,
       unitPrice: bundleProduct.price,
-      bundleItems: bundleItems.map(bi => ({ id: bi.product.id, name: bi.product.name, price: bi.product.price, quantity: bi.qty })),
+      bundleItems: bundleItems.map(bi => ({
+        id: bi.product.id, name: bi.product.name,
+        price: effectivePrice(bi.product).final, quantity: bi.qty,
+      })),
     };
     setCart(prev => [...prev, cartBundle]);
     setSelectedBoxBase(null);
@@ -326,8 +422,9 @@ export default function App() {
    *  The `?? price` fallback covers carts persisted to localStorage before options shipped. */
   const unitPriceOf = (item: Pick<CartItem, 'price' | 'unitPrice'>) => item.unitPrice ?? item.price;
 
-  const priceWithOptions = (basePrice: number, opts: SelectedOptions) =>
-    basePrice + (opts.selectedLength?.priceDelta ?? 0) + (opts.selectedBranding?.extraCost ?? 0);
+  /** Surcharges stack on the *discounted* base — a sale price is the price we build from. */
+  const priceWithOptions = (product: Product, opts: SelectedOptions) =>
+    effectivePrice(product).final + (opts.selectedLength?.priceDelta ?? 0) + (opts.selectedBranding?.extraCost ?? 0);
 
   const addToCart = (product: Product, quantity: number = 1, variations?: Record<string, string>, options: SelectedOptions = {}) => {
     const line: CartItem = {
@@ -335,7 +432,7 @@ export default function App() {
       quantity,
       selectedVariations: variations,
       ...options,
-      unitPrice: priceWithOptions(product.price, options),
+      unitPrice: priceWithOptions(product, options),
     };
     const key = getCartKey(line);
     setCart(prev => {
@@ -378,13 +475,6 @@ export default function App() {
   const cardCost = dedication.message.trim() && dedication.cardType === 'printed' ? Number(settings.printed_card_price || 15) : 0;
   const finalTotal = Math.max(0, cartTotal - discountAmount + (checkoutData.delivery === 'delivery' ? Number(settings.delivery_cost) : 0) + cardCost);
 
-  // Format ₪ amounts — rounds to 2 decimals and trims trailing zeros so
-  // float imprecision (e.g. 0.1+0.2 = 0.30000000000000004) never reaches the UI.
-  const formatPrice = (n: number | string | undefined | null): string => {
-    const num = Number(n) || 0;
-    return num.toFixed(2).replace(/\.?0+$/, '');
-  };
-
   // ── Product page: live option pricing ──────────────────────────────────
   // The branding options this product opted into, resolved against the global catalog.
   const productBrandingOptions = selectedProduct
@@ -392,7 +482,10 @@ export default function App() {
     : [];
   const selectedBranding = productBrandingOptions.find(b => b.id === selectedBrandingId) ?? null;
   const productSurcharge = (selectedLength?.priceDelta ?? 0) + (selectedBranding?.extraCost ?? 0);
-  const productUnitPrice = (selectedProduct?.price ?? 0) + productSurcharge;
+  const productPricing = selectedProduct
+    ? effectivePrice(selectedProduct)
+    : { list: 0, final: 0, isDiscounted: false, percentOff: 0 };
+  const productUnitPrice = productPricing.final + productSurcharge;
   // Show a "starting from" prefix until the shopper has picked every option that could add cost.
   const hasSurchargeOptions = !!(
     selectedProduct?.lengthOptions?.some(l => l.priceDelta > 0) ||
@@ -439,20 +532,25 @@ export default function App() {
 
     setIsCreatingPayment(true);
 
-    const orderItems = cart.map(i => ({
+    const orderItems = cart.map(i => {
+      const pricing = effectivePrice(i);
+      return {
       id: i.id,
       name: i.name,
       // `price` is the unit price actually charged, so every downstream consumer
       // (Telegram totals, admin analytics, the xlsx export) stays correct.
       price: unitPriceOf(i),
-      basePrice: i.price,
+      // The base the charge was built from — discounted, when the line was on sale.
+      basePrice: pricing.final,
+      ...(pricing.isDiscounted && { listPrice: pricing.list }),
       costPrice: i.costPrice ?? 0,
       quantity: i.quantity,
       ...(i.selectedVariations && Object.keys(i.selectedVariations).length > 0 && { selectedVariations: i.selectedVariations }),
       ...(i.selectedColor && { selectedColor: { name: i.selectedColor.name, hex: i.selectedColor.hex } }),
       ...(i.selectedLength && { selectedLength: i.selectedLength }),
       ...(i.selectedBranding && { selectedBranding: i.selectedBranding }),
-    }));
+      };
+    });
     const dedicationData = dedication.message.trim()
       ? { message: dedication.message.trim(), cardType: dedication.cardType }
       : undefined;
@@ -689,6 +787,32 @@ export default function App() {
               )}
             </div>
 
+            {/* Admin-uploaded promo banners */}
+            {homeBanners.length > 0 && (
+              <div className="space-y-6">
+                {homeBanners.map(banner => {
+                  const image = (
+                    <img
+                      src={banner.imageUrl}
+                      alt={banner.title || 'מבצע'}
+                      className="w-full h-auto object-cover"
+                      referrerPolicy="no-referrer"
+                    />
+                  );
+                  return banner.linkUrl ? (
+                    <a key={banner.id} href={banner.linkUrl} target="_blank" rel="noopener noreferrer"
+                      className="block overflow-hidden border border-line hover:border-line-strong transition-colors">
+                      {image}
+                    </a>
+                  ) : (
+                    <div key={banner.id} className="overflow-hidden border border-line">
+                      {image}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+
             {/* Build-A-Box Banner */}
             <div
               onClick={() => { setSelectedBoxBase(null); setBundleItems([]); navigateTo('build-box'); window.scrollTo(0,0); }}
@@ -739,8 +863,8 @@ export default function App() {
                   <div className="p-6 flex flex-col flex-grow">
                     <h3 className="text-lg text-ink mb-2">{product.name}</h3>
                     <p className="text-muted text-sm mb-4 line-clamp-2">{product.description}</p>
-                    <div className="flex justify-between items-center mt-auto">
-                      <span className="text-xl font-semibold text-ink">₪{formatPrice(product.price)}</span>
+                    <div className="flex justify-between items-center gap-3 mt-auto">
+                      <PriceTag product={product} />
                       <button
                         onClick={(e) => {
                           e.stopPropagation();
@@ -794,13 +918,15 @@ export default function App() {
               <div className="space-y-6">
                 <h2 className="text-4xl text-ink">{selectedProduct.name}</h2>
                 <div>
-                  {hasSurchargeOptions && !hasPickedSurcharge && (
-                    <span className="text-sm text-muted ml-1">החל מ-</span>
-                  )}
-                  <span className="text-2xl text-ink font-semibold">₪{formatPrice(productUnitPrice)}</span>
+                  <div className="flex items-center gap-2 flex-wrap">
+                    {hasSurchargeOptions && !hasPickedSurcharge && (
+                      <span className="text-sm text-muted">החל מ-</span>
+                    )}
+                    <PriceTag product={selectedProduct} surcharge={productSurcharge} size="lg" />
+                  </div>
                   {productSurcharge > 0 && (
                     <p className="text-sm text-muted mt-1">
-                      ₪{formatPrice(selectedProduct.price)} + ₪{formatPrice(productSurcharge)} תוספות
+                      ₪{formatPrice(productPricing.final)} + ₪{formatPrice(productSurcharge)} תוספות
                     </p>
                   )}
                 </div>
@@ -1339,7 +1465,7 @@ export default function App() {
                         </div>
                         <div className="p-3">
                           <p className="font-semibold text-sm">{box.name}</p>
-                          <p className="text-ink font-bold text-sm">₪{formatPrice(box.price)}</p>
+                          <BundlePrice product={box} />
                         </div>
                       </div>
                     ))}
@@ -1369,7 +1495,7 @@ export default function App() {
                         </div>
                         <div className="p-3 space-y-2">
                           <p className="font-semibold text-sm leading-tight">{product.name}</p>
-                          <p className="text-ink font-bold text-sm">₪{formatPrice(product.price)}</p>
+                          <BundlePrice product={product} />
                           {inBundle ? (
                             <div className="flex items-center justify-between">
                               <button onClick={() => updateBundleQty(product.id, -1)} className="w-7 h-7 rounded-full border flex items-center justify-center hover:bg-gray-100 text-gray-400"><Minus size={14} /></button>
@@ -1400,12 +1526,12 @@ export default function App() {
                 <div className="space-y-2 text-sm">
                   <div className="flex justify-between text-gray-600">
                     <span>בסיס: {selectedBoxBase.name}</span>
-                    <span>₪{formatPrice(selectedBoxBase.price)}</span>
+                    <span>₪{formatPrice(effectivePrice(selectedBoxBase).final)}</span>
                   </div>
                   {bundleItems.map(bi => (
                     <div key={bi.product.id} className="flex justify-between text-gray-600">
                       <span>{bi.product.name} × {bi.qty}</span>
-                      <span>₪{formatPrice(bi.product.price * bi.qty)}</span>
+                      <span>₪{formatPrice(effectivePrice(bi.product).final * bi.qty)}</span>
                     </div>
                   ))}
                   <div className="border-t pt-2 flex justify-between font-bold text-lg">
@@ -1575,6 +1701,49 @@ export default function App() {
       </AnimatePresence>
 
       <AccessibilityWidget />
+
+      {/* ── Arrival popup — an admin-uploaded promo image ───────────── */}
+      <AnimatePresence>
+        {activePopup && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-[90] flex items-center justify-center p-4 bg-ink/70 backdrop-blur-sm"
+            onClick={dismissPopup}
+            role="dialog"
+            aria-modal="true"
+            aria-label={activePopup.title || 'מבצע'}
+          >
+            <motion.div
+              initial={{ opacity: 0, scale: 0.94, y: 16 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.94, y: 16 }}
+              transition={{ type: 'spring', stiffness: 260, damping: 24 }}
+              className="relative w-full max-w-lg bg-surface border border-line overflow-hidden"
+              onClick={e => e.stopPropagation()}
+            >
+              <button
+                onClick={dismissPopup}
+                aria-label="סגירת החלון"
+                autoFocus
+                className="absolute top-3 left-3 z-10 p-2 bg-surface/90 text-ink hover:bg-surface transition-colors"
+              >
+                <X size={18} />
+              </button>
+              {activePopup.linkUrl ? (
+                <a href={activePopup.linkUrl} target="_blank" rel="noopener noreferrer" onClick={dismissPopup}>
+                  <img src={activePopup.imageUrl} alt={activePopup.title || 'מבצע'}
+                    className="w-full h-auto object-cover" referrerPolicy="no-referrer" />
+                </a>
+              ) : (
+                <img src={activePopup.imageUrl} alt={activePopup.title || 'מבצע'}
+                  className="w-full h-auto object-cover" referrerPolicy="no-referrer" />
+              )}
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       {/* Cart Drawer */}
       <AnimatePresence>

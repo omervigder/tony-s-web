@@ -15,7 +15,8 @@ import {
 import {
   ShoppingBag, BarChart3, Package, Settings as SettingsIcon,
   Menu, X, Plus, Trash2, Pencil, Camera, Loader2,
-  MessageCircle, DollarSign, CheckCircle2, Download, ChevronDown, ChevronUp, Users, Sparkles
+  MessageCircle, DollarSign, CheckCircle2, Download, ChevronDown, ChevronUp, Users, Sparkles,
+  Archive, ArchiveRestore, Image as ImageIcon, Tag
 } from 'lucide-react';
 
 /* ─────────────────────────────── Types ─────────────────────────────── */
@@ -23,15 +24,17 @@ import {
 // keeping private copies here is what let the two drift apart in the first place.
 import type {
   OrderItem, Product, Category, BrandingOption,
-  ProductColorOption, ProductLengthOption,
+  ProductColorOption, ProductLengthOption, ProductDiscount, SiteBanner,
 } from '../types';
 import { COLOR_PALETTE } from '../constants/colors';
+import { effectivePrice } from '../lib/pricing';
 
 interface Order {
   id: string; customer_name: string; customer_phone: string;
   delivery_method: 'pickup' | 'delivery'; total_price: number;
   items: OrderItem[] | string; status: string; created_at: string;
   adminNote?: string;
+  isArchived?: boolean;
 }
 interface StoreSettings { pickup_address: string; delivery_cost: string; bit_phone: string; }
 interface Customer {
@@ -39,7 +42,7 @@ interface Customer {
   totalOrders: number; totalSpend: number;
   firstOrderDate: string; lastOrderDate: string;
 }
-type TabName = 'orders' | 'analytics' | 'products' | 'branding' | 'customers' | 'settings';
+type TabName = 'orders' | 'analytics' | 'products' | 'branding' | 'design' | 'customers' | 'settings';
 
 /* ─────────────────────────────── Constants ──────────────────────────── */
 const INK = '#1A1A18';
@@ -88,6 +91,20 @@ function StatCard({ label, value, icon: Icon, color }: { label: string; value: s
   );
 }
 
+/* ────────────────────────────── AdminPriceCell ──────────────────────── */
+/** A product's price in the admin table — struck-through list price when on sale. */
+function AdminPriceCell({ product }: { product: Product }) {
+  const p = effectivePrice(product);
+  if (!p.isDiscounted) return <span style={{ color: INK }}>₪{p.list}</span>;
+  return (
+    <span className="flex items-center gap-1.5">
+      <span style={{ color: INK }}>₪{p.final}</span>
+      <span className="line-through text-gray-400 font-normal">₪{p.list}</span>
+      <span className="text-[10px] px-1.5 py-0.5 rounded-md text-white" style={{ background: INK }}>-{p.percentOff}%</span>
+    </span>
+  );
+}
+
 /* ─────────────────────────────── OrderCard ──────────────────────────── */
 function OrderCard({ order }: { key?: string; order: Order }) {
   const items = parseItems(order.items);
@@ -112,6 +129,13 @@ function OrderCard({ order }: { key?: string; order: Order }) {
 
   const updateStatus = async (status: string) => {
     await updateDoc(doc(db, 'orders', order.id), { status });
+  };
+
+  // Archiving is reversible and hides the order from the list, the "new" badge and
+  // analytics. Permanent deletion lives in the archive view, behind a typed confirm.
+  const archive = async () => {
+    if (!confirm(`להעביר לארכיון את ההזמנה של ${order.customer_name}?\nניתן לשחזר אותה מלשונית הארכיון.`)) return;
+    await updateDoc(doc(db, 'orders', order.id), { isArchived: true });
   };
 
   return (
@@ -155,12 +179,18 @@ function OrderCard({ order }: { key?: string; order: Order }) {
         <p className="font-bold text-lg" style={{ color: INK }}>₪{order.total_price}</p>
       </div>
 
-      <select value={order.status} onChange={e => updateStatus(e.target.value)}
-        className="w-full bg-cream border border-line rounded-xl p-2.5 text-sm text-body outline-none cursor-pointer hover:border-ink/40 transition-colors">
-        <option value="חדש">🔴 חדש</option>
-        <option value="בטיפול">🔵 בטיפול</option>
-        <option value="בוצע">🟢 בוצע</option>
-      </select>
+      <div className="flex gap-2">
+        <select value={order.status} onChange={e => updateStatus(e.target.value)}
+          className="flex-1 bg-cream border border-line rounded-xl p-2.5 text-sm text-body outline-none cursor-pointer hover:border-ink/40 transition-colors">
+          <option value="חדש">🔴 חדש</option>
+          <option value="בטיפול">🔵 בטיפול</option>
+          <option value="בוצע">🟢 בוצע</option>
+        </select>
+        <button onClick={archive} title="העבר לארכיון"
+          className="px-3 rounded-xl bg-cream border border-line text-gray-500 hover:text-ink hover:border-ink/40 transition-colors flex items-center justify-center">
+          <Archive size={16} />
+        </button>
+      </div>
 
       <div className="space-y-2 border-t border-line pt-3">
         <label className="block text-xs text-gray-500">הערת מנהל (פנימי)</label>
@@ -183,18 +213,111 @@ function OrderCard({ order }: { key?: string; order: Order }) {
   );
 }
 
+/* ──────────────────────────── ArchivedOrderCard ─────────────────────── */
+/** An archived order: restorable, or permanently deletable behind a typed confirm.
+ *  A plain confirm() is too easy to fire by accident on a real customer's order. */
+function ArchivedOrderCard({ order }: { key?: string; order: Order }) {
+  const [confirming, setConfirming] = useState(false);
+  const [typed, setTyped] = useState('');
+  const [busy, setBusy] = useState(false);
+  const items = parseItems(order.items);
+  const dateStr = toDate(order.created_at).toLocaleString('he-IL', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
+
+  const restore = async () => {
+    setBusy(true);
+    try { await updateDoc(doc(db, 'orders', order.id), { isArchived: false }); }
+    finally { setBusy(false); }
+  };
+
+  const destroy = async () => {
+    setBusy(true);
+    try { await deleteDoc(doc(db, 'orders', order.id)); }
+    catch (err) { console.error(err); alert('מחיקת ההזמנה נכשלה.'); setBusy(false); }
+  };
+
+  return (
+    <div className="bg-white border border-line rounded-2xl p-5 space-y-3 opacity-90">
+      <div className="flex justify-between items-start gap-2">
+        <div>
+          <h3 className="font-bold text-ink">{order.customer_name}</h3>
+          <p className="text-gray-500 text-xs mt-0.5">{dateStr} · #{order.id.slice(0, 6)}</p>
+        </div>
+        <span className="text-xs font-bold px-3 py-1 rounded-full border whitespace-nowrap flex-shrink-0 bg-gray-500/15 text-gray-400 border-gray-500/30">
+          בארכיון · {order.status}
+        </span>
+      </div>
+
+      <p className="text-gray-500 text-sm">
+        {items.length} פריטים · ₪{order.total_price}
+      </p>
+
+      {confirming ? (
+        <div className="space-y-2 border-t border-line pt-3">
+          <p className="text-xs text-red-400">
+            מחיקה לצמיתות. להמשך, הקלד את שם הלקוח: <span className="font-bold">{order.customer_name}</span>
+          </p>
+          <input
+            value={typed}
+            onChange={e => setTyped(e.target.value)}
+            placeholder={order.customer_name}
+            className="w-full bg-cream border border-line rounded-xl p-2.5 text-sm text-body outline-none focus:border-red-400 transition-colors"
+          />
+          <div className="flex gap-2">
+            <button
+              onClick={destroy}
+              disabled={busy || typed.trim() !== order.customer_name}
+              className="flex-1 py-2 rounded-xl text-xs font-bold bg-red-500/15 text-red-500 border border-red-500/30 hover:bg-red-500/25 transition-colors disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center gap-1.5">
+              {busy ? <Loader2 size={12} className="animate-spin" /> : <Trash2 size={12} />} מחק לצמיתות
+            </button>
+            <button
+              onClick={() => { setConfirming(false); setTyped(''); }}
+              className="px-4 py-2 rounded-xl text-xs font-bold bg-cream border border-line text-gray-500 hover:text-ink transition-colors">
+              ביטול
+            </button>
+          </div>
+        </div>
+      ) : (
+        <div className="flex gap-2 border-t border-line pt-3">
+          <button onClick={restore} disabled={busy}
+            className="flex-1 flex items-center justify-center gap-1.5 py-2 rounded-xl text-xs font-bold bg-cream border border-line text-body hover:border-ink/40 transition-colors disabled:opacity-60">
+            {busy ? <Loader2 size={12} className="animate-spin" /> : <ArchiveRestore size={12} />} שחזר
+          </button>
+          <button onClick={() => setConfirming(true)}
+            className="flex items-center justify-center gap-1.5 px-4 py-2 rounded-xl text-xs font-bold bg-red-500/10 text-red-400 border border-red-500/25 hover:bg-red-500/20 transition-colors">
+            <Trash2 size={12} /> מחק
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 /* ─────────────────────────────── OrdersView ─────────────────────────── */
 function OrdersView({ orders }: { orders: Order[] }) {
   const [filter, setFilter] = useState('all');
-  const filtered = filter === 'all' ? orders : orders.filter(o => o.status === filter);
-  const count = (s: string) => orders.filter(o => o.status === s).length;
+
+  const active = orders.filter(o => !o.isArchived);
+  const archived = orders.filter(o => o.isArchived);
+  const isArchiveView = filter === 'archived';
+  const filtered = isArchiveView
+    ? archived
+    : filter === 'all' ? active : active.filter(o => o.status === filter);
+  const count = (s: string) => active.filter(o => o.status === s).length;
+
+  const chips: [string, string][] = [
+    ['all', 'הכל'],
+    ['חדש', `חדש (${count('חדש')})`],
+    ['בטיפול', `בטיפול (${count('בטיפול')})`],
+    ['בוצע', `בוצע (${count('בוצע')})`],
+    ['archived', `ארכיון (${archived.length})`],
+  ];
 
   return (
     <div className="space-y-6">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <h2 className="text-xl font-bold text-ink">הזמנות</h2>
         <div className="flex gap-2 flex-wrap">
-          {[['all', 'הכל'], ['חדש', `חדש (${count('חדש')})`], ['בטיפול', `בטיפול (${count('בטיפול')})`], ['בוצע', `בוצע (${count('בוצע')})`]].map(([val, label]) => (
+          {chips.map(([val, label]) => (
             <button key={val} onClick={() => setFilter(val)}
               className={`px-4 py-1.5 rounded-xl text-sm font-medium transition-all ${filter === val ? 'text-white' : 'bg-white border border-line text-gray-400 hover:text-ink'}`}
               style={filter === val ? { background: `${INK}` } : {}}>
@@ -204,14 +327,23 @@ function OrdersView({ orders }: { orders: Order[] }) {
         </div>
       </div>
 
+      {isArchiveView && archived.length > 0 && (
+        <p className="text-gray-500 text-sm">
+          הזמנות בארכיון אינן מוצגות ברשימה הראשית ואינן נספרות בסטטיסטיקה. מחיקה לצמיתות אינה ניתנת לשחזור.
+        </p>
+      )}
+
       {filtered.length === 0 ? (
         <div className="text-center py-24 text-gray-400">
-          <ShoppingBag size={52} className="mx-auto mb-3 opacity-20" />
-          <p>אין הזמנות</p>
+          {isArchiveView
+            ? <><Archive size={52} className="mx-auto mb-3 opacity-20" /><p>הארכיון ריק</p></>
+            : <><ShoppingBag size={52} className="mx-auto mb-3 opacity-20" /><p>אין הזמנות</p></>}
         </div>
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-          {filtered.map(order => <OrderCard key={order.id} order={order} />)}
+          {isArchiveView
+            ? filtered.map(order => <ArchivedOrderCard key={order.id} order={order} />)
+            : filtered.map(order => <OrderCard key={order.id} order={order} />)}
         </div>
       )}
     </div>
@@ -568,6 +700,7 @@ const EMPTY_FORM = {
   lengthOptions: [] as ProductLengthOption[],
   brandingOptionIds: [] as string[],
   isBoxBase: false,
+  discount: { type: 'percent', value: 0, isActive: false, label: '' } as ProductDiscount & { label: string },
 };
 
 function ProductsView({ products, categories, brandingOptions }: { products: Product[]; categories: Category[]; brandingOptions: BrandingOption[] }) {
@@ -624,6 +757,12 @@ function ProductsView({ products, categories, brandingOptions }: { products: Pro
       lengthOptions: p.lengthOptions ?? [],
       brandingOptionIds: p.brandingOptionIds ?? [],
       isBoxBase: p.isBoxBase ?? false,
+      discount: {
+        type: p.discount?.type ?? 'percent',
+        value: p.discount?.value ?? 0,
+        isActive: p.discount?.isActive ?? false,
+        label: p.discount?.label ?? '',
+      },
     });
     setShowForm(true);
   };
@@ -698,8 +837,19 @@ function ProductsView({ products, categories, brandingOptions }: { products: Pro
       .filter(v => v.name.trim())
       .map(v => ({ name: v.name.trim(), values: v.values.split(',').map(s => s.trim()).filter(Boolean) }));
 
+  /** The sale price the shopper would see, given what's currently typed in the form. */
+  const formPreview = effectivePrice({
+    price: form.price,
+    discount: { type: form.discount.type, value: form.discount.value, isActive: form.discount.isActive },
+  });
+
   const handleSave = async () => {
     if (!form.name || !form.price || !form.category_id) return alert('נא למלא שם, מחיר וקטגוריה');
+    if (form.discount.isActive) {
+      if (!(form.discount.value > 0)) return alert('נא להזין ערך הנחה גדול מ-0 (או לכבות את המבצע)');
+      if (!formPreview.isDiscounted) return alert('ההנחה אינה מקטינה את המחיר. בדוק את הערך שהזנת.');
+      if (formPreview.final <= 0) return alert('ההנחה מאפסת את מחיר המוצר. הקטן את ההנחה.');
+    }
     try {
       setUploading(true);
       // Firestore rejects `undefined`, so an unbound color must omit imageUrl entirely.
@@ -721,6 +871,16 @@ function ProductsView({ products, categories, brandingOptions }: { products: Pro
         lengthOptions: form.lengthOptions.filter(l => l.label.trim()),
         brandingOptionIds: form.brandingOptionIds,
         isBoxBase: form.isBoxBase,
+        // `null` rather than a dropped key: an edit that turns a sale off has to
+        // overwrite the discount already on the doc, and Firestore rejects `undefined`.
+        discount: form.discount.isActive
+          ? {
+              type: form.discount.type,
+              value: form.discount.value,
+              isActive: true,
+              ...(form.discount.label.trim() && { label: form.discount.label.trim() }),
+            }
+          : null,
       };
       if (editing) {
         await updateDoc(doc(db, 'products', editing.id), payload);
@@ -845,7 +1005,7 @@ function ProductsView({ products, categories, brandingOptions }: { products: Pro
                             </div>
                           </div>
                         </td>
-                        <td className="p-4 font-bold text-sm whitespace-nowrap" style={{ color: INK }}>₪{p.price}</td>
+                        <td className="p-4 font-bold text-sm whitespace-nowrap"><AdminPriceCell product={p} /></td>
                         <td className="p-4 text-gray-500 text-xs">
                           {p.variations && p.variations.length > 0
                             ? p.variations.map(v => v.name).join(', ')
@@ -903,7 +1063,7 @@ function ProductsView({ products, categories, brandingOptions }: { products: Pro
                           </div>
                         </td>
                         <td className="p-4 text-gray-400 text-sm">{catName(p.category_id)}</td>
-                        <td className="p-4 font-bold text-sm whitespace-nowrap" style={{ color: INK }}>₪{p.price}</td>
+                        <td className="p-4 font-bold text-sm whitespace-nowrap"><AdminPriceCell product={p} /></td>
                         <td className="p-4">
                           <div className="flex gap-2">
                             <button onClick={() => openEdit(p)} className="p-2 rounded-lg bg-blue-500/15 text-blue-400 hover:bg-blue-500/25 transition-colors"><Pencil size={14} /></button>
@@ -958,6 +1118,62 @@ function ProductsView({ products, categories, brandingOptions }: { products: Pro
                 <option value="">בחר קטגוריה *</option>
                 {categories.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
               </select>
+
+              {/* ── Discount / sale ── */}
+              <div className="border border-line rounded-xl overflow-hidden">
+                <label className="flex items-center justify-between p-3 bg-cream cursor-pointer hover:bg-cream/70 transition-colors">
+                  <div>
+                    <p className="text-ink text-sm font-medium flex items-center gap-1.5"><Tag size={14} /> מבצע / הנחה</p>
+                    <p className="text-gray-500 text-xs mt-0.5">המחיר המקורי יוצג בחנות עם קו חוצה</p>
+                  </div>
+                  <div
+                    onClick={() => setForm(p => ({ ...p, discount: { ...p.discount, isActive: !p.discount.isActive } }))}
+                    className={`relative w-11 h-6 rounded-full transition-colors flex-shrink-0 ${form.discount.isActive ? 'bg-ink' : 'bg-line'}`}>
+                    <span className={`absolute top-0.5 w-5 h-5 rounded-full bg-white shadow transition-transform ${form.discount.isActive ? 'translate-x-0.5' : 'translate-x-5'}`} />
+                  </div>
+                </label>
+
+                {form.discount.isActive && (
+                  <div className="p-3 space-y-3 border-t border-line">
+                    <div className="flex gap-2">
+                      {([['percent', '% אחוזים'], ['fixed', '₪ סכום קבוע']] as const).map(([type, label]) => (
+                        <button key={type}
+                          onClick={() => setForm(p => ({ ...p, discount: { ...p.discount, type } }))}
+                          className={`flex-1 py-2 rounded-lg text-xs font-bold transition-all ${form.discount.type === type ? 'bg-ink text-white' : 'bg-cream border border-line text-gray-500 hover:text-ink'}`}>
+                          {label}
+                        </button>
+                      ))}
+                    </div>
+                    <div className="flex gap-2">
+                      <input
+                        type="number" min="0"
+                        max={form.discount.type === 'percent' ? 99 : undefined}
+                        placeholder={form.discount.type === 'percent' ? 'אחוז הנחה (למשל 20)' : 'סכום הנחה בשקלים'}
+                        value={form.discount.value || ''}
+                        onChange={e => setForm(p => ({ ...p, discount: { ...p.discount, value: Number(e.target.value) || 0 } }))}
+                        className="flex-1 bg-cream border border-line rounded-lg p-2.5 text-ink text-sm outline-none focus:border-ink transition-colors"
+                      />
+                      <input
+                        type="text"
+                        placeholder="שם המבצע (אופציונלי)"
+                        value={form.discount.label}
+                        onChange={e => setForm(p => ({ ...p, discount: { ...p.discount, label: e.target.value } }))}
+                        className="flex-1 bg-cream border border-line rounded-lg p-2.5 text-ink text-sm outline-none focus:border-ink transition-colors"
+                      />
+                    </div>
+                    {formPreview.isDiscounted ? (
+                      <p className="text-sm text-body">
+                        מחיר בחנות:{' '}
+                        <span className="font-bold text-ink">₪{formPreview.final}</span>{' '}
+                        <span className="line-through text-gray-400">₪{formPreview.list}</span>{' '}
+                        <span className="text-xs font-bold px-1.5 py-0.5 rounded-md bg-ink text-white">-{formPreview.percentOff}%</span>
+                      </p>
+                    ) : (
+                      <p className="text-xs text-gray-400">הזן ערך הנחה כדי לראות את המחיר הסופי.</p>
+                    )}
+                  </div>
+                )}
+              </div>
 
               {/* Box Base Toggle */}
               <label className="flex items-center justify-between p-3 bg-cream border border-line rounded-xl cursor-pointer hover:border-ink/40 transition-colors">
@@ -1410,6 +1626,165 @@ function BrandingView({ brandingOptions }: { brandingOptions: BrandingOption[] }
   );
 }
 
+/* ─────────────────────────────── DesignView ─────────────────────────── */
+/** Promotional images: a strip on the homepage, or a popup on arrival. */
+function DesignView({ banners }: { banners: SiteBanner[] }) {
+  const [uploading, setUploading] = useState(false);
+  const [toast, setToast] = useState('');
+  const showToast = (msg: string) => { setToast(msg); setTimeout(() => setToast(''), 2500); };
+
+  const home = banners.filter(b => b.placement === 'home').sort((a, b) => a.sortOrder - b.sortOrder);
+  const popup = banners.filter(b => b.placement === 'popup').sort((a, b) => a.sortOrder - b.sortOrder);
+
+  // Same pattern as the product gallery: upload on pick, so the admin sees the real
+  // image (and any Storage permission error) before anything is saved.
+  const handleUpload = async (e: React.ChangeEvent<HTMLInputElement>, placement: 'home' | 'popup') => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setUploading(true);
+    try {
+      const sRef = ref(storage, `banners/${Date.now()}_${file.name}`);
+      await uploadBytes(sRef, file);
+      const imageUrl = await getDownloadURL(sRef);
+      const siblings = banners.filter(b => b.placement === placement);
+      await addDoc(collection(db, 'site_banners'), {
+        imageUrl,
+        placement,
+        isActive: true,
+        sortOrder: siblings.length,
+        created_at: new Date(),
+      });
+      showToast('התמונה הועלתה!');
+    } catch (err: any) {
+      console.error('[Design] banner upload failed:', err);
+      alert(
+        err?.code === 'storage/unauthorized'
+          ? 'אין הרשאה להעלות לתיקיית banners באחסון. יש לעדכן את כללי ה-Storage בקונסולת Firebase.'
+          : 'העלאת התמונה נכשלה. נסו שוב.'
+      );
+    } finally {
+      setUploading(false);
+      e.target.value = '';
+    }
+  };
+
+  const patch = async (id: string, data: Partial<SiteBanner>) => {
+    try { await updateDoc(doc(db, 'site_banners', id), data); }
+    catch (err) { console.error(err); }
+  };
+
+  const remove = async (id: string) => {
+    if (!confirm('למחוק את התמונה?')) return;
+    await deleteDoc(doc(db, 'site_banners', id));
+    showToast('התמונה נמחקה');
+  };
+
+  const BannerRow = ({ b }: { key?: string; b: SiteBanner }) => (
+    <div className="bg-white border border-line rounded-2xl p-4 flex flex-col sm:flex-row gap-4">
+      <div className="w-full sm:w-40 aspect-video rounded-xl overflow-hidden bg-cream border border-line flex-shrink-0">
+        <img src={b.imageUrl} alt={b.title || ''} className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+      </div>
+      <div className="flex-1 space-y-2.5 min-w-0">
+        <input
+          type="text"
+          placeholder="כותרת / טקסט חלופי (נגישות)"
+          defaultValue={b.title ?? ''}
+          onBlur={e => patch(b.id, { title: e.target.value.trim() })}
+          className="w-full bg-cream border border-line rounded-lg p-2.5 text-ink text-sm outline-none focus:border-ink transition-colors"
+        />
+        <input
+          type="url"
+          dir="ltr"
+          placeholder="קישור בלחיצה (אופציונלי) — https://..."
+          defaultValue={b.linkUrl ?? ''}
+          onBlur={e => patch(b.id, { linkUrl: e.target.value.trim() })}
+          className="w-full bg-cream border border-line rounded-lg p-2.5 text-ink text-sm outline-none focus:border-ink transition-colors"
+        />
+        <div className="flex items-center gap-3 flex-wrap">
+          <div className="flex items-center gap-1.5">
+            <span className="text-gray-500 text-xs">סדר</span>
+            <input
+              type="number" min="0"
+              value={b.sortOrder}
+              onChange={e => patch(b.id, { sortOrder: Number(e.target.value) || 0 })}
+              className="w-16 bg-cream border border-line rounded-lg p-2 text-ink text-sm outline-none focus:border-ink transition-colors"
+            />
+          </div>
+          <button
+            onClick={() => patch(b.id, { isActive: !b.isActive })}
+            title={b.isActive ? 'מוצג באתר' : 'מוסתר'}
+            className={`relative w-11 h-6 rounded-full transition-colors flex-shrink-0 ${b.isActive ? 'bg-ink' : 'bg-line'}`}>
+            <span className={`absolute top-0.5 w-5 h-5 rounded-full bg-white shadow transition-transform ${b.isActive ? 'translate-x-0.5' : 'translate-x-5'}`} />
+          </button>
+          <span className="text-xs text-gray-500">{b.isActive ? 'מוצג באתר' : 'מוסתר'}</span>
+          <button onClick={() => remove(b.id)} className="p-2 text-red-400 hover:text-red-500 transition-colors mr-auto">
+            <Trash2 size={16} />
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+
+  const Section = ({
+    title, hint, placement, list,
+  }: { title: string; hint: string; placement: 'home' | 'popup'; list: SiteBanner[] }) => (
+    <div className="space-y-3">
+      <div className="flex items-start justify-between gap-3 flex-wrap">
+        <div>
+          <h3 className="text-lg font-bold text-ink">{title}</h3>
+          <p className="text-gray-500 text-sm mt-0.5">{hint}</p>
+        </div>
+        <label className="flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-bold text-white cursor-pointer transition-opacity hover:opacity-90"
+          style={{ background: INK, opacity: uploading ? 0.6 : 1 }}>
+          {uploading ? <Loader2 size={16} className="animate-spin" /> : <Camera size={16} />}
+          העלה תמונה
+          <input type="file" accept="image/*" disabled={uploading}
+            onChange={e => handleUpload(e, placement)} className="hidden" />
+        </label>
+      </div>
+      {list.length === 0 ? (
+        <div className="bg-white border border-line rounded-2xl p-10 text-center text-gray-400">
+          <ImageIcon size={36} className="mx-auto mb-2 opacity-20" />
+          <p className="text-sm">אין תמונות עדיין</p>
+        </div>
+      ) : (
+        <div className="space-y-3">{list.map(b => <BannerRow key={b.id} b={b} />)}</div>
+      )}
+    </div>
+  );
+
+  return (
+    <div className="space-y-8 max-w-3xl">
+      {toast && (
+        <div className="fixed top-5 left-1/2 -translate-x-1/2 z-[100] bg-green-600 text-white px-5 py-2.5 rounded-xl text-sm font-bold shadow-xl">
+          {toast}
+        </div>
+      )}
+      <h2 className="text-xl font-bold text-ink">עיצוב האתר</h2>
+
+      <Section
+        title="באנרים בעמוד הבית"
+        hint="תמונות שיוצגו בעמוד הבית, מתחת לכותרת הראשית. מוצגות לפי סדר עולה."
+        placement="home"
+        list={home}
+      />
+
+      <Section
+        title="חלון קופץ בכניסה לאתר"
+        hint="התמונה הפעילה הראשונה תקפוץ למבקר עם הכניסה לאתר, פעם אחת לכל גלישה."
+        placement="popup"
+        list={popup}
+      />
+
+      {popup.filter(b => b.isActive).length > 1 && (
+        <p className="text-gray-500 text-sm">
+          שים לב: רק החלון הקופץ הראשון (לפי סדר) יוצג למבקרים.
+        </p>
+      )}
+    </div>
+  );
+}
+
 /* ─────────────────────────────── Main Admin ─────────────────────────── */
 function AdminDashboard() {
   const [activeTab, setActiveTab] = useState<TabName>('orders');
@@ -1419,6 +1794,7 @@ function AdminDashboard() {
   const [categories, setCategories] = useState<Category[]>([]);
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [brandingOptions, setBrandingOptions] = useState<BrandingOption[]>([]);
+  const [banners, setBanners] = useState<SiteBanner[]>([]);
   const [settings, setSettings] = useState<StoreSettings>({ pickup_address: '', delivery_cost: '0', bit_phone: '' });
   const [dataError, setDataError] = useState('');
 
@@ -1452,19 +1828,28 @@ function AdminDashboard() {
       snap => setBrandingOptions(snap.docs.map(d => ({ id: d.id, ...d.data() } as BrandingOption))),
       onErr('branding_options')
     );
+    const unsubBanners = onSnapshot(
+      collection(db, 'site_banners'),
+      snap => setBanners(snap.docs.map(d => ({ id: d.id, ...d.data() } as SiteBanner))),
+      onErr('site_banners')
+    );
     getDoc(doc(db, 'settings', 'store'))
       .then(d => { if (d.exists()) setSettings(d.data() as StoreSettings); })
       .catch(err => console.error('[Admin] settings fetch error:', err));
-    return () => { unsubO(); unsubP(); unsubC(); unsubCust(); unsubB(); };
+    return () => { unsubO(); unsubP(); unsubC(); unsubCust(); unsubB(); unsubBanners(); };
   }, []);
 
-  const newOrdersCount = orders.filter(o => o.status === 'חדש').length;
+  // Archived orders are out of sight everywhere except the archive tab — they must not
+  // keep the "new" badge lit or count toward revenue.
+  const activeOrders = orders.filter(o => !o.isArchived);
+  const newOrdersCount = activeOrders.filter(o => o.status === 'חדש').length;
 
   const navItems: { tab: TabName; label: string; icon: any }[] = [
     { tab: 'orders', label: 'הזמנות', icon: ShoppingBag },
     { tab: 'analytics', label: 'סטטיסטיקה', icon: BarChart3 },
     { tab: 'products', label: 'מוצרים', icon: Package },
     { tab: 'branding', label: 'מיתוג', icon: Sparkles },
+    { tab: 'design', label: 'עיצוב', icon: ImageIcon },
     { tab: 'customers', label: 'לקוחות', icon: Users },
     { tab: 'settings', label: 'הגדרות', icon: SettingsIcon },
   ];
@@ -1538,9 +1923,10 @@ function AdminDashboard() {
             </div>
           )}
           {activeTab === 'orders' && <OrdersView orders={orders} />}
-          {activeTab === 'analytics' && <AnalyticsView orders={orders} products={products} categories={categories} />}
+          {activeTab === 'analytics' && <AnalyticsView orders={activeOrders} products={products} categories={categories} />}
           {activeTab === 'products' && <ProductsView products={products} categories={categories} brandingOptions={brandingOptions} />}
           {activeTab === 'branding' && <BrandingView brandingOptions={brandingOptions} />}
+          {activeTab === 'design' && <DesignView banners={banners} />}
           {activeTab === 'customers' && <CustomersView customers={customers} />}
           {activeTab === 'settings' && <SettingsView settings={settings} />}
         </main>
