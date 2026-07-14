@@ -1,0 +1,43 @@
+rules_version = '2';
+
+// Firebase Storage — product images (products/) and promo banners (banners/).
+//
+// Writes are keyed on the email in the auth token, not a hardcoded UID. The admin
+// panel gates on the `admins` Firestore collection by email (see AuthContext.tsx),
+// so a UID allowlist drifts out of sync the moment a different whitelisted admin
+// signs in — which is exactly how banner uploads started failing.
+//
+// Storage's cross-service rules can only read the `(default)` Firestore database,
+// and this project uses a *named* database ("default", see src/firebase.ts), so the
+// `admins` collection can't be consulted from here. The list below has to be kept in
+// sync with that collection by hand.
+service firebase.storage {
+  match /b/{bucket}/o {
+
+    function isAdmin() {
+      return request.auth != null && (
+        request.auth.token.email in [
+          'omervigder1@gmail.com',
+          'tonybohnik24@gmail.com',
+          'tonybuhnik24@gmail.com',
+          'sotnadlan@gmail.com'
+        ]
+        // The original single-UID grant, kept so nothing that works today breaks.
+        || request.auth.uid == 'Mipe7eS4oPQHB1plh1e54o5uY3n1'
+      );
+    }
+
+    // Shoppers must see product and banner images.
+    match /{allPaths=**} {
+      allow read: if true;
+
+      // Images only, capped at 10 MB — a hijacked admin session still can't turn the
+      // bucket into arbitrary file hosting.
+      allow write: if isAdmin()
+                   && request.resource.size < 10 * 1024 * 1024
+                   && request.resource.contentType.matches('image/.*');
+
+      allow delete: if isAdmin();
+    }
+  }
+}
