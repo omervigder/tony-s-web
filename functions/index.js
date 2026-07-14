@@ -97,10 +97,16 @@ async function sendOrderToTelegram(orderId, order, pickupAddress, BOT_TOKEN, CHA
 
   const itemsList = items
     .map(i => {
+      // i.price is the unit price actually charged (base + length/branding surcharges).
       let line = `• ${i.name} x${i.quantity} — ₪${(i.price * i.quantity).toFixed(2)}`;
       if (i.selectedVariations && Object.keys(i.selectedVariations).length > 0) {
         const vars = Object.entries(i.selectedVariations).map(([k, v]) => `${k}: ${v}`).join(", ");
         line += `\n  🎨 ${vars}`;
+      }
+      if (i.selectedColor) line += `\n  🎨 צבע: ${i.selectedColor.name}`;
+      if (i.selectedLength) line += `\n  📏 אורך: ${i.selectedLength.label}`;
+      if (i.selectedBranding) {
+        line += `\n  ✨ מיתוג: ${i.selectedBranding.label} (+₪${Number(i.selectedBranding.extraCost || 0).toFixed(2)})`;
       }
       return line;
     })

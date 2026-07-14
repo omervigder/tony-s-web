@@ -15,36 +15,37 @@ import {
 import {
   ShoppingBag, BarChart3, Package, Settings as SettingsIcon,
   Menu, X, Plus, Trash2, Pencil, Camera, Loader2,
-  MessageCircle, DollarSign, CheckCircle2, Download, ChevronDown, ChevronUp, Users
+  MessageCircle, DollarSign, CheckCircle2, Download, ChevronDown, ChevronUp, Users, Sparkles
 } from 'lucide-react';
 
 /* ─────────────────────────────── Types ─────────────────────────────── */
-interface OrderItem { id: string; name: string; price: number; quantity: number; selectedVariations?: Record<string, string>; }
+// Product/OrderItem/Category and the option types are shared with the storefront —
+// keeping private copies here is what let the two drift apart in the first place.
+import type {
+  OrderItem, Product, Category, BrandingOption,
+  ProductColorOption, ProductLengthOption,
+} from '../types';
+import { COLOR_PALETTE } from '../constants/colors';
+
 interface Order {
   id: string; customer_name: string; customer_phone: string;
   delivery_method: 'pickup' | 'delivery'; total_price: number;
   items: OrderItem[] | string; status: string; created_at: string;
   adminNote?: string;
 }
-interface ProductVariation { name: string; values: string[]; }
-interface Product {
-  id: string; name: string; description: string; price: number;
-  category_id: string; main_image: string; images: string[]; created_at?: any;
-  variations?: ProductVariation[]; isBoxBase?: boolean;
-}
-interface Category { id: string; name: string; }
 interface StoreSettings { pickup_address: string; delivery_cost: string; bit_phone: string; }
 interface Customer {
   id: string; name: string; phone: string; email?: string;
   totalOrders: number; totalSpend: number;
   firstOrderDate: string; lastOrderDate: string;
 }
-type TabName = 'orders' | 'analytics' | 'products' | 'customers' | 'settings';
+type TabName = 'orders' | 'analytics' | 'products' | 'branding' | 'customers' | 'settings';
 
 /* ─────────────────────────────── Constants ──────────────────────────── */
-const GOLD = '#ff9a9e';
-const BLUE = '#a1c4fd';
-const PIE_COLORS = [GOLD, BLUE, '#E040FB', '#00BCD4', '#FF6B6B', '#4CAF50'];
+const INK = '#1A1A18';
+const INK_SOFT = '#2F2F2D';
+// Monochrome ramp — series stay distinguishable without breaking the black/cream palette.
+const PIE_COLORS = [INK, '#3F3B36', '#6B6560', '#8E8C88', '#BEBAB6', '#E2E2E2'];
 const STATUS_CFG: Record<string, { cls: string }> = {
   'חדש':    { cls: 'bg-red-500/20 text-red-400 border-red-500/40' },
   'בטיפול': { cls: 'bg-blue-500/20 text-blue-400 border-blue-500/40' },
@@ -56,6 +57,14 @@ const parseItems = (items: OrderItem[] | string): OrderItem[] => {
   return Array.isArray(items) ? items : [];
 };
 
+/** Everything the customer chose for a line — the fulfiller needs all of it. */
+const itemOptions = (item: OrderItem): string => [
+  ...Object.entries(item.selectedVariations ?? {}).map(([k, v]) => `${k}: ${v}`),
+  item.selectedColor && `צבע: ${item.selectedColor.name}`,
+  item.selectedLength && `אורך: ${item.selectedLength.label}`,
+  item.selectedBranding && `מיתוג: ${item.selectedBranding.label} (+₪${item.selectedBranding.extraCost})`,
+].filter(Boolean).join(' | ');
+
 const toDate = (v: any): Date => {
   if (!v) return new Date(0);
   if (typeof v === 'string') return new Date(v);
@@ -66,14 +75,14 @@ const toDate = (v: any): Date => {
 /* ─────────────────────────────── StatCard ───────────────────────────── */
 function StatCard({ label, value, icon: Icon, color }: { label: string; value: string | number; icon: any; color: string }) {
   return (
-    <div className="bg-white border border-[#fce4ec] rounded-2xl p-5 flex items-center gap-4">
+    <div className="bg-white border border-line rounded-2xl p-5 flex items-center gap-4">
       <div className="w-12 h-12 rounded-xl flex items-center justify-center flex-shrink-0"
         style={{ background: `${color}18`, border: `1px solid ${color}35` }}>
         <Icon size={22} style={{ color }} />
       </div>
       <div>
         <p className="text-gray-400 text-sm">{label}</p>
-        <p className="text-white text-2xl font-bold mt-0.5">{value}</p>
+        <p className="text-ink text-2xl font-bold mt-0.5">{value}</p>
       </div>
     </div>
   );
@@ -106,10 +115,10 @@ function OrderCard({ order }: { key?: string; order: Order }) {
   };
 
   return (
-    <div className="bg-white border border-[#fce4ec] rounded-2xl p-5 space-y-4 flex flex-col">
+    <div className="bg-white border border-line rounded-2xl p-5 space-y-4 flex flex-col">
       <div className="flex justify-between items-start gap-2">
         <div>
-          <h3 className="font-bold text-[#3a3a3a]">{order.customer_name}</h3>
+          <h3 className="font-bold text-ink">{order.customer_name}</h3>
           <p className="text-gray-500 text-xs mt-0.5">{dateStr} · #{order.id.slice(0, 6)}</p>
         </div>
         <span className={`text-xs font-bold px-3 py-1 rounded-full border whitespace-nowrap flex-shrink-0 ${cfg.cls}`}>
@@ -121,19 +130,17 @@ function OrderCard({ order }: { key?: string; order: Order }) {
         {items.map((item, i) => (
           <div key={i} className="text-sm">
             <div className="flex justify-between">
-              <span className="text-[#4a4a4a]">{item.name} <span className="text-gray-500">×{item.quantity}</span></span>
+              <span className="text-body">{item.name} <span className="text-gray-500">×{item.quantity}</span></span>
               <span className="text-gray-400">₪{(item.price * item.quantity)}</span>
             </div>
-            {item.selectedVariations && Object.keys(item.selectedVariations).length > 0 && (
-              <p className="text-gray-500 text-xs mt-0.5 mr-2">
-                {Object.entries(item.selectedVariations).map(([k, v]) => `${k}: ${v}`).join(' | ')}
-              </p>
+            {itemOptions(item) && (
+              <p className="text-gray-500 text-xs mt-0.5 mr-2">{itemOptions(item)}</p>
             )}
           </div>
         ))}
       </div>
 
-      <div className="flex justify-between items-center border-t border-[#fce4ec] pt-3">
+      <div className="flex justify-between items-center border-t border-line pt-3">
         <div className="flex gap-2 flex-wrap">
           <a href={`https://wa.me/${phone}`} target="_blank" rel="noopener noreferrer"
             className="flex items-center gap-1 text-xs px-2.5 py-1.5 rounded-lg bg-green-500/15 text-green-400 border border-green-500/30 hover:bg-green-500/25 transition-colors">
@@ -145,30 +152,30 @@ function OrderCard({ order }: { key?: string; order: Order }) {
             {order.delivery_method === 'delivery' ? '🚚 משלוח' : '🏪 איסוף'}
           </span>
         </div>
-        <p className="font-bold text-lg" style={{ color: GOLD }}>₪{order.total_price}</p>
+        <p className="font-bold text-lg" style={{ color: INK }}>₪{order.total_price}</p>
       </div>
 
       <select value={order.status} onChange={e => updateStatus(e.target.value)}
-        className="w-full bg-[#FFF5F7] border border-[#fce4ec] rounded-xl p-2.5 text-sm text-[#4a4a4a] outline-none cursor-pointer hover:border-[#ff9a9e]/40 transition-colors">
+        className="w-full bg-cream border border-line rounded-xl p-2.5 text-sm text-body outline-none cursor-pointer hover:border-ink/40 transition-colors">
         <option value="חדש">🔴 חדש</option>
         <option value="בטיפול">🔵 בטיפול</option>
         <option value="בוצע">🟢 בוצע</option>
       </select>
 
-      <div className="space-y-2 border-t border-[#fce4ec] pt-3">
+      <div className="space-y-2 border-t border-line pt-3">
         <label className="block text-xs text-gray-500">הערת מנהל (פנימי)</label>
         <textarea
           value={note}
           onChange={e => setNote(e.target.value)}
           rows={2}
           placeholder="הערה פנימית..."
-          className="w-full bg-[#FFF5F7] border border-[#fce4ec] rounded-xl p-2.5 text-sm text-[#4a4a4a] outline-none resize-none focus:border-[#ff9a9e]/40 transition-colors placeholder:text-gray-400"
+          className="w-full bg-cream border border-line rounded-xl p-2.5 text-sm text-body outline-none resize-none focus:border-ink/40 transition-colors placeholder:text-gray-400"
         />
         <button
           onClick={saveNote}
           disabled={savingNote}
           className="flex items-center justify-center gap-1.5 w-full py-2 rounded-xl text-xs font-bold transition-all disabled:opacity-60"
-          style={{ background: noteSaved ? '#16a34a22' : '#F5C51815', color: noteSaved ? '#4ade80' : GOLD, border: `1px solid ${noteSaved ? '#4ade8040' : '#F5C51840'}` }}>
+          style={{ background: noteSaved ? '#16a34a22' : '#F5C51815', color: noteSaved ? '#4ade80' : INK, border: `1px solid ${noteSaved ? '#4ade8040' : '#F5C51840'}` }}>
           {savingNote ? <Loader2 size={12} className="animate-spin" /> : noteSaved ? '✓ ההערה נשמרה' : 'שמור הערה'}
         </button>
       </div>
@@ -185,12 +192,12 @@ function OrdersView({ orders }: { orders: Order[] }) {
   return (
     <div className="space-y-6">
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <h2 className="text-xl font-bold text-[#3a3a3a]">הזמנות</h2>
+        <h2 className="text-xl font-bold text-ink">הזמנות</h2>
         <div className="flex gap-2 flex-wrap">
           {[['all', 'הכל'], ['חדש', `חדש (${count('חדש')})`], ['בטיפול', `בטיפול (${count('בטיפול')})`], ['בוצע', `בוצע (${count('בוצע')})`]].map(([val, label]) => (
             <button key={val} onClick={() => setFilter(val)}
-              className={`px-4 py-1.5 rounded-xl text-sm font-medium transition-all ${filter === val ? 'text-white' : 'bg-white border border-[#fce4ec] text-gray-400 hover:text-[#3a3a3a]'}`}
-              style={filter === val ? { background: `linear-gradient(135deg, ${GOLD}, #fecfef)` } : {}}>
+              className={`px-4 py-1.5 rounded-xl text-sm font-medium transition-all ${filter === val ? 'text-white' : 'bg-white border border-line text-gray-400 hover:text-ink'}`}
+              style={filter === val ? { background: `${INK}` } : {}}>
               {label}
             </button>
           ))}
@@ -349,7 +356,7 @@ function AnalyticsView({ orders, products, categories }: { orders: Order[]; prod
     XLSX.writeFile(wb, `completed_orders${tag}_${new Date().toISOString().split('T')[0]}.xlsx`);
   };
 
-  const tooltipStyle = { background: 'white', border: '1px solid #fce4ec', borderRadius: 12, color: '#3a3a3a' };
+  const tooltipStyle = { background: 'white', border: '1px solid #E2E2E2', borderRadius: 12, color: '#1A1A18' };
   const hasData = categoryRevData.length > 0 || categoryVolData.length > 0 || topProductsData.length > 0;
 
   return (
@@ -357,7 +364,7 @@ function AnalyticsView({ orders, products, categories }: { orders: Order[]; prod
       {/* Header */}
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center gap-3">
-          <h2 className="text-xl font-bold text-[#3a3a3a]">סטטיסטיקה</h2>
+          <h2 className="text-xl font-bold text-ink">סטטיסטיקה</h2>
           <span className="text-xs font-semibold px-2.5 py-1 rounded-full border"
             style={{ background: '#4CAF5018', color: '#4CAF50', borderColor: '#4CAF5035' }}>
             ✓ הזמנות שבוצעו בלבד
@@ -365,31 +372,31 @@ function AnalyticsView({ orders, products, categories }: { orders: Order[]; prod
         </div>
         <button onClick={exportToExcel}
           className="flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-bold text-white transition-opacity hover:opacity-90"
-          style={{ background: `linear-gradient(135deg, ${GOLD}, #fecfef)` }}>
+          style={{ background: `${INK}` }}>
           <Download size={16} /> ייצוא לאקסל
         </button>
       </div>
 
       {/* ── Filters ── */}
-      <div className="bg-white border border-[#fce4ec] rounded-2xl p-4 space-y-4">
-        <h3 className="text-white text-sm font-semibold">סינון נתונים</h3>
+      <div className="bg-white border border-line rounded-2xl p-4 space-y-4">
+        <h3 className="text-ink text-sm font-semibold">סינון נתונים</h3>
         <div className="flex flex-wrap gap-3 items-end">
           <div>
             <label className="text-gray-500 text-xs block mb-1">מתאריך</label>
             <input type="date" value={startDate} onChange={e => setStartDate(e.target.value)}
-              className="bg-[#FFF5F7] border border-[#fce4ec] rounded-xl px-3 py-2 text-[#3a3a3a] text-sm outline-none focus:border-[#ff9a9e]/50 transition-colors" />
+              className="bg-cream border border-line rounded-xl px-3 py-2 text-ink text-sm outline-none focus:border-ink transition-colors" />
           </div>
           <div>
             <label className="text-gray-500 text-xs block mb-1">עד תאריך</label>
             <input type="date" value={endDate} onChange={e => setEndDate(e.target.value)}
-              className="bg-[#FFF5F7] border border-[#fce4ec] rounded-xl px-3 py-2 text-[#3a3a3a] text-sm outline-none focus:border-[#ff9a9e]/50 transition-colors" />
+              className="bg-cream border border-line rounded-xl px-3 py-2 text-ink text-sm outline-none focus:border-ink transition-colors" />
           </div>
           <div>
             <label className="text-gray-500 text-xs block mb-1">סינון לפי מוצר</label>
             <select
               value={selectedProductId}
               onChange={e => setSelectedProductId(e.target.value)}
-              className="bg-[#FFF5F7] border border-[#fce4ec] rounded-xl px-3 py-2 text-[#3a3a3a] text-sm outline-none focus:border-[#ff9a9e]/50 transition-colors min-w-[180px]"
+              className="bg-cream border border-line rounded-xl px-3 py-2 text-ink text-sm outline-none focus:border-ink transition-colors min-w-[180px]"
             >
               <option value="">כל המוצרים</option>
               {orderedProducts.map(p => (
@@ -399,7 +406,7 @@ function AnalyticsView({ orders, products, categories }: { orders: Order[]; prod
           </div>
           {(startDate || endDate || selectedProductId) && (
             <button onClick={() => { setStartDate(''); setEndDate(''); setSelectedProductId(''); }}
-              className="px-3 py-2 text-sm text-gray-400 border border-[#fce4ec] rounded-xl hover:text-[#3a3a3a] transition-colors">
+              className="px-3 py-2 text-sm text-gray-400 border border-line rounded-xl hover:text-ink transition-colors">
               נקה הכל
             </button>
           )}
@@ -412,24 +419,24 @@ function AnalyticsView({ orders, products, categories }: { orders: Order[]; prod
         <StatCard
           label={(startDate || endDate || selectedProductId) ? "הכנסה בתקופה/סינון" : "הכנסה החודש"}
           value={`₪${periodTotal.toLocaleString()}`}
-          icon={DollarSign} color={GOLD}
+          icon={DollarSign} color={INK}
         />
         <StatCard
           label={(startDate || endDate || selectedProductId) ? "הזמנות בסינון" : "הזמנות החודש"}
           value={displayOrders.length}
-          icon={ShoppingBag} color={BLUE}
+          icon={ShoppingBag} color={INK_SOFT}
         />
         <StatCard label="ממוצע להזמנה" value={displayOrders.length > 0 ? `₪${avgOrderValue.toLocaleString()}` : '—'} icon={CheckCircle2} color="#4CAF50" />
       </div>
 
       {/* ── Line Chart: Revenue over Time ── */}
-      <div className="bg-white border border-[#fce4ec] rounded-2xl p-5">
+      <div className="bg-white border border-line rounded-2xl p-5">
         <div className="flex items-center justify-between mb-5 flex-wrap gap-2">
-          <h3 className="text-white font-semibold">
+          <h3 className="text-ink font-semibold">
             הכנסות לאורך זמן
             {selectedProductId && (
               <span className="mr-2 text-xs font-normal px-2 py-0.5 rounded-full"
-                style={{ background: `${GOLD}20`, color: GOLD }}>
+                style={{ background: `${INK}20`, color: INK }}>
                 {products.find(p => p.id === selectedProductId)?.name}
               </span>
             )}
@@ -437,12 +444,12 @@ function AnalyticsView({ orders, products, categories }: { orders: Order[]; prod
         </div>
         <ResponsiveContainer width="100%" height={260}>
           <LineChart data={dailyData} margin={{ top: 8, right: 12, left: 0, bottom: 0 }}>
-            <CartesianGrid strokeDasharray="3 3" stroke="#fce4ec" />
+            <CartesianGrid strokeDasharray="3 3" stroke="#E2E2E2" />
             <XAxis dataKey="date" tick={{ fill: '#9ca3af', fontSize: 12, fontWeight: 700 }} axisLine={false} tickLine={false} interval="preserveStartEnd" />
             <YAxis tick={{ fill: '#9ca3af', fontSize: 12, fontWeight: 700 }} axisLine={false} tickLine={false} tickFormatter={v => `₪${v}`} width={60} />
             <Tooltip contentStyle={{ ...tooltipStyle, fontWeight: 700, fontSize: 13 }} formatter={(v: number) => [`₪${v}`, 'הכנסה']} />
-            <Line type="monotone" dataKey="revenue" stroke={GOLD} strokeWidth={4}
-              dot={{ fill: GOLD, strokeWidth: 0, r: 5 }} activeDot={{ r: 7, fill: GOLD }} />
+            <Line type="monotone" dataKey="revenue" stroke={INK} strokeWidth={4}
+              dot={{ fill: INK, strokeWidth: 0, r: 5 }} activeDot={{ r: 7, fill: INK }} />
           </LineChart>
         </ResponsiveContainer>
       </div>
@@ -451,11 +458,11 @@ function AnalyticsView({ orders, products, categories }: { orders: Order[]; prod
         <>
           {/* ── Bar Chart: Sales Volume per Category ── */}
           {categoryVolData.length > 0 && (
-            <div className="bg-white border border-[#fce4ec] rounded-2xl p-5">
-              <h3 className="text-white font-bold mb-5">כמות מכירות לפי קטגוריה</h3>
+            <div className="bg-white border border-line rounded-2xl p-5">
+              <h3 className="text-ink font-bold mb-5">כמות מכירות לפי קטגוריה</h3>
               <ResponsiveContainer width="100%" height={240}>
                 <BarChart data={categoryVolData} margin={{ top: 8, right: 12, left: 0, bottom: 0 }}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#fce4ec" vertical={false} />
+                  <CartesianGrid strokeDasharray="3 3" stroke="#E2E2E2" vertical={false} />
                   <XAxis dataKey="name" tick={{ fill: '#9ca3af', fontSize: 13, fontWeight: 700 }} axisLine={false} tickLine={false} />
                   <YAxis tick={{ fill: '#9ca3af', fontSize: 13, fontWeight: 700 }} axisLine={false} tickLine={false} />
                   <Tooltip contentStyle={{ ...tooltipStyle, fontWeight: 700, fontSize: 13 }} formatter={(v: number) => [v, "יחידות"]} />
@@ -472,8 +479,8 @@ function AnalyticsView({ orders, products, categories }: { orders: Order[]; prod
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
             {/* ── Pie Chart: Category Revenue Distribution ── */}
             {categoryRevData.length > 0 && (
-              <div className="bg-white border border-[#fce4ec] rounded-2xl p-5">
-                <h3 className="text-white font-bold mb-4">הכנסות לפי קטגוריה</h3>
+              <div className="bg-white border border-line rounded-2xl p-5">
+                <h3 className="text-ink font-bold mb-4">הכנסות לפי קטגוריה</h3>
                 <ResponsiveContainer width="100%" height={300}>
                   <PieChart>
                     <Pie data={categoryRevData} cx="50%" cy="50%" outerRadius={95} dataKey="value"
@@ -492,8 +499,8 @@ function AnalyticsView({ orders, products, categories }: { orders: Order[]; prod
 
             {/* ── Pie Chart: Best-Selling Products by Revenue ── */}
             {topProductsData.length > 0 && (
-              <div className="bg-white border border-[#fce4ec] rounded-2xl p-5">
-                <h3 className="text-white font-bold mb-4">מוצרים מובילים לפי הכנסה</h3>
+              <div className="bg-white border border-line rounded-2xl p-5">
+                <h3 className="text-ink font-bold mb-4">מוצרים מובילים לפי הכנסה</h3>
                 <ResponsiveContainer width="100%" height={300}>
                   <PieChart>
                     <Pie data={topProductsData} cx="50%" cy="50%" innerRadius={55} outerRadius={95} dataKey="value"
@@ -514,8 +521,8 @@ function AnalyticsView({ orders, products, categories }: { orders: Order[]; prod
 
           {/* ── Product volume table ── */}
           {Object.keys(prodVolMap).length > 0 && (
-            <div className="bg-white border border-[#fce4ec] rounded-2xl p-5">
-              <h3 className="text-white font-semibold mb-4">כמות מכירות לפי מוצר</h3>
+            <div className="bg-white border border-line rounded-2xl p-5">
+              <h3 className="text-ink font-semibold mb-4">כמות מכירות לפי מוצר</h3>
               <div className="space-y-1.5 max-h-72 overflow-y-auto">
                 {Object.entries(prodVolMap)
                   .sort(([, a], [, b]) => b - a)
@@ -524,14 +531,14 @@ function AnalyticsView({ orders, products, categories }: { orders: Order[]; prod
                     if (!prod) return null;
                     const maxQty = Math.max(...Object.values(prodVolMap));
                     return (
-                      <div key={id} className="flex items-center gap-3 text-sm py-1 px-2 rounded-lg hover:bg-[#fff0f5] transition-colors">
+                      <div key={id} className="flex items-center gap-3 text-sm py-1 px-2 rounded-lg hover:bg-cream transition-colors">
                         <div className="flex-1 min-w-0">
                           <div className="flex justify-between mb-1">
-                            <span className="text-[#4a4a4a] truncate">{prod.name}</span>
-                            <span className="font-bold flex-shrink-0 mr-2" style={{ color: GOLD }}>{qty} יח'</span>
+                            <span className="text-body truncate">{prod.name}</span>
+                            <span className="font-bold flex-shrink-0 mr-2" style={{ color: INK }}>{qty} יח'</span>
                           </div>
                           <div className="h-1.5 rounded-full bg-[#1e1e3a] overflow-hidden">
-                            <div className="h-full rounded-full" style={{ width: `${(qty / maxQty) * 100}%`, background: GOLD }} />
+                            <div className="h-full rounded-full" style={{ width: `${(qty / maxQty) * 100}%`, background: INK }} />
                           </div>
                         </div>
                       </div>
@@ -543,7 +550,7 @@ function AnalyticsView({ orders, products, categories }: { orders: Order[]; prod
           )}
         </>
       ) : (
-        <div className="bg-white border border-[#fce4ec] rounded-2xl p-10 text-center text-gray-400">
+        <div className="bg-white border border-line rounded-2xl p-10 text-center text-gray-400">
           <BarChart3 size={40} className="mx-auto mb-2 opacity-20" />
           <p className="text-sm">אין נתוני מכירות עדיין</p>
         </div>
@@ -553,16 +560,22 @@ function AnalyticsView({ orders, products, categories }: { orders: Order[]; prod
 }
 
 /* ─────────────────────────────── ProductsView ───────────────────────── */
-function ProductsView({ products, categories }: { products: Product[]; categories: Category[] }) {
+const EMPTY_FORM = {
+  name: '', description: '', price: 0, costPrice: 0, category_id: '',
+  images: [] as string[],
+  variations: [] as { name: string; values: string }[],
+  colorOptions: [] as ProductColorOption[],
+  lengthOptions: [] as ProductLengthOption[],
+  brandingOptionIds: [] as string[],
+  isBoxBase: false,
+};
+
+function ProductsView({ products, categories, brandingOptions }: { products: Product[]; categories: Category[]; brandingOptions: BrandingOption[] }) {
   const [showForm, setShowForm] = useState(false);
   const [editing, setEditing] = useState<Product | null>(null);
   const [uploading, setUploading] = useState(false);
-  const [form, setForm] = useState({
-    name: '', description: '', price: 0, category_id: '',
-    files: [] as File[], previews: [] as string[],
-    variations: [] as { name: string; values: string }[],
-    isBoxBase: false,
-  });
+  const [uploadingImages, setUploadingImages] = useState(false);
+  const [form, setForm] = useState(EMPTY_FORM);
   const [toast, setToast] = useState('');
   const [collapsedCats, setCollapsedCats] = useState<Set<string>>(new Set());
   const [newCatName, setNewCatName] = useState('');
@@ -589,7 +602,7 @@ function ProductsView({ products, categories }: { products: Product[]; categorie
     await deleteDoc(doc(db, 'categories', id));
     showToast('הקטגוריה נמחקה');
   };
-  const resetForm = () => setForm({ name: '', description: '', price: 0, category_id: '', files: [], previews: [], variations: [], isBoxBase: false });
+  const resetForm = () => setForm(EMPTY_FORM);
 
   const toggleCat = (catId: string) => {
     setCollapsedCats(prev => {
@@ -603,28 +616,82 @@ function ProductsView({ products, categories }: { products: Product[]; categorie
   const openEdit = (p: Product) => {
     setEditing(p);
     setForm({
-      name: p.name, description: p.description, price: p.price, category_id: p.category_id,
-      files: [], previews: [],
+      name: p.name, description: p.description, price: p.price,
+      costPrice: p.costPrice ?? 0, category_id: p.category_id,
+      images: p.images ?? [],
       variations: (p.variations || []).map(v => ({ name: v.name, values: v.values.join(', ') })),
+      colorOptions: p.colorOptions ?? [],
+      lengthOptions: p.lengthOptions ?? [],
+      brandingOptionIds: p.brandingOptionIds ?? [],
       isBoxBase: p.isBoxBase ?? false,
     });
     setShowForm(true);
   };
 
-  const handleImages = (e: React.ChangeEvent<HTMLInputElement>) => {
+  // Images upload as soon as they're picked, not on save — the color→image picker
+  // below needs real Storage URLs to bind to while the modal is still open.
+  const handleImages = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const fs = e.target.files;
-    if (!fs) return;
-    Array.from(fs).forEach((file: File) => {
-      const r = new FileReader();
-      r.onloadend = () => setForm(prev => ({ ...prev, files: [...prev.files, file], previews: [...prev.previews, r.result as string] }));
-      r.readAsDataURL(file);
-    });
+    if (!fs || fs.length === 0) return;
+    setUploadingImages(true);
+    try {
+      for (const file of Array.from(fs) as File[]) {
+        const sRef = ref(storage, `products/${Date.now()}_${file.name}`);
+        await uploadBytes(sRef, file);
+        const url = await getDownloadURL(sRef);
+        setForm(prev => ({ ...prev, images: [...prev.images, url] }));
+      }
+    } catch (err) {
+      console.error(err);
+      alert('העלאת התמונה נכשלה. נסו שוב.');
+    } finally {
+      setUploadingImages(false);
+      e.target.value = '';
+    }
   };
+
+  // Dropping an image must also unbind any color that pointed at it, or the
+  // product page would try to show an image that is no longer in the gallery.
+  const removeImage = (url: string) => setForm(p => ({
+    ...p,
+    images: p.images.filter(u => u !== url),
+    colorOptions: p.colorOptions.map(c => c.imageUrl === url ? { ...c, imageUrl: undefined } : c),
+  }));
 
   const addVariation = () => setForm(p => ({ ...p, variations: [...p.variations, { name: '', values: '' }] }));
   const removeVariation = (i: number) => setForm(p => ({ ...p, variations: p.variations.filter((_, ii) => ii !== i) }));
   const updateVariation = (i: number, field: 'name' | 'values', val: string) =>
     setForm(p => ({ ...p, variations: p.variations.map((v, ii) => ii === i ? { ...v, [field]: val } : v) }));
+
+  const toggleColor = (c: { name: string; hex: string }) => setForm(p => ({
+    ...p,
+    colorOptions: p.colorOptions.some(x => x.name === c.name)
+      ? p.colorOptions.filter(x => x.name !== c.name)
+      : [...p.colorOptions, { name: c.name, hex: c.hex }],
+  }));
+  const bindColorImage = (name: string, url: string) => setForm(p => ({
+    ...p,
+    colorOptions: p.colorOptions.map(c =>
+      c.name === name ? { ...c, imageUrl: c.imageUrl === url ? undefined : url } : c
+    ),
+  }));
+
+  const addLength = () => setForm(p => ({ ...p, lengthOptions: [...p.lengthOptions, { label: '', priceDelta: 0 }] }));
+  const removeLength = (i: number) => setForm(p => ({ ...p, lengthOptions: p.lengthOptions.filter((_, ii) => ii !== i) }));
+  const updateLength = (i: number, field: 'label' | 'priceDelta', val: string) =>
+    setForm(p => ({
+      ...p,
+      lengthOptions: p.lengthOptions.map((l, ii) =>
+        ii === i ? { ...l, [field]: field === 'priceDelta' ? (Number(val) || 0) : val } : l
+      ),
+    }));
+
+  const toggleBranding = (id: string) => setForm(p => ({
+    ...p,
+    brandingOptionIds: p.brandingOptionIds.includes(id)
+      ? p.brandingOptionIds.filter(b => b !== id)
+      : [...p.brandingOptionIds, id],
+  }));
 
   const buildVariations = () =>
     form.variations
@@ -635,33 +702,35 @@ function ProductsView({ products, categories }: { products: Product[]; categorie
     if (!form.name || !form.price || !form.category_id) return alert('נא למלא שם, מחיר וקטגוריה');
     try {
       setUploading(true);
-      const urls: string[] = [];
-      for (const file of form.files) {
-        const sRef = ref(storage, `products/${Date.now()}_${file.name}`);
-        await uploadBytes(sRef, file);
-        urls.push(await getDownloadURL(sRef));
-      }
-      const variations = buildVariations();
+      // Firestore rejects `undefined`, so an unbound color must omit imageUrl entirely.
+      const colorOptions = form.colorOptions.map(c => ({
+        name: c.name,
+        hex: c.hex,
+        ...(c.imageUrl && { imageUrl: c.imageUrl }),
+      }));
+      const payload = {
+        name: form.name,
+        description: form.description,
+        price: form.price,
+        costPrice: form.costPrice,
+        category_id: form.category_id,
+        images: form.images,
+        main_image: form.images[0] || null,
+        variations: buildVariations(),
+        colorOptions,
+        lengthOptions: form.lengthOptions.filter(l => l.label.trim()),
+        brandingOptionIds: form.brandingOptionIds,
+        isBoxBase: form.isBoxBase,
+      };
       if (editing) {
-        const allImgs = [...(editing.images || []), ...urls];
-        await updateDoc(doc(db, 'products', editing.id), {
-          name: form.name, description: form.description,
-          price: form.price, category_id: form.category_id,
-          images: allImgs, main_image: allImgs[0] || editing.main_image,
-          variations, isBoxBase: form.isBoxBase,
-        });
+        await updateDoc(doc(db, 'products', editing.id), payload);
         showToast('המוצר עודכן!');
       } else {
-        await addDoc(collection(db, 'products'), {
-          name: form.name, description: form.description,
-          price: form.price, category_id: form.category_id,
-          images: urls, main_image: urls[0] || null, created_at: new Date(),
-          variations, isBoxBase: form.isBoxBase,
-        });
+        await addDoc(collection(db, 'products'), { ...payload, created_at: new Date() });
         showToast('המוצר נוסף!');
       }
       resetForm(); setShowForm(false); setEditing(null);
-    } catch (err) { console.error(err); }
+    } catch (err) { console.error(err); alert('שמירת המוצר נכשלה.'); }
     finally { setUploading(false); }
   };
 
@@ -683,26 +752,26 @@ function ProductsView({ products, categories }: { products: Product[]; categorie
   return (
     <div className="space-y-6">
       {toast && (
-        <div className="fixed top-5 left-1/2 -translate-x-1/2 z-[100] bg-green-600 text-[#3a3a3a] px-5 py-2.5 rounded-xl text-sm font-bold shadow-xl">
+        <div className="fixed top-5 left-1/2 -translate-x-1/2 z-[100] bg-green-600 text-ink px-5 py-2.5 rounded-xl text-sm font-bold shadow-xl">
           {toast}
         </div>
       )}
 
       <div className="flex justify-between items-center">
-        <h2 className="text-xl font-bold text-[#3a3a3a]">מוצרים ({products.length})</h2>
+        <h2 className="text-xl font-bold text-ink">מוצרים ({products.length})</h2>
         <button onClick={openAdd}
           className="flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-bold text-white transition-opacity hover:opacity-90"
-          style={{ background: `linear-gradient(135deg, ${GOLD}, #fecfef)` }}>
+          style={{ background: `${INK}` }}>
           <Plus size={16} /> מוצר חדש
         </button>
       </div>
 
       {/* ── Category management ── */}
-      <div className="bg-white border border-[#fce4ec] rounded-2xl p-5 space-y-3">
-        <h3 className="text-[#3a3a3a] font-bold text-sm">קטגוריות</h3>
+      <div className="bg-white border border-line rounded-2xl p-5 space-y-3">
+        <h3 className="text-ink font-bold text-sm">קטגוריות</h3>
         <div className="flex flex-wrap gap-2">
           {categories.map(cat => (
-            <span key={cat.id} className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-sm font-medium bg-[#FFF5F7] border border-[#fce4ec] text-[#3a3a3a]">
+            <span key={cat.id} className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-sm font-medium bg-cream border border-line text-ink">
               {cat.name}
               <button
                 onClick={() => handleDeleteCategory(cat.id, cat.name)}
@@ -722,13 +791,13 @@ function ProductsView({ products, categories }: { products: Product[]; categorie
             onKeyDown={e => e.key === 'Enter' && handleAddCategory()}
             placeholder="שם קטגוריה חדשה..."
             maxLength={50}
-            className="flex-1 bg-[#FFF5F7] border border-[#fce4ec] rounded-xl px-3 py-2 text-sm text-[#3a3a3a] outline-none focus:border-[#ff9a9e]/50 transition-colors"
+            className="flex-1 bg-cream border border-line rounded-xl px-3 py-2 text-sm text-ink outline-none focus:border-ink transition-colors"
           />
           <button
             onClick={handleAddCategory}
             disabled={savingCat || !newCatName.trim()}
             className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-bold text-white disabled:opacity-50 transition-opacity hover:opacity-90"
-            style={{ background: `linear-gradient(135deg, ${GOLD}, #fecfef)` }}
+            style={{ background: `${INK}` }}
           >
             {savingCat ? <Loader2 size={14} className="animate-spin" /> : <Plus size={14} />}
             הוסף
@@ -739,44 +808,44 @@ function ProductsView({ products, categories }: { products: Product[]; categorie
       {/* Grouped by category */}
       <div className="space-y-3">
         {grouped.map(({ cat, prods }) => (
-          <div key={cat.id} className="bg-white border border-[#fce4ec] rounded-2xl overflow-hidden">
+          <div key={cat.id} className="bg-white border border-line rounded-2xl overflow-hidden">
             <button
               onClick={() => toggleCat(cat.id)}
-              className="w-full flex items-center justify-between px-5 py-3.5 text-right hover:bg-[#fff0f5] transition-colors">
+              className="w-full flex items-center justify-between px-5 py-3.5 text-right hover:bg-cream transition-colors">
               <div className="flex items-center gap-2">
-                <span className="font-bold text-[#3a3a3a]">{cat.name}</span>
-                <span className="text-xs px-2 py-0.5 rounded-full bg-[#fce4ec] text-gray-400">{prods.length} מוצרים</span>
+                <span className="font-bold text-ink">{cat.name}</span>
+                <span className="text-xs px-2 py-0.5 rounded-full bg-line text-gray-400">{prods.length} מוצרים</span>
               </div>
               {collapsedCats.has(cat.id) ? <ChevronDown size={16} className="text-gray-500" /> : <ChevronUp size={16} className="text-gray-500" />}
             </button>
             {!collapsedCats.has(cat.id) && (
-              <div className="border-t border-[#fce4ec] overflow-x-auto">
+              <div className="border-t border-line overflow-x-auto">
                 <table className="w-full text-right">
                   <thead>
-                    <tr className="border-b border-[#fce4ec]">
+                    <tr className="border-b border-line">
                       {['מוצר', 'מחיר', 'וריאציות', 'פעולות'].map(h => (
                         <th key={h} className="p-4 text-gray-500 font-medium text-sm">{h}</th>
                       ))}
                     </tr>
                   </thead>
-                  <tbody className="divide-y divide-[#fce4ec]">
+                  <tbody className="divide-y divide-[#E2E2E2]">
                     {prods.map(p => (
-                      <tr key={p.id} className="hover:bg-[#fff0f5] transition-colors">
+                      <tr key={p.id} className="hover:bg-cream transition-colors">
                         <td className="p-4">
                           <div className="flex items-center gap-3">
-                            <div className="w-10 h-10 rounded-lg bg-[#FFF5F7] border border-[#fce4ec] overflow-hidden flex-shrink-0">
+                            <div className="w-10 h-10 rounded-lg bg-cream border border-line overflow-hidden flex-shrink-0">
                               {p.main_image && <img src={p.main_image} className="w-full h-full object-cover" referrerPolicy="no-referrer" />}
                             </div>
                             <div>
                               <div className="flex items-center gap-1.5">
-                                <p className="text-white font-medium text-sm">{p.name}</p>
-                                {p.isBoxBase && <span className="text-xs px-1.5 py-0.5 rounded-md font-medium" style={{ background: '#ff9a9e20', color: '#ff9a9e' }}>מארז</span>}
+                                <p className="text-ink font-medium text-sm">{p.name}</p>
+                                {p.isBoxBase && <span className="text-xs px-1.5 py-0.5 rounded-md font-medium" style={{ background: '#1A1A1820', color: '#1A1A18' }}>מארז</span>}
                               </div>
                               <p className="text-gray-500 text-xs line-clamp-1 max-w-[180px]">{p.description}</p>
                             </div>
                           </div>
                         </td>
-                        <td className="p-4 font-bold text-sm whitespace-nowrap" style={{ color: GOLD }}>₪{p.price}</td>
+                        <td className="p-4 font-bold text-sm whitespace-nowrap" style={{ color: INK }}>₪{p.price}</td>
                         <td className="p-4 text-gray-500 text-xs">
                           {p.variations && p.variations.length > 0
                             ? p.variations.map(v => v.name).join(', ')
@@ -804,37 +873,37 @@ function ProductsView({ products, categories }: { products: Product[]; categorie
         ))}
 
         {uncategorized.length > 0 && (
-          <div className="bg-white border border-[#fce4ec] rounded-2xl overflow-hidden">
+          <div className="bg-white border border-line rounded-2xl overflow-hidden">
             <button
               onClick={() => toggleCat('__uncategorized__')}
-              className="w-full flex items-center justify-between px-5 py-3.5 text-right hover:bg-[#fff0f5] transition-colors">
+              className="w-full flex items-center justify-between px-5 py-3.5 text-right hover:bg-cream transition-colors">
               <div className="flex items-center gap-2">
                 <span className="font-bold text-gray-400">ללא קטגוריה</span>
-                <span className="text-xs px-2 py-0.5 rounded-full bg-[#fce4ec] text-gray-400">{uncategorized.length}</span>
+                <span className="text-xs px-2 py-0.5 rounded-full bg-line text-gray-400">{uncategorized.length}</span>
               </div>
               {collapsedCats.has('__uncategorized__') ? <ChevronDown size={16} className="text-gray-500" /> : <ChevronUp size={16} className="text-gray-500" />}
             </button>
             {!collapsedCats.has('__uncategorized__') && (
-              <div className="border-t border-[#fce4ec] overflow-x-auto">
+              <div className="border-t border-line overflow-x-auto">
                 <table className="w-full text-right">
-                  <thead><tr className="border-b border-[#fce4ec]">
+                  <thead><tr className="border-b border-line">
                     {['מוצר', 'קטגוריה', 'מחיר', 'פעולות'].map(h => (
                       <th key={h} className="p-4 text-gray-500 font-medium text-sm">{h}</th>
                     ))}
                   </tr></thead>
-                  <tbody className="divide-y divide-[#fce4ec]">
+                  <tbody className="divide-y divide-[#E2E2E2]">
                     {uncategorized.map(p => (
-                      <tr key={p.id} className="hover:bg-[#fff0f5] transition-colors">
+                      <tr key={p.id} className="hover:bg-cream transition-colors">
                         <td className="p-4">
                           <div className="flex items-center gap-3">
-                            <div className="w-10 h-10 rounded-lg bg-[#FFF5F7] border border-[#fce4ec] overflow-hidden flex-shrink-0">
+                            <div className="w-10 h-10 rounded-lg bg-cream border border-line overflow-hidden flex-shrink-0">
                               {p.main_image && <img src={p.main_image} className="w-full h-full object-cover" referrerPolicy="no-referrer" />}
                             </div>
-                            <p className="text-white font-medium text-sm">{p.name}</p>
+                            <p className="text-ink font-medium text-sm">{p.name}</p>
                           </div>
                         </td>
                         <td className="p-4 text-gray-400 text-sm">{catName(p.category_id)}</td>
-                        <td className="p-4 font-bold text-sm whitespace-nowrap" style={{ color: GOLD }}>₪{p.price}</td>
+                        <td className="p-4 font-bold text-sm whitespace-nowrap" style={{ color: INK }}>₪{p.price}</td>
                         <td className="p-4">
                           <div className="flex gap-2">
                             <button onClick={() => openEdit(p)} className="p-2 rounded-lg bg-blue-500/15 text-blue-400 hover:bg-blue-500/25 transition-colors"><Pencil size={14} /></button>
@@ -851,7 +920,7 @@ function ProductsView({ products, categories }: { products: Product[]; categorie
         )}
 
         {products.length === 0 && (
-          <div className="bg-white border border-[#fce4ec] rounded-2xl p-12 text-center text-gray-400">
+          <div className="bg-white border border-line rounded-2xl p-12 text-center text-gray-400">
             <Package size={36} className="mx-auto mb-2 opacity-20" />
             <p className="text-sm">אין מוצרים עדיין</p>
           </div>
@@ -861,47 +930,52 @@ function ProductsView({ products, categories }: { products: Product[]; categorie
       {/* Add/Edit Modal */}
       {showForm && (
         <div className="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-end md:items-center justify-center p-4">
-          <div className="bg-white border border-[#fce4ec] rounded-2xl w-full max-w-md max-h-[90vh] overflow-y-auto">
-            <div className="p-5 border-b border-[#fce4ec] flex justify-between items-center sticky top-0 bg-white">
-              <h3 className="font-bold text-[#3a3a3a]">{editing ? 'עריכת מוצר' : 'מוצר חדש'}</h3>
+          <div className="bg-white border border-line rounded-2xl w-full max-w-md max-h-[90vh] overflow-y-auto">
+            <div className="p-5 border-b border-line flex justify-between items-center sticky top-0 bg-white">
+              <h3 className="font-bold text-ink">{editing ? 'עריכת מוצר' : 'מוצר חדש'}</h3>
               <button onClick={() => { setShowForm(false); setEditing(null); }}
-                className="p-1.5 text-gray-500 hover:text-[#3a3a3a] rounded-lg hover:bg-[#1e1e3a] transition-colors">
+                className="p-1.5 text-gray-500 hover:text-ink rounded-lg hover:bg-[#1e1e3a] transition-colors">
                 <X size={18} />
               </button>
             </div>
             <div className="p-5 space-y-4">
               <input type="text" placeholder="שם המוצר *" value={form.name}
                 onChange={e => setForm(p => ({ ...p, name: e.target.value }))}
-                className="w-full bg-[#FFF5F7] border border-[#fce4ec] rounded-xl p-3 text-[#3a3a3a] outline-none text-sm focus:border-[#ff9a9e]/50 transition-colors" />
+                className="w-full bg-cream border border-line rounded-xl p-3 text-ink outline-none text-sm focus:border-ink transition-colors" />
               <textarea placeholder="תיאור" value={form.description}
                 onChange={e => setForm(p => ({ ...p, description: e.target.value }))}
-                className="w-full bg-[#FFF5F7] border border-[#fce4ec] rounded-xl p-3 text-[#3a3a3a] outline-none text-sm focus:border-[#ff9a9e]/50 transition-colors h-20 resize-none" />
-              <input type="number" placeholder="מחיר *" value={form.price || ''}
-                onChange={e => setForm(p => ({ ...p, price: Number(e.target.value) }))}
-                className="w-full bg-[#FFF5F7] border border-[#fce4ec] rounded-xl p-3 text-[#3a3a3a] outline-none text-sm focus:border-[#ff9a9e]/50 transition-colors" />
+                className="w-full bg-cream border border-line rounded-xl p-3 text-ink outline-none text-sm focus:border-ink transition-colors h-20 resize-none" />
+              <div className="flex gap-3">
+                <input type="number" placeholder="מחיר *" value={form.price || ''}
+                  onChange={e => setForm(p => ({ ...p, price: Number(e.target.value) }))}
+                  className="flex-1 bg-cream border border-line rounded-xl p-3 text-ink outline-none text-sm focus:border-ink transition-colors" />
+                <input type="number" placeholder="עלות (לרווחיות)" value={form.costPrice || ''}
+                  onChange={e => setForm(p => ({ ...p, costPrice: Number(e.target.value) }))}
+                  className="flex-1 bg-cream border border-line rounded-xl p-3 text-ink outline-none text-sm focus:border-ink transition-colors" />
+              </div>
               <select value={form.category_id} onChange={e => setForm(p => ({ ...p, category_id: e.target.value }))}
-                className="w-full bg-[#FFF5F7] border border-[#fce4ec] rounded-xl p-3 text-[#3a3a3a] outline-none text-sm focus:border-[#ff9a9e]/50 transition-colors">
+                className="w-full bg-cream border border-line rounded-xl p-3 text-ink outline-none text-sm focus:border-ink transition-colors">
                 <option value="">בחר קטגוריה *</option>
                 {categories.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
               </select>
 
               {/* Box Base Toggle */}
-              <label className="flex items-center justify-between p-3 bg-[#FFF5F7] border border-[#fce4ec] rounded-xl cursor-pointer hover:border-[#ff9a9e]/40 transition-colors">
+              <label className="flex items-center justify-between p-3 bg-cream border border-line rounded-xl cursor-pointer hover:border-ink/40 transition-colors">
                 <div>
-                  <p className="text-white text-sm font-medium">בסיס מארז אישי</p>
+                  <p className="text-ink text-sm font-medium">בסיס מארז אישי</p>
                   <p className="text-gray-500 text-xs mt-0.5">מוצר זה ישמש כקופסה/מארז לבחירת לקוח</p>
                 </div>
                 <div
                   onClick={() => setForm(p => ({ ...p, isBoxBase: !p.isBoxBase }))}
-                  className={`relative w-11 h-6 rounded-full transition-colors flex-shrink-0 ${form.isBoxBase ? 'bg-[#ff9a9e]' : 'bg-[#fce4ec]'}`}>
+                  className={`relative w-11 h-6 rounded-full transition-colors flex-shrink-0 ${form.isBoxBase ? 'bg-ink' : 'bg-line'}`}>
                   <span className={`absolute top-0.5 w-5 h-5 rounded-full bg-white shadow transition-transform ${form.isBoxBase ? 'translate-x-0.5' : 'translate-x-5'}`} />
                 </div>
               </label>
 
               {/* Variations Section */}
-              <div className="border-t border-[#fce4ec] pt-4">
+              <div className="border-t border-line pt-4">
                 <div className="flex justify-between items-center mb-3">
-                  <span className="text-white text-sm font-bold">וריאציות</span>
+                  <span className="text-ink text-sm font-bold">וריאציות</span>
                   <button onClick={addVariation}
                     className="flex items-center gap-1 text-xs px-3 py-1.5 rounded-lg bg-blue-500/20 text-blue-400 hover:bg-blue-500/30 transition-colors">
                     <Plus size={12} /> הוסף וריאציה
@@ -911,13 +985,13 @@ function ProductsView({ products, categories }: { products: Product[]; categorie
                   <p className="text-gray-400 text-xs text-center py-2">אין וריאציות (למשל: צבע, גודל, סוג בקבוק)</p>
                 )}
                 {form.variations.map((v, i) => (
-                  <div key={i} className="mb-3 p-3 bg-[#FFF5F7] rounded-xl border border-[#fce4ec]">
+                  <div key={i} className="mb-3 p-3 bg-cream rounded-xl border border-line">
                     <div className="flex gap-2 mb-2">
                       <input
                         placeholder="שם הוריאציה (למשל: צבע)"
                         value={v.name}
                         onChange={e => updateVariation(i, 'name', e.target.value)}
-                        className="flex-1 bg-white border border-[#fce4ec] rounded-lg p-2 text-[#3a3a3a] text-xs outline-none focus:border-[#ff9a9e]/40 transition-colors"
+                        className="flex-1 bg-white border border-line rounded-lg p-2 text-ink text-xs outline-none focus:border-ink/40 transition-colors"
                       />
                       <button onClick={() => removeVariation(i)} className="p-2 text-red-400 hover:text-red-300 transition-colors">
                         <X size={14} />
@@ -927,44 +1001,156 @@ function ProductsView({ products, categories }: { products: Product[]; categorie
                       placeholder="ערכים מופרדים בפסיקים (למשל: אדום, כחול, ירוק)"
                       value={v.values}
                       onChange={e => updateVariation(i, 'values', e.target.value)}
-                      className="w-full bg-white border border-[#fce4ec] rounded-lg p-2 text-[#3a3a3a] text-xs outline-none focus:border-[#ff9a9e]/40 transition-colors"
+                      className="w-full bg-white border border-line rounded-lg p-2 text-ink text-xs outline-none focus:border-ink/40 transition-colors"
                     />
                   </div>
                 ))}
               </div>
 
-              {editing && editing.images?.length > 0 && (
-                <div>
-                  <p className="text-gray-500 text-xs mb-2">תמונות קיימות:</p>
-                  <div className="grid grid-cols-4 gap-2">
-                    {editing.images.map((img, i) => (
-                      <div key={i} className="aspect-square rounded-lg overflow-hidden border border-[#fce4ec]">
+              {/* Images — uploaded immediately so colors can be bound to them below */}
+              <div className="border-t border-line pt-4">
+                <span className="text-ink text-sm font-bold">תמונות</span>
+                <p className="text-gray-400 text-xs mt-0.5 mb-3">התמונה הראשונה היא התמונה הראשית</p>
+                {form.images.length > 0 && (
+                  <div className="grid grid-cols-4 gap-2 mb-3">
+                    {form.images.map((img, i) => (
+                      <div key={img} className="relative aspect-square rounded-lg overflow-hidden border border-line group">
                         <img src={img} className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+                        {i === 0 && (
+                          <span className="absolute bottom-0 inset-x-0 bg-ink/70 text-white text-[10px] text-center py-0.5">ראשית</span>
+                        )}
+                        <button
+                          onClick={() => removeImage(img)}
+                          aria-label="הסר תמונה"
+                          className="absolute top-1 left-1 w-5 h-5 rounded-full bg-ink/70 text-white flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
+                        >
+                          <X size={12} />
+                        </button>
                       </div>
                     ))}
                   </div>
-                </div>
-              )}
+                )}
+                <label className="flex items-center justify-center gap-2 w-full p-3.5 border-2 border-dashed border-line rounded-xl cursor-pointer hover:border-ink/40 transition-colors">
+                  {uploadingImages ? <Loader2 size={18} className="animate-spin text-gray-500" /> : <Camera size={18} className="text-gray-500" />}
+                  <span className="text-gray-500 text-sm">{uploadingImages ? 'מעלה…' : 'העלה תמונות'}</span>
+                  <input type="file" accept="image/*" multiple className="hidden" onChange={handleImages} disabled={uploadingImages} />
+                </label>
+              </div>
 
-              <label className="flex items-center justify-center gap-2 w-full p-3.5 border-2 border-dashed border-[#fce4ec] rounded-xl cursor-pointer hover:border-[#ff9a9e]/40 transition-colors">
-                <Camera size={18} className="text-gray-500" />
-                <span className="text-gray-500 text-sm">{editing ? 'הוסף תמונות' : 'העלה תמונות'}</span>
-                <input type="file" accept="image/*" multiple className="hidden" onChange={handleImages} />
-              </label>
-              {form.previews.length > 0 && (
-                <div className="grid grid-cols-4 gap-2">
-                  {form.previews.map((img, i) => (
-                    <div key={i} className="aspect-square rounded-lg overflow-hidden border border-[#fce4ec]">
-                      <img src={img} className="w-full h-full object-cover" />
-                    </div>
-                  ))}
+              {/* Colors — pick from the palette, then bind each to one of the product's images */}
+              <div className="border-t border-line pt-4">
+                <span className="text-ink text-sm font-bold">צבעים</span>
+                <p className="text-gray-400 text-xs mt-0.5 mb-3">בחרו את הצבעים שהמוצר מוצע בהם</p>
+                <div className="flex flex-wrap gap-2 mb-3">
+                  {COLOR_PALETTE.map(c => {
+                    const on = form.colorOptions.some(x => x.name === c.name);
+                    return (
+                      <button
+                        key={c.name}
+                        onClick={() => toggleColor(c)}
+                        title={c.name}
+                        aria-label={c.name}
+                        aria-pressed={on}
+                        className={`w-8 h-8 rounded-full border border-line-strong flex items-center justify-center transition-all ${on ? 'ring-2 ring-ink ring-offset-2' : 'hover:scale-110'}`}
+                        style={{ backgroundColor: c.hex }}
+                      >
+                        {on && <CheckCircle2 size={14} className="text-white mix-blend-difference" />}
+                      </button>
+                    );
+                  })}
                 </div>
-              )}
+
+                {form.colorOptions.length > 0 && (
+                  <div className="space-y-2">
+                    <p className="text-gray-500 text-xs">שייכו לכל צבע תמונה:</p>
+                    {form.colorOptions.map(c => (
+                      <div key={c.name} className="flex items-center gap-3 p-2 bg-cream rounded-xl border border-line">
+                        <span className="w-6 h-6 rounded-full border border-line-strong flex-shrink-0" style={{ backgroundColor: c.hex }} />
+                        <span className="text-ink text-xs w-16 flex-shrink-0">{c.name}</span>
+                        {form.images.length === 0 ? (
+                          <span className="text-gray-400 text-xs">העלו תמונות כדי לשייך</span>
+                        ) : (
+                          <div className="flex gap-1.5 overflow-x-auto">
+                            {form.images.map(img => (
+                              <button
+                                key={img}
+                                onClick={() => bindColorImage(c.name, img)}
+                                className={`w-10 h-10 rounded-lg overflow-hidden border-2 flex-shrink-0 transition-all ${c.imageUrl === img ? 'border-ink' : 'border-transparent opacity-60 hover:opacity-100'}`}
+                              >
+                                <img src={img} className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+                              </button>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              {/* Length (אורך) */}
+              <div className="border-t border-line pt-4">
+                <div className="flex justify-between items-center mb-3">
+                  <span className="text-ink text-sm font-bold">אורך</span>
+                  <button onClick={addLength}
+                    className="flex items-center gap-1 text-xs px-3 py-1.5 rounded-lg bg-ink/10 text-ink hover:bg-ink/20 transition-colors">
+                    <Plus size={12} /> הוסף אורך
+                  </button>
+                </div>
+                {form.lengthOptions.length === 0 && (
+                  <p className="text-gray-400 text-xs text-center py-2">אין אפשרויות אורך</p>
+                )}
+                {form.lengthOptions.map((l, i) => (
+                  <div key={i} className="flex gap-2 mb-2">
+                    <input
+                      placeholder='אורך (למשל: 50 ס"מ)'
+                      value={l.label}
+                      onChange={e => updateLength(i, 'label', e.target.value)}
+                      className="flex-1 bg-cream border border-line rounded-lg p-2 text-ink text-xs outline-none focus:border-ink/40 transition-colors"
+                    />
+                    <input
+                      type="number"
+                      min="0"
+                      placeholder="תוספת ₪"
+                      value={l.priceDelta || ''}
+                      onChange={e => updateLength(i, 'priceDelta', e.target.value)}
+                      className="w-24 bg-cream border border-line rounded-lg p-2 text-ink text-xs outline-none focus:border-ink/40 transition-colors"
+                    />
+                    <button onClick={() => removeLength(i)} className="p-2 text-red-400 hover:text-red-500 transition-colors">
+                      <X size={14} />
+                    </button>
+                  </div>
+                ))}
+              </div>
+
+              {/* Branding (מיתוג) — opt into entries from the global catalog */}
+              <div className="border-t border-line pt-4">
+                <span className="text-ink text-sm font-bold">מיתוג</span>
+                <p className="text-gray-400 text-xs mt-0.5 mb-3">אילו מיתוגים זמינים למוצר זה?</p>
+                {brandingOptions.length === 0 ? (
+                  <p className="text-gray-400 text-xs text-center py-2">אין מיתוגים. הוסיפו אותם בלשונית "מיתוג".</p>
+                ) : (
+                  <div className="space-y-1.5">
+                    {brandingOptions.map(b => (
+                      <label key={b.id} className="flex items-center gap-2 p-2 bg-cream rounded-lg border border-line cursor-pointer hover:border-ink/40 transition-colors">
+                        <input
+                          type="checkbox"
+                          checked={form.brandingOptionIds.includes(b.id)}
+                          onChange={() => toggleBranding(b.id)}
+                          className="accent-[#1A1A18]"
+                        />
+                        <span className="text-ink text-xs flex-1">{b.label}</span>
+                        <span className="text-gray-500 text-xs">+₪{b.extraCost}</span>
+                      </label>
+                    ))}
+                  </div>
+                )}
+              </div>
             </div>
-            <div className="p-5 border-t border-[#fce4ec]">
+            <div className="p-5 border-t border-line">
               <button onClick={handleSave} disabled={uploading}
                 className="w-full py-3 rounded-xl font-bold text-white flex items-center justify-center gap-2 disabled:opacity-60 transition-opacity"
-                style={{ background: `linear-gradient(135deg, ${GOLD}, #fecfef)` }}>
+                style={{ background: `${INK}` }}>
                 {uploading ? <><Loader2 size={16} className="animate-spin" /> מעלה...</> : editing ? 'שמור שינויים' : 'הוסף מוצר'}
               </button>
             </div>
@@ -997,7 +1183,7 @@ function CustomersView({ customers }: { customers: Customer[] }) {
 
   return (
     <div className="space-y-6">
-      <h2 className="text-xl font-bold text-[#3a3a3a]">לקוחות ({customers.length})</h2>
+      <h2 className="text-xl font-bold text-ink">לקוחות ({customers.length})</h2>
 
       {customers.length === 0 ? (
         <div className="text-center py-24 text-gray-400">
@@ -1005,23 +1191,23 @@ function CustomersView({ customers }: { customers: Customer[] }) {
           <p>אין לקוחות עדיין</p>
         </div>
       ) : (
-        <div className="bg-white border border-[#fce4ec] rounded-2xl overflow-hidden">
+        <div className="bg-white border border-line rounded-2xl overflow-hidden">
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
-                <tr className="border-b border-[#fce4ec]">
+                <tr className="border-b border-line">
                   <th className="text-right text-gray-400 font-medium px-5 py-3.5">שם</th>
                   <th className="text-right text-gray-400 font-medium px-5 py-3.5">טלפון</th>
                   <th className="text-right px-5 py-3.5">
                     <button onClick={() => toggleSort('totalOrders')}
-                      className="flex items-center gap-1 text-gray-400 font-medium hover:text-[#3a3a3a] transition-colors">
+                      className="flex items-center gap-1 text-gray-400 font-medium hover:text-ink transition-colors">
                       הזמנות
                       {sortBy === 'totalOrders' ? (sortDir === 'desc' ? <ChevronDown size={14} /> : <ChevronUp size={14} />) : <ChevronDown size={14} className="opacity-20" />}
                     </button>
                   </th>
                   <th className="text-right px-5 py-3.5">
                     <button onClick={() => toggleSort('totalSpend')}
-                      className="flex items-center gap-1 text-gray-400 font-medium hover:text-[#3a3a3a] transition-colors">
+                      className="flex items-center gap-1 text-gray-400 font-medium hover:text-ink transition-colors">
                       סה"כ ₪
                       {sortBy === 'totalSpend' ? (sortDir === 'desc' ? <ChevronDown size={14} /> : <ChevronUp size={14} />) : <ChevronDown size={14} className="opacity-20" />}
                     </button>
@@ -1032,8 +1218,8 @@ function CustomersView({ customers }: { customers: Customer[] }) {
               <tbody>
                 {sorted.map((c, i) => (
                   <tr key={c.id}
-                    className={`hover:bg-[#fff0f5] transition-colors ${i < sorted.length - 1 ? 'border-b border-[#fce4ec]' : ''}`}>
-                    <td className="px-5 py-3.5 text-[#3a3a3a] font-medium">
+                    className={`hover:bg-cream transition-colors ${i < sorted.length - 1 ? 'border-b border-line' : ''}`}>
+                    <td className="px-5 py-3.5 text-ink font-medium">
                       {c.totalOrders > 1 && <span className="text-yellow-400 ml-1">⭐</span>}
                       {c.name}
                     </td>
@@ -1042,8 +1228,8 @@ function CustomersView({ customers }: { customers: Customer[] }) {
                         target="_blank" rel="noopener noreferrer"
                         className="hover:text-green-400 transition-colors">{c.phone}</a>
                     </td>
-                    <td className="px-5 py-3.5 text-[#4a4a4a] text-center">{c.totalOrders}</td>
-                    <td className="px-5 py-3.5 font-bold" style={{ color: GOLD }}>₪{c.totalSpend.toFixed(0)}</td>
+                    <td className="px-5 py-3.5 text-body text-center">{c.totalOrders}</td>
+                    <td className="px-5 py-3.5 font-bold" style={{ color: INK }}>₪{c.totalSpend.toFixed(0)}</td>
                     <td className="px-5 py-3.5 text-gray-400">{fmtDate(c.lastOrderDate)}</td>
                   </tr>
                 ))}
@@ -1075,8 +1261,8 @@ function SettingsView({ settings: init }: { settings: StoreSettings }) {
 
   return (
     <div className="space-y-6 max-w-lg">
-      <h2 className="text-xl font-bold text-[#3a3a3a]">הגדרות</h2>
-      <div className="bg-white border border-[#fce4ec] rounded-2xl p-6 space-y-5">
+      <h2 className="text-xl font-bold text-ink">הגדרות</h2>
+      <div className="bg-white border border-line rounded-2xl p-6 space-y-5">
         {[
           { key: 'pickup_address', label: 'כתובת לאיסוף עצמי', type: 'text', placeholder: 'רחוב...' },
           { key: 'delivery_cost', label: 'עלות משלוח (₪)', type: 'number', placeholder: '30' },
@@ -1087,14 +1273,138 @@ function SettingsView({ settings: init }: { settings: StoreSettings }) {
             <input type={type} placeholder={placeholder}
               value={s[key as keyof StoreSettings]}
               onChange={e => setS(p => ({ ...p, [key]: e.target.value }))}
-              className="w-full bg-[#FFF5F7] border border-[#fce4ec] rounded-xl p-3 text-[#3a3a3a] outline-none text-sm focus:border-[#ff9a9e]/50 transition-colors" />
+              className="w-full bg-cream border border-line rounded-xl p-3 text-ink outline-none text-sm focus:border-ink transition-colors" />
           </div>
         ))}
         <button onClick={save} disabled={saving}
           className="w-full py-3 rounded-xl font-bold text-white flex items-center justify-center gap-2 disabled:opacity-60 transition-all"
-          style={{ background: `linear-gradient(135deg, ${GOLD}, #fecfef)` }}>
+          style={{ background: `${INK}` }}>
           {saving ? <Loader2 size={16} className="animate-spin" /> : saved ? '✓ נשמר בהצלחה!' : 'שמור הגדרות'}
         </button>
+      </div>
+    </div>
+  );
+}
+
+/* ─────────────────────────────── BrandingView ───────────────────────── */
+/** The global מיתוג catalog. Products opt into entries from this list. */
+function BrandingView({ brandingOptions }: { brandingOptions: BrandingOption[] }) {
+  const [label, setLabel] = useState('');
+  const [extraCost, setExtraCost] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [toast, setToast] = useState('');
+
+  const showToast = (msg: string) => { setToast(msg); setTimeout(() => setToast(''), 2500); };
+
+  const handleAdd = async () => {
+    const name = label.trim();
+    const cost = Number(extraCost) || 0;
+    if (!name) return alert('נא להזין שם מיתוג');
+    if (cost < 0) return alert('תוספת התשלום לא יכולה להיות שלילית');
+    setSaving(true);
+    try {
+      await addDoc(collection(db, 'branding_options'), {
+        label: name, extraCost: cost, isActive: true, created_at: new Date(),
+      });
+      setLabel(''); setExtraCost('');
+      showToast('המיתוג נוסף!');
+    } catch (err) { console.error(err); alert('הוספת המיתוג נכשלה.'); }
+    finally { setSaving(false); }
+  };
+
+  const handleUpdate = async (id: string, patch: Partial<BrandingOption>) => {
+    try {
+      await updateDoc(doc(db, 'branding_options', id), patch);
+    } catch (err) { console.error(err); }
+  };
+
+  const handleDelete = async (id: string, name: string) => {
+    // Products keep the id in brandingOptionIds; the storefront resolves against
+    // this catalog, so a deleted option simply stops being offered.
+    if (!confirm(`למחוק את המיתוג "${name}"?`)) return;
+    await deleteDoc(doc(db, 'branding_options', id));
+    showToast('המיתוג נמחק');
+  };
+
+  return (
+    <div className="space-y-5" dir="rtl">
+      {toast && (
+        <div className="fixed top-6 left-1/2 -translate-x-1/2 z-50 bg-green-500 text-white px-5 py-2.5 rounded-xl text-sm font-bold shadow-lg">
+          {toast}
+        </div>
+      )}
+
+      <div className="bg-white border border-line rounded-2xl p-5">
+        <h3 className="text-ink font-bold mb-1">מיתוג</h3>
+        <p className="text-gray-500 text-xs mb-4">
+          רשימת המיתוגים הגלובלית (למשל: ספיידרמן, סופרמן). בכל מוצר בוחרים אילו מיתוגים זמינים עבורו.
+        </p>
+
+        <div className="flex flex-col sm:flex-row gap-2 mb-5">
+          <input
+            type="text"
+            placeholder="שם המיתוג (למשל: ספיידרמן)"
+            value={label}
+            onChange={e => setLabel(e.target.value)}
+            onKeyDown={e => { if (e.key === 'Enter') handleAdd(); }}
+            className="flex-1 bg-cream border border-line rounded-xl p-3 text-ink outline-none text-sm focus:border-ink transition-colors"
+          />
+          <input
+            type="number"
+            min="0"
+            placeholder="תוספת תשלום ₪"
+            value={extraCost}
+            onChange={e => setExtraCost(e.target.value)}
+            onKeyDown={e => { if (e.key === 'Enter') handleAdd(); }}
+            className="w-full sm:w-40 bg-cream border border-line rounded-xl p-3 text-ink outline-none text-sm focus:border-ink transition-colors"
+          />
+          <button
+            onClick={handleAdd}
+            disabled={saving}
+            className="flex items-center justify-center gap-1.5 px-4 py-3 rounded-xl text-sm font-bold text-white disabled:opacity-50 transition-opacity hover:opacity-90"
+            style={{ background: `${INK}` }}
+          >
+            {saving ? <Loader2 size={16} className="animate-spin" /> : <Plus size={16} />}
+            הוסף
+          </button>
+        </div>
+
+        {brandingOptions.length === 0 ? (
+          <p className="text-gray-400 text-sm text-center py-8">אין מיתוגים עדיין</p>
+        ) : (
+          <div className="space-y-2">
+            {brandingOptions.map(b => (
+              <div key={b.id} className="flex items-center gap-3 p-3 bg-cream border border-line rounded-xl">
+                <input
+                  type="text"
+                  value={b.label}
+                  onChange={e => handleUpdate(b.id, { label: e.target.value })}
+                  className="flex-1 bg-white border border-line rounded-lg p-2 text-ink text-sm outline-none focus:border-ink transition-colors"
+                />
+                <div className="flex items-center gap-1">
+                  <span className="text-gray-500 text-sm">+₪</span>
+                  <input
+                    type="number"
+                    min="0"
+                    value={b.extraCost}
+                    onChange={e => handleUpdate(b.id, { extraCost: Number(e.target.value) || 0 })}
+                    className="w-20 bg-white border border-line rounded-lg p-2 text-ink text-sm outline-none focus:border-ink transition-colors"
+                  />
+                </div>
+                <button
+                  onClick={() => handleUpdate(b.id, { isActive: b.isActive === false })}
+                  title={b.isActive === false ? 'מוסתר בחנות' : 'מוצג בחנות'}
+                  className={`relative w-11 h-6 rounded-full transition-colors flex-shrink-0 ${b.isActive === false ? 'bg-line' : 'bg-ink'}`}
+                >
+                  <span className={`absolute top-0.5 w-5 h-5 rounded-full bg-white shadow transition-transform ${b.isActive === false ? 'translate-x-5' : 'translate-x-0.5'}`} />
+                </button>
+                <button onClick={() => handleDelete(b.id, b.label)} className="p-2 text-red-400 hover:text-red-500 transition-colors">
+                  <Trash2 size={16} />
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
     </div>
   );
@@ -1108,6 +1418,7 @@ function AdminDashboard() {
   const [products, setProducts] = useState<Product[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
   const [customers, setCustomers] = useState<Customer[]>([]);
+  const [brandingOptions, setBrandingOptions] = useState<BrandingOption[]>([]);
   const [settings, setSettings] = useState<StoreSettings>({ pickup_address: '', delivery_cost: '0', bit_phone: '' });
   const [dataError, setDataError] = useState('');
 
@@ -1136,10 +1447,15 @@ function AdminDashboard() {
       snap => setCustomers(snap.docs.map(d => ({ id: d.id, ...d.data() } as Customer))),
       onErr('customers')
     );
+    const unsubB = onSnapshot(
+      collection(db, 'branding_options'),
+      snap => setBrandingOptions(snap.docs.map(d => ({ id: d.id, ...d.data() } as BrandingOption))),
+      onErr('branding_options')
+    );
     getDoc(doc(db, 'settings', 'store'))
       .then(d => { if (d.exists()) setSettings(d.data() as StoreSettings); })
       .catch(err => console.error('[Admin] settings fetch error:', err));
-    return () => { unsubO(); unsubP(); unsubC(); unsubCust(); };
+    return () => { unsubO(); unsubP(); unsubC(); unsubCust(); unsubB(); };
   }, []);
 
   const newOrdersCount = orders.filter(o => o.status === 'חדש').length;
@@ -1148,6 +1464,7 @@ function AdminDashboard() {
     { tab: 'orders', label: 'הזמנות', icon: ShoppingBag },
     { tab: 'analytics', label: 'סטטיסטיקה', icon: BarChart3 },
     { tab: 'products', label: 'מוצרים', icon: Package },
+    { tab: 'branding', label: 'מיתוג', icon: Sparkles },
     { tab: 'customers', label: 'לקוחות', icon: Users },
     { tab: 'settings', label: 'הגדרות', icon: SettingsIcon },
   ];
@@ -1156,12 +1473,12 @@ function AdminDashboard() {
     <>
       {navItems.map(({ tab, label, icon: Icon }) => (
         <button key={tab} onClick={() => { setActiveTab(tab); onNavigate?.(); }}
-          className={`flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-all w-full text-right relative ${activeTab === tab ? 'text-white' : 'text-gray-400 hover:text-[#3a3a3a] hover:bg-[#fff0f5]'}`}
-          style={activeTab === tab ? { background: `linear-gradient(135deg, ${GOLD}, #fecfef)` } : {}}>
+          className={`flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-all w-full text-right relative ${activeTab === tab ? 'text-white' : 'text-gray-400 hover:text-ink hover:bg-cream'}`}
+          style={activeTab === tab ? { background: `${INK}` } : {}}>
           <Icon size={18} />
           {label}
           {tab === 'orders' && newOrdersCount > 0 && (
-            <span className="absolute left-3 top-1/2 -translate-y-1/2 bg-red-500 text-[#3a3a3a] text-[10px] w-5 h-5 rounded-full flex items-center justify-center font-bold">
+            <span className="absolute left-3 top-1/2 -translate-y-1/2 bg-red-500 text-ink text-[10px] w-5 h-5 rounded-full flex items-center justify-center font-bold">
               {newOrdersCount}
             </span>
           )}
@@ -1171,15 +1488,15 @@ function AdminDashboard() {
   );
 
   return (
-    <div dir="rtl" className="min-h-screen bg-[#FFF5F7] text-[#3a3a3a]">
+    <div dir="rtl" className="min-h-screen bg-cream text-ink">
       {/* Top Bar */}
-      <header className="sticky top-0 z-40 bg-[#FFF5F7]/95 backdrop-blur-md border-b border-[#fce4ec] px-4 py-3.5 flex items-center justify-between">
+      <header className="sticky top-0 z-40 bg-cream/95 backdrop-blur-md border-b border-line px-4 py-3.5 flex items-center justify-between">
         <div className="flex items-center gap-3">
           <button onClick={() => setSidebarOpen(true)}
-            className="p-2 rounded-xl bg-white border border-[#fce4ec] md:hidden relative">
+            className="p-2 rounded-xl bg-white border border-line md:hidden relative">
             <Menu size={18} className="text-gray-400" />
             {newOrdersCount > 0 && (
-              <span className="absolute -top-1 -right-1 bg-red-500 text-[#3a3a3a] text-[9px] w-4 h-4 rounded-full flex items-center justify-center">
+              <span className="absolute -top-1 -right-1 bg-red-500 text-ink text-[9px] w-4 h-4 rounded-full flex items-center justify-center">
                 {newOrdersCount}
               </span>
             )}
@@ -1192,7 +1509,7 @@ function AdminDashboard() {
 
       <div className="flex">
         {/* Desktop Sidebar */}
-        <aside className="hidden md:flex flex-col w-52 min-h-[calc(100vh-57px)] bg-[#FFF5F7] border-l border-[#fce4ec] sticky top-[57px] p-3 gap-1">
+        <aside className="hidden md:flex flex-col w-52 min-h-[calc(100vh-57px)] bg-cream border-l border-line sticky top-[57px] p-3 gap-1">
           <SidebarNav />
         </aside>
 
@@ -1200,10 +1517,10 @@ function AdminDashboard() {
         {sidebarOpen && (
           <div className="fixed inset-0 z-50 flex md:hidden">
             <div className="absolute inset-0 bg-black/70" onClick={() => setSidebarOpen(false)} />
-            <div className="relative bg-[#FFF5F7] border-l border-[#fce4ec] w-56 flex flex-col p-3 gap-1">
+            <div className="relative bg-cream border-l border-line w-56 flex flex-col p-3 gap-1">
               <div className="flex items-center justify-between px-2 py-2 mb-1">
                 <img src="/logo.jpeg" alt="Tony Amrami" style={{ mixBlendMode: 'multiply' }} className="h-7 object-contain" />
-                <button onClick={() => setSidebarOpen(false)} className="p-1.5 text-gray-500 hover:text-[#3a3a3a]">
+                <button onClick={() => setSidebarOpen(false)} className="p-1.5 text-gray-500 hover:text-ink">
                   <X size={16} />
                 </button>
               </div>
@@ -1222,22 +1539,23 @@ function AdminDashboard() {
           )}
           {activeTab === 'orders' && <OrdersView orders={orders} />}
           {activeTab === 'analytics' && <AnalyticsView orders={orders} products={products} categories={categories} />}
-          {activeTab === 'products' && <ProductsView products={products} categories={categories} />}
+          {activeTab === 'products' && <ProductsView products={products} categories={categories} brandingOptions={brandingOptions} />}
+          {activeTab === 'branding' && <BrandingView brandingOptions={brandingOptions} />}
           {activeTab === 'customers' && <CustomersView customers={customers} />}
           {activeTab === 'settings' && <SettingsView settings={settings} />}
         </main>
       </div>
 
       {/* Mobile Bottom Nav */}
-      <nav className="fixed bottom-0 inset-x-0 md:hidden bg-[#FFF5F7]/95 backdrop-blur-md border-t border-[#fce4ec] flex z-30">
+      <nav className="fixed bottom-0 inset-x-0 md:hidden bg-cream/95 backdrop-blur-md border-t border-line flex z-30">
         {navItems.map(({ tab, label, icon: Icon }) => (
           <button key={tab} onClick={() => setActiveTab(tab)}
             className={`flex-1 flex flex-col items-center gap-1 py-3 text-[10px] font-medium transition-colors relative ${activeTab === tab ? '' : 'text-gray-400'}`}
-            style={activeTab === tab ? { color: GOLD } : {}}>
+            style={activeTab === tab ? { color: INK } : {}}>
             <Icon size={20} />
             {label}
             {tab === 'orders' && newOrdersCount > 0 && (
-              <span className="absolute top-2 right-[22%] bg-red-500 text-[#3a3a3a] text-[8px] w-4 h-4 rounded-full flex items-center justify-center font-bold">
+              <span className="absolute top-2 right-[22%] bg-red-500 text-ink text-[8px] w-4 h-4 rounded-full flex items-center justify-center font-bold">
                 {newOrdersCount}
               </span>
             )}

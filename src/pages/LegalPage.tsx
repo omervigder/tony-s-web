@@ -32,7 +32,7 @@ export default function LegalPage({ docKey, title, defaultContent }: LegalPagePr
 
       <header style={{ background: '#fff', borderBottom: '1px solid #f0f0f0', padding: '18px 24px', display: 'flex', alignItems: 'center', gap: 16 }}>
         <a href="/" aria-label="חזרה לדף הבית"
-          style={{ color: '#ff9a9e', textDecoration: 'none', fontWeight: 700, fontSize: 14, display: 'flex', alignItems: 'center', gap: 6 }}>
+          style={{ color: '#1A1A18', textDecoration: 'none', fontWeight: 700, fontSize: 14, display: 'flex', alignItems: 'center', gap: 6 }}>
           ← חזרה לדף הבית
         </a>
         <span style={{ color: '#ddd' }}>|</span>
@@ -64,7 +64,7 @@ export default function LegalPage({ docKey, title, defaultContent }: LegalPagePr
             ['/shipping', 'משלוחים והחזרות'],
           ].map(([href, label]) => (
             <a key={href} href={href}
-              style={{ color: '#ff9a9e', fontSize: 13, textDecoration: 'none', padding: '3px 10px', borderRadius: 999, border: '1px solid #ffe0e8', transition: 'background 0.2s' }}
+              style={{ color: '#1A1A18', fontSize: 13, textDecoration: 'none', padding: '3px 10px', borderRadius: 999, border: '1px solid #ffe0e8', transition: 'background 0.2s' }}
               onMouseEnter={e => (e.currentTarget.style.background = '#fff5f7')}
               onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}>
               {label}
@@ -72,7 +72,7 @@ export default function LegalPage({ docKey, title, defaultContent }: LegalPagePr
           ))}
         </div>
         <a href="/" style={{ color: '#aaa', textDecoration: 'none', fontSize: 13, display: 'inline-block', marginBottom: 8 }}
-          onMouseEnter={e => (e.currentTarget.style.color = '#ff9a9e')}
+          onMouseEnter={e => (e.currentTarget.style.color = '#1A1A18')}
           onMouseLeave={e => (e.currentTarget.style.color = '#aaa')}>
           ← חזרה לדף הבית
         </a>

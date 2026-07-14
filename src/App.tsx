@@ -2,12 +2,22 @@ import React, { useState, useEffect, useRef } from 'react';
 import AccessibilityWidget from './components/AccessibilityWidget';
 import GiftAssistant from './components/GiftAssistant';
 import CheckoutSuccess from './components/CheckoutSuccess';
-import { ShoppingCart, Package, Plus, Minus, Trash2, Camera, ChevronRight, CheckCircle2, X, Menu, Loader2, ChevronDown, Copy, Star, MessageCircle, Gift, Box } from 'lucide-react';
+import { ShoppingCart, Package, Plus, Minus, Trash2, Camera, ChevronRight, CheckCircle2, X, Menu, Loader2, ChevronDown, Copy, Star, MessageCircle, Gift, Box, Check, Instagram } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
-import { Product, Category, Settings, CartItem, Coupon, SiteContent, Review } from './types';
+import { Product, Category, Settings, CartItem, Coupon, SiteContent, Review, BrandingOption, SelectedOptions, ProductColorOption, ProductLengthOption } from './types';
 import { db, storage } from './firebase';
 import { collection, addDoc, getDocs, doc, getDoc, setDoc, query, orderBy, where } from "firebase/firestore";
 import { ref, uploadBytes, getDownloadURL } from "firebase/storage";
+
+const INSTAGRAM_URL = 'https://www.instagram.com/tony_amrami__branding?igsh=M2QycXNhZDk2Z2s2&utm_source=qr';
+
+// lucide-react ships no WhatsApp glyph, so the mark lives here and is shared by
+// the header, the footer and the floating bubble.
+const WhatsAppIcon = ({ size = 20 }: { size?: number }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+    <path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z" />
+  </svg>
+);
 
 export default function App() {
   const [view, setView] = useState<'user' | 'checkout' | 'success' | 'product' | 'build-box'>('user');
@@ -28,6 +38,10 @@ export default function App() {
   const [selectedImageIndex, setSelectedImageIndex] = useState(0);
   const [productQuantity, setProductQuantity] = useState(1);
   const [selectedVariations, setSelectedVariations] = useState<Record<string, string>>({});
+  const [brandingOptions, setBrandingOptions] = useState<BrandingOption[]>([]);
+  const [selectedColor, setSelectedColor] = useState<ProductColorOption | null>(null);
+  const [selectedLength, setSelectedLength] = useState<ProductLengthOption | null>(null);
+  const [selectedBrandingId, setSelectedBrandingId] = useState<string>('');
   const [dedication, setDedication] = useState<{ message: string; cardType: 'digital' | 'printed' }>({ message: '', cardType: 'digital' });
   const [customerNotes, setCustomerNotes] = useState('');
 
@@ -98,15 +112,20 @@ export default function App() {
 
   const fetchData = async () => {
     try {
-      const [productsSnapshot, categoriesSnapshot, settingsDoc, contentDoc] = await Promise.all([
+      const [productsSnapshot, categoriesSnapshot, brandingSnapshot, settingsDoc, contentDoc] = await Promise.all([
         getDocs(query(collection(db, "products"), orderBy("created_at", "desc"))),
         getDocs(collection(db, "categories")),
+        getDocs(collection(db, "branding_options")),
         getDoc(doc(db, "settings", "store")),
         getDoc(doc(db, "settings", "content")),
       ]);
 
       setProducts(productsSnapshot.docs.map(d => ({ id: d.id, ...d.data() })) as Product[]);
       setCategories(categoriesSnapshot.docs.map(d => ({ id: d.id, ...d.data() })) as Category[]);
+      setBrandingOptions(
+        (brandingSnapshot.docs.map(d => ({ id: d.id, ...d.data() })) as BrandingOption[])
+          .filter(b => b.isActive !== false)
+      );
       if (settingsDoc.exists()) setSettings(settingsDoc.data() as Settings);
       if (contentDoc.exists()) setSiteContent(prev => ({ ...prev, ...contentDoc.data() as SiteContent }));
     } catch (err) {
@@ -189,6 +208,9 @@ export default function App() {
     setSelectedImageIndex(0);
     setProductQuantity(1);
     setSelectedVariations({});
+    setSelectedColor(null);
+    setSelectedLength(null);
+    setSelectedBrandingId('');
     setReviews([]);
     setReviewForm({ rating: 5, message: '', customerName: '', photoFile: null, photoPreview: '' });
     navigateTo('product', id);
@@ -268,6 +290,7 @@ export default function App() {
     const cartBundle: CartItem = {
       ...bundleProduct,
       quantity: 1,
+      unitPrice: bundleProduct.price,
       bundleItems: bundleItems.map(bi => ({ id: bi.product.id, name: bi.product.name, price: bi.product.price, quantity: bi.qty })),
     };
     setCart(prev => [...prev, cartBundle]);
@@ -289,43 +312,64 @@ export default function App() {
     return `https://wa.me/${phone}?text=${encodeURIComponent(msg)}`;
   };
 
-  const getCartKey = (id: string, variations?: Record<string, string>) =>
-    variations && Object.keys(variations).length > 0
-      ? `${id}|${JSON.stringify(variations)}`
-      : id;
+  /** Identity of a cart line: same product with different options is a different line. */
+  type CartLine = Pick<CartItem, 'id' | 'selectedVariations' | 'selectedColor' | 'selectedLength' | 'selectedBranding'>;
+  const getCartKey = (item: CartLine) =>
+    `${item.id}|${JSON.stringify({
+      v: item.selectedVariations ?? null,
+      c: item.selectedColor?.name ?? null,
+      l: item.selectedLength?.label ?? null,
+      b: item.selectedBranding?.id ?? null,
+    })}`;
 
-  const addToCart = (product: Product, quantity: number = 1, variations?: Record<string, string>) => {
-    const key = getCartKey(product.id, variations);
+  /** Price of one unit, including length and branding surcharges.
+   *  The `?? price` fallback covers carts persisted to localStorage before options shipped. */
+  const unitPriceOf = (item: Pick<CartItem, 'price' | 'unitPrice'>) => item.unitPrice ?? item.price;
+
+  const priceWithOptions = (basePrice: number, opts: SelectedOptions) =>
+    basePrice + (opts.selectedLength?.priceDelta ?? 0) + (opts.selectedBranding?.extraCost ?? 0);
+
+  const addToCart = (product: Product, quantity: number = 1, variations?: Record<string, string>, options: SelectedOptions = {}) => {
+    const line: CartItem = {
+      ...product,
+      quantity,
+      selectedVariations: variations,
+      ...options,
+      unitPrice: priceWithOptions(product.price, options),
+    };
+    const key = getCartKey(line);
     setCart(prev => {
-      const existing = prev.find(item => getCartKey(item.id, item.selectedVariations) === key);
+      const existing = prev.find(item => getCartKey(item) === key);
       if (existing) {
         return prev.map(item =>
-          getCartKey(item.id, item.selectedVariations) === key
-            ? { ...item, quantity: item.quantity + quantity }
-            : item
+          getCartKey(item) === key ? { ...item, quantity: item.quantity + quantity } : item
         );
       }
-      return [...prev, { ...product, quantity, selectedVariations: variations } as CartItem];
+      return [...prev, line];
     });
   };
 
-  const removeFromCart = (id: string, variations?: Record<string, string>) => {
-    const key = getCartKey(id, variations);
-    setCart(prev => prev.filter(item => getCartKey(item.id, item.selectedVariations) !== key));
+  const removeFromCart = (target: CartLine) => {
+    const key = getCartKey(target);
+    setCart(prev => prev.filter(item => getCartKey(item) !== key));
   };
 
-  const updateQuantity = (id: string, delta: number, variations?: Record<string, string>) => {
-    const key = getCartKey(id, variations);
-    setCart(prev => prev.map(item => {
-      if (getCartKey(item.id, item.selectedVariations) === key) {
-        const newQty = Math.max(1, item.quantity + delta);
-        return { ...item, quantity: newQty };
-      }
-      return item;
-    }));
+  const updateQuantity = (target: CartLine, delta: number) => {
+    const key = getCartKey(target);
+    setCart(prev => prev.map(item =>
+      getCartKey(item) === key ? { ...item, quantity: Math.max(1, item.quantity + delta) } : item
+    ));
   };
 
-  const cartTotal = cart.reduce((sum, item) => sum + (item.price * item.quantity), 0);
+  /** One-line summary of everything the shopper picked, for the cart drawer. */
+  const cartLineOptions = (item: CartItem) => [
+    ...Object.entries(item.selectedVariations ?? {}).map(([k, v]) => `${k}: ${v}`),
+    item.selectedColor && `צבע: ${item.selectedColor.name}`,
+    item.selectedLength && `אורך: ${item.selectedLength.label}`,
+    item.selectedBranding && `מיתוג: ${item.selectedBranding.label}`,
+  ].filter(Boolean).join(' | ');
+
+  const cartTotal = cart.reduce((sum, item) => sum + (unitPriceOf(item) * item.quantity), 0);
   const discountAmount = appliedCoupon
     ? appliedCoupon.type === 'percent'
       ? Math.round(cartTotal * appliedCoupon.value / 100)
@@ -339,6 +383,34 @@ export default function App() {
   const formatPrice = (n: number | string | undefined | null): string => {
     const num = Number(n) || 0;
     return num.toFixed(2).replace(/\.?0+$/, '');
+  };
+
+  // ── Product page: live option pricing ──────────────────────────────────
+  // The branding options this product opted into, resolved against the global catalog.
+  const productBrandingOptions = selectedProduct
+    ? brandingOptions.filter(b => (selectedProduct.brandingOptionIds ?? []).includes(b.id))
+    : [];
+  const selectedBranding = productBrandingOptions.find(b => b.id === selectedBrandingId) ?? null;
+  const productSurcharge = (selectedLength?.priceDelta ?? 0) + (selectedBranding?.extraCost ?? 0);
+  const productUnitPrice = (selectedProduct?.price ?? 0) + productSurcharge;
+  // Show a "starting from" prefix until the shopper has picked every option that could add cost.
+  const hasSurchargeOptions = !!(
+    selectedProduct?.lengthOptions?.some(l => l.priceDelta > 0) ||
+    productBrandingOptions.some(b => b.extraCost > 0)
+  );
+  const hasPickedSurcharge = productSurcharge > 0;
+
+  /** True when the product has options the shopper must choose before it can be added. */
+  const needsOptions = (p: Product) => !!(
+    p.variations?.length || p.colorOptions?.length || p.lengthOptions?.length || p.brandingOptionIds?.length
+  );
+
+  /** Pick a legible check mark for a swatch — dark tick on pale colors, white on dark ones. */
+  const isLightHex = (hex: string) => {
+    const h = hex.replace('#', '');
+    if (h.length !== 6) return true;
+    const [r, g, b] = [0, 2, 4].map(i => parseInt(h.slice(i, i + 2), 16));
+    return (0.299 * r + 0.587 * g + 0.114 * b) > 160;
   };
 
   // Validation rules (kept strict so the Make.com pipeline gets clean data)
@@ -368,8 +440,18 @@ export default function App() {
     setIsCreatingPayment(true);
 
     const orderItems = cart.map(i => ({
-      id: i.id, name: i.name, price: i.price, costPrice: i.costPrice ?? 0, quantity: i.quantity,
+      id: i.id,
+      name: i.name,
+      // `price` is the unit price actually charged, so every downstream consumer
+      // (Telegram totals, admin analytics, the xlsx export) stays correct.
+      price: unitPriceOf(i),
+      basePrice: i.price,
+      costPrice: i.costPrice ?? 0,
+      quantity: i.quantity,
       ...(i.selectedVariations && Object.keys(i.selectedVariations).length > 0 && { selectedVariations: i.selectedVariations }),
+      ...(i.selectedColor && { selectedColor: { name: i.selectedColor.name, hex: i.selectedColor.hex } }),
+      ...(i.selectedLength && { selectedLength: i.selectedLength }),
+      ...(i.selectedBranding && { selectedBranding: i.selectedBranding }),
     }));
     const dedicationData = dedication.message.trim()
       ? { message: dedication.message.trim(), cardType: dedication.cardType }
@@ -511,49 +593,73 @@ export default function App() {
         )}
       </AnimatePresence>
 
-      {/* Announcement Bar */}
+      {/* Announcement Bar — the one solid-ink surface on the page */}
       {(isContentLoading || siteContent.announcementBar) && (
-        <div className="bg-gradient-to-r from-[#ff9a9e] to-[#a1c4fd] text-white text-center py-2 px-4 text-sm font-medium">
+        <div className="bg-ink text-cream text-center py-2 px-4 text-sm font-medium">
           {isContentLoading
-            ? <span className="inline-block w-64 h-4 bg-white/30 rounded animate-pulse" />
+            ? <span className="inline-block w-64 h-4 bg-cream/30 rounded animate-pulse" />
             : siteContent.announcementBar}
         </div>
       )}
 
-      {/* Header */}
-      <header className="bg-white/80 backdrop-blur-md sticky top-0 z-50 px-6 py-4 flex justify-between items-center shadow-sm">
-        <div className="flex items-center gap-4">
-          <button
-            onClick={() => setIsMenuOpen(true)}
-            className="p-2 hover:bg-gray-100 rounded-full transition-colors"
-          >
-            <Menu size={24} className="text-gray-500" />
-          </button>
-          <div className="flex items-center cursor-pointer" onClick={() => navigateTo('user')}>
-            <img src="/logo.jpeg" alt="Tony Amrami" className="h-10 object-contain" style={{ mixBlendMode: 'multiply' }} />
+      {/* Header — 3-column grid so the logo stays optically centered regardless of
+          how wide the side clusters get (flex justify-between would not). */}
+      <header className="bg-surface/85 backdrop-blur-md sticky top-0 z-50 border-b border-line">
+        <div className="max-w-[980px] mx-auto px-4 md:px-6 h-16 md:h-20 grid grid-cols-3 items-center">
+          <div className="flex items-center gap-1 justify-self-start">
+            <button
+              onClick={() => setIsMenuOpen(true)}
+              aria-label="פתיחת תפריט"
+              className="p-2 hover:bg-ink/5 rounded-full transition-colors"
+            >
+              <Menu size={22} className="text-ink" />
+            </button>
+            <a
+              href={INSTAGRAM_URL}
+              target="_blank"
+              rel="noopener noreferrer"
+              aria-label="Instagram"
+              className="hidden sm:flex p-2 rounded-full text-ink hover:bg-ink/5 transition-colors"
+            >
+              <Instagram size={20} />
+            </a>
+            <a
+              href={getWhatsAppLink()}
+              target="_blank"
+              rel="noopener noreferrer"
+              aria-label="WhatsApp"
+              className="hidden sm:flex p-2 rounded-full text-ink hover:bg-ink/5 transition-colors"
+            >
+              <WhatsAppIcon size={20} />
+            </a>
           </div>
-        </div>
 
-        <div className="flex items-center gap-4">
+          <button onClick={() => navigateTo('user')} aria-label="Tony — לדף הבית" className="justify-self-center">
+            <img src="/logo.jpeg" alt="Tony Amrami" className="h-10 md:h-12 object-contain" style={{ mixBlendMode: 'multiply' }} />
+          </button>
+
+          <div className="justify-self-end">
           <button
             onClick={() => setIsCartOpen(true)}
-            className="relative p-2 bg-[#ff9a9e]/10 text-[#ff9a9e] rounded-full hover:bg-[#ff9a9e]/20 transition-colors"
+            aria-label="סל הקניות"
+            className="relative p-2 bg-ink/5 text-ink rounded-full hover:bg-ink/10 transition-colors"
           >
             <ShoppingCart size={20} />
             {cart.length > 0 && (
-              <span className="absolute -top-1 -right-1 bg-red-500 text-white text-[10px] w-5 h-5 rounded-full flex items-center justify-center border-2 border-white">
+              <span className="absolute -top-1 -right-1 bg-ink text-cream text-[10px] w-5 h-5 rounded-full flex items-center justify-center border-2 border-surface">
                 {cart.reduce((a, b) => a + b.quantity, 0)}
               </span>
             )}
           </button>
+          </div>
         </div>
       </header>
 
       {/* Main Content */}
-      <main className="max-w-6xl mx-auto px-6 py-8">
+      <main className="max-w-[980px] mx-auto px-6 py-8">
         {isLoadingProduct && (
-          <div className="fixed inset-0 bg-white/50 backdrop-blur-sm z-[100] flex items-center justify-center">
-            <div className="w-12 h-12 border-4 border-[#ff9a9e] border-t-transparent rounded-full animate-spin"></div>
+          <div className="fixed inset-0 bg-cream/50 backdrop-blur-sm z-[100] flex items-center justify-center">
+            <div className="w-12 h-12 border-4 border-ink border-t-transparent rounded-full animate-spin"></div>
           </div>
         )}
 
@@ -570,12 +676,12 @@ export default function App() {
               ) : (
                 <>
                   {siteContent.heroTitle && (
-                    <h2 className="text-4xl md:text-5xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-[#ff9a9e] via-[#fecfef] to-[#a1c4fd] leading-tight">
+                    <h2 className="text-4xl md:text-5xl text-ink leading-tight">
                       {siteContent.heroTitle}
                     </h2>
                   )}
                   {siteContent.heroSubtitle && (
-                    <p className="text-gray-500 text-lg max-w-xl mx-auto leading-relaxed">
+                    <p className="text-muted text-lg max-w-xl mx-auto leading-relaxed">
                       {siteContent.heroSubtitle}
                     </p>
                   )}
@@ -586,16 +692,15 @@ export default function App() {
             {/* Build-A-Box Banner */}
             <div
               onClick={() => { setSelectedBoxBase(null); setBundleItems([]); navigateTo('build-box'); window.scrollTo(0,0); }}
-              className="cursor-pointer rounded-3xl overflow-hidden shadow-lg hover:shadow-xl transition-all"
-              style={{ background: 'linear-gradient(135deg, #fff0f5 0%, #ffe4ef 50%, #ffd6e8 100%)', border: '1.5px solid #ffd6e8' }}
+              className="cursor-pointer overflow-hidden bg-sand border border-line hover:border-line-strong transition-colors"
             >
               <div className="p-6 flex items-center gap-6">
-                <div className="w-16 h-16 rounded-2xl flex items-center justify-center flex-shrink-0" style={{ background: 'linear-gradient(135deg,#ff9a9e,#fecfef)' }}>
-                  <Gift size={32} color="white" />
+                <div className="w-16 h-16 flex items-center justify-center flex-shrink-0 bg-ink">
+                  <Gift size={32} className="text-cream" />
                 </div>
                 <div className="flex-grow">
-                  <h3 className="text-xl font-bold text-gray-800">✨ בנה את המארז שלך</h3>
-                  <p className="text-gray-500 text-sm mt-1">בחר בסיס מארז, הוסף מוצרים ויצור חוויה מותאמת אישית</p>
+                  <h3 className="text-xl text-ink">✨ בנה את המארז שלך</h3>
+                  <p className="text-muted text-sm mt-1">בחר בסיס מארז, הוסף מוצרים ויצור חוויה מותאמת אישית</p>
                 </div>
                 <div className="btn-primary px-5 py-2 flex items-center gap-2 flex-shrink-0">
                   <Box size={16} /> בנה עכשיו
@@ -608,7 +713,7 @@ export default function App() {
               {isContentLoading
                 ? <div className="h-7 w-40 bg-gradient-to-r from-gray-100 to-gray-200 rounded-lg animate-pulse" />
                 : <h3 className="text-2xl font-bold text-gray-800">{siteContent.collectionsTitle}</h3>}
-              <div className="flex-1 h-px bg-gradient-to-r from-[#ff9a9e]/30 to-transparent" />
+              <div className="flex-1 h-px bg-gradient-to-r from-[#1A1A18]/30 to-transparent" />
             </div>
 
             {/* Products Grid */}
@@ -619,29 +724,35 @@ export default function App() {
                   initial={{ opacity: 0, y: 20 }}
                   animate={{ opacity: 1, y: 0 }}
                   key={product.id}
-                  className="pastel-card overflow-hidden flex flex-col cursor-pointer"
+                  className="surface-card overflow-hidden flex flex-col cursor-pointer"
                   onClick={() => fetchProductDetails(product.id)}
                 >
-                  <div className="aspect-square relative overflow-hidden bg-gray-100">
+                  <div className="aspect-square relative overflow-hidden bg-cream">
                     {product.main_image ? (
                       <img src={product.main_image} alt={product.alt_text || product.name} className="w-full h-full object-cover" referrerPolicy="no-referrer" />
                     ) : (
-                      <div className="w-full h-full flex items-center justify-center text-gray-300">
+                      <div className="w-full h-full flex items-center justify-center text-line-strong">
                         <Package size={48} />
                       </div>
                     )}
                   </div>
                   <div className="p-6 flex flex-col flex-grow">
-                    <h3 className="text-lg font-bold mb-2">{product.name}</h3>
-                    <p className="text-gray-500 text-sm mb-4 line-clamp-2">{product.description}</p>
+                    <h3 className="text-lg text-ink mb-2">{product.name}</h3>
+                    <p className="text-muted text-sm mb-4 line-clamp-2">{product.description}</p>
                     <div className="flex justify-between items-center mt-auto">
-                      <span className="text-xl font-bold text-[#ff9a9e]">₪{formatPrice(product.price)}</span>
+                      <span className="text-xl font-semibold text-ink">₪{formatPrice(product.price)}</span>
                       <button
-                        onClick={(e) => { e.stopPropagation(); addToCart(product); }}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          // A configurable product can't be added blind — send the shopper
+                          // to the product page to pick its options first.
+                          if (needsOptions(product)) { fetchProductDetails(product.id); return; }
+                          addToCart(product);
+                        }}
                         className="btn-primary flex items-center gap-2"
                       >
                         <Plus size={18} />
-                        הוספה לסל
+                        {needsOptions(product) ? 'בחירת אפשרויות' : 'הוספה לסל'}
                       </button>
                     </div>
                   </div>
@@ -671,7 +782,7 @@ export default function App() {
                     {selectedProduct.images.map((img, idx) => (
                       <div
                         key={idx}
-                        className={`aspect-square rounded-xl overflow-hidden cursor-pointer border-2 transition-all ${selectedImageIndex === idx ? 'border-[#ff9a9e]' : 'border-transparent'}`}
+                        className={`aspect-square rounded-xl overflow-hidden cursor-pointer border-2 transition-all ${selectedImageIndex === idx ? 'border-ink' : 'border-transparent'}`}
                         onClick={() => setSelectedImageIndex(idx)}
                       >
                         <img src={img} className="w-full h-full object-cover" referrerPolicy="no-referrer" />
@@ -681,26 +792,34 @@ export default function App() {
                 )}
               </div>
               <div className="space-y-6">
-                <h2 className="text-4xl font-bold">{selectedProduct.name}</h2>
-                <p className="text-xl text-[#ff9a9e] font-bold">₪{formatPrice(selectedProduct.price)}</p>
-                <div className="prose prose-pink">
-                  <p className="text-gray-600 text-lg leading-relaxed">{selectedProduct.description}</p>
+                <h2 className="text-4xl text-ink">{selectedProduct.name}</h2>
+                <div>
+                  {hasSurchargeOptions && !hasPickedSurcharge && (
+                    <span className="text-sm text-muted ml-1">החל מ-</span>
+                  )}
+                  <span className="text-2xl text-ink font-semibold">₪{formatPrice(productUnitPrice)}</span>
+                  {productSurcharge > 0 && (
+                    <p className="text-sm text-muted mt-1">
+                      ₪{formatPrice(selectedProduct.price)} + ₪{formatPrice(productSurcharge)} תוספות
+                    </p>
+                  )}
                 </div>
+                <p className="text-body text-lg leading-relaxed">{selectedProduct.description}</p>
 
                 {selectedProduct.variations && selectedProduct.variations.length > 0 && (
                   <div className="space-y-4">
                     {selectedProduct.variations.map(variation => (
                       <div key={variation.name}>
-                        <label className="block text-sm font-bold text-gray-700 mb-2">{variation.name}:</label>
+                        <label className="block text-sm font-medium text-ink mb-2">{variation.name}:</label>
                         <div className="flex flex-wrap gap-2">
                           {variation.values.map(value => (
                             <button
                               key={value}
                               onClick={() => setSelectedVariations(prev => ({ ...prev, [variation.name]: value }))}
-                              className={`px-4 py-2 rounded-full border text-sm font-medium transition-all ${
+                              className={`px-4 py-2 rounded-full border text-sm transition-all ${
                                 selectedVariations[variation.name] === value
-                                  ? 'bg-[#ff9a9e] text-white border-[#ff9a9e] shadow-sm'
-                                  : 'border-gray-200 text-gray-600 hover:border-[#ff9a9e] bg-white'
+                                  ? 'bg-ink text-cream border-ink'
+                                  : 'border-line text-body hover:border-ink bg-surface'
                               }`}
                             >
                               {value}
@@ -712,12 +831,89 @@ export default function App() {
                   </div>
                 )}
 
+                {/* Colors — selecting one swaps the gallery to that color's image */}
+                {selectedProduct.colorOptions && selectedProduct.colorOptions.length > 0 && (
+                  <div>
+                    <label className="block text-sm font-medium text-ink mb-2">
+                      צבע{selectedColor ? `: ${selectedColor.name}` : ''}
+                    </label>
+                    <div className="flex flex-wrap gap-3">
+                      {selectedProduct.colorOptions.map(color => (
+                        <button
+                          key={color.name}
+                          title={color.name}
+                          aria-label={color.name}
+                          aria-pressed={selectedColor?.name === color.name}
+                          onClick={() => {
+                            setSelectedColor(color);
+                            const idx = color.imageUrl ? (selectedProduct.images ?? []).indexOf(color.imageUrl) : -1;
+                            if (idx >= 0) setSelectedImageIndex(idx);
+                          }}
+                          className={`w-9 h-9 rounded-full border border-line-strong flex items-center justify-center transition-all ${
+                            selectedColor?.name === color.name
+                              ? 'ring-2 ring-ink ring-offset-2 ring-offset-cream'
+                              : 'hover:scale-110'
+                          }`}
+                          style={{ backgroundColor: color.hex }}
+                        >
+                          {selectedColor?.name === color.name && (
+                            <Check size={16} className={isLightHex(color.hex) ? 'text-ink' : 'text-white'} />
+                          )}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* Length */}
+                {selectedProduct.lengthOptions && selectedProduct.lengthOptions.length > 0 && (
+                  <div>
+                    <label className="block text-sm font-medium text-ink mb-2">אורך:</label>
+                    <div className="flex flex-wrap gap-2">
+                      {selectedProduct.lengthOptions.map(len => (
+                        <button
+                          key={len.label}
+                          onClick={() => setSelectedLength(len)}
+                          className={`px-4 py-2 rounded-full border text-sm transition-all ${
+                            selectedLength?.label === len.label
+                              ? 'bg-ink text-cream border-ink'
+                              : 'border-line text-body hover:border-ink bg-surface'
+                          }`}
+                        >
+                          {len.label}
+                          {len.priceDelta > 0 && ` (+₪${formatPrice(len.priceDelta)})`}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* Branding (מיתוג) — resolved from the global catalog */}
+                {productBrandingOptions.length > 0 && (
+                  <div>
+                    <label htmlFor="branding-select" className="block text-sm font-medium text-ink mb-2">מיתוג:</label>
+                    <select
+                      id="branding-select"
+                      value={selectedBrandingId}
+                      onChange={(e) => setSelectedBrandingId(e.target.value)}
+                      className="w-full bg-surface border border-line px-4 py-3 text-ink outline-none focus:border-ink transition-colors"
+                    >
+                      <option value="">— ללא מיתוג —</option>
+                      {productBrandingOptions.map(b => (
+                        <option key={b.id} value={b.id}>
+                          {b.label}{b.extraCost > 0 ? ` (+₪${formatPrice(b.extraCost)})` : ''}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                )}
+
                 <div className="flex items-center gap-4 bg-gray-50 p-4 rounded-2xl w-fit">
                   <span className="text-gray-500 font-medium">כמות:</span>
                   <div className="flex items-center gap-3">
                     <button
                       onClick={() => setProductQuantity(Math.max(1, productQuantity - 1))}
-                      className="w-10 h-10 rounded-full bg-white shadow-sm flex items-center justify-center text-gray-500 hover:text-[#ff9a9e] transition-colors"
+                      className="w-10 h-10 rounded-full bg-white shadow-sm flex items-center justify-center text-gray-500 hover:text-ink transition-colors"
                     >
                       <Minus size={20} />
                     </button>
@@ -730,7 +926,7 @@ export default function App() {
                     />
                     <button
                       onClick={() => setProductQuantity(productQuantity + 1)}
-                      className="w-10 h-10 rounded-full bg-white shadow-sm flex items-center justify-center text-gray-500 hover:text-[#ff9a9e] transition-colors"
+                      className="w-10 h-10 rounded-full bg-white shadow-sm flex items-center justify-center text-gray-500 hover:text-ink transition-colors"
                     >
                       <Plus size={20} />
                     </button>
@@ -739,17 +935,35 @@ export default function App() {
 
                 <button
                   onClick={() => {
-                    if (selectedProduct.variations && selectedProduct.variations.length > 0) {
-                      const unselected = selectedProduct.variations.filter(v => !selectedVariations[v.name]);
-                      if (unselected.length > 0) {
-                        alert(`נא לבחור: ${unselected.map(v => v.name).join(', ')}`);
-                        return;
-                      }
+                    const missing = (selectedProduct.variations ?? [])
+                      .filter(v => !selectedVariations[v.name])
+                      .map(v => v.name);
+                    if (selectedProduct.colorOptions?.length && !selectedColor) missing.push('צבע');
+                    if (selectedProduct.lengthOptions?.length && !selectedLength) missing.push('אורך');
+                    if (missing.length > 0) {
+                      alert(`נא לבחור: ${missing.join(', ')}`);
+                      return;
                     }
-                    addToCart(selectedProduct, productQuantity, Object.keys(selectedVariations).length > 0 ? selectedVariations : undefined);
+                    addToCart(
+                      selectedProduct,
+                      productQuantity,
+                      Object.keys(selectedVariations).length > 0 ? selectedVariations : undefined,
+                      {
+                        // Branding stays optional — "ללא מיתוג" is a valid purchase.
+                        ...(selectedColor && { selectedColor }),
+                        ...(selectedLength && { selectedLength }),
+                        ...(selectedBranding && {
+                          selectedBranding: {
+                            id: selectedBranding.id,
+                            label: selectedBranding.label,
+                            extraCost: selectedBranding.extraCost,
+                          },
+                        }),
+                      },
+                    );
                     setIsCartOpen(true);
                   }}
-                  className="w-full btn-primary text-xl py-5 shadow-xl flex items-center justify-center gap-3"
+                  className="w-full btn-primary text-xl py-5 flex items-center justify-center gap-3"
                 >
                   <ShoppingCart size={24} />
                   הוספה לסל הקניות
@@ -758,9 +972,9 @@ export default function App() {
             </div>
 
             {/* ── Customer Reviews ──────────────────────────────────────── */}
-            <div className="pastel-card p-8 space-y-8">
+            <div className="surface-card p-8 space-y-8">
               <h3 className="text-2xl font-bold flex items-center gap-2">
-                <Star size={24} className="text-[#ff9a9e]" fill="#ff9a9e" />
+                <Star size={24} className="text-ink" fill="#1A1A18" />
                 ביקורות לקוחות
                 {reviews.length > 0 && <span className="text-base font-normal text-gray-400">({reviews.length})</span>}
               </h3>
@@ -768,7 +982,7 @@ export default function App() {
               {/* Existing reviews */}
               {isLoadingReviews ? (
                 <div className="flex justify-center py-6">
-                  <Loader2 size={28} className="animate-spin text-[#ff9a9e]" />
+                  <Loader2 size={28} className="animate-spin text-ink" />
                 </div>
               ) : reviews.length === 0 ? (
                 <p className="text-gray-400 text-center py-4">היה הראשון לכתוב ביקורת 🌸</p>
@@ -807,7 +1021,7 @@ export default function App() {
                   <input
                     type="text"
                     placeholder="השם שלך"
-                    className="w-full p-3 rounded-xl border border-gray-200 focus:ring-2 focus:ring-[#ff9a9e] outline-none text-sm"
+                    className="w-full p-3 rounded-xl border border-gray-200 focus:ring-2 focus:ring-ink/20 outline-none text-sm"
                     value={reviewForm.customerName}
                     onChange={e => setReviewForm(prev => ({ ...prev, customerName: e.target.value }))}
                   />
@@ -828,7 +1042,7 @@ export default function App() {
                   <textarea
                     rows={3}
                     placeholder="ספר לנו על החוויה שלך..."
-                    className="w-full p-3 rounded-xl border border-gray-200 focus:ring-2 focus:ring-[#ff9a9e] outline-none resize-none text-sm"
+                    className="w-full p-3 rounded-xl border border-gray-200 focus:ring-2 focus:ring-ink/20 outline-none resize-none text-sm"
                     value={reviewForm.message}
                     onChange={e => setReviewForm(prev => ({ ...prev, message: e.target.value }))}
                   />
@@ -837,7 +1051,7 @@ export default function App() {
                 <div>
                   <label className="block text-sm text-gray-600 mb-2">📸 תמונה של המארז (אופציונלי)</label>
                   <div className="flex items-center gap-4">
-                    <label className="cursor-pointer flex items-center gap-2 px-4 py-2 rounded-xl border border-dashed border-[#ff9a9e] text-[#ff9a9e] text-sm hover:bg-[#ff9a9e]/5 transition-colors">
+                    <label className="cursor-pointer flex items-center gap-2 px-4 py-2 rounded-xl border border-dashed border-ink text-ink text-sm hover:bg-ink/5 transition-colors">
                       <Camera size={16} />
                       העלה תמונה
                       <input
@@ -886,7 +1100,7 @@ export default function App() {
               <ChevronRight size={20} /> חזרה לחנות
             </button>
             <h2 className="text-2xl font-bold">פרטי הזמנה</h2>
-            <div className="pastel-card p-8 space-y-6">
+            <div className="surface-card p-8 space-y-6">
               <div className="space-y-4">
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">שם מלא</label>
@@ -895,7 +1109,7 @@ export default function App() {
                     type="text"
                     placeholder="ישראל ישראלי"
                     aria-invalid={!!formErrors.name}
-                    className={`w-full p-3 rounded-xl border focus:ring-2 focus:ring-[#ff9a9e] focus:border-transparent outline-none ${formErrors.name ? 'border-red-400' : 'border-gray-200'}`}
+                    className={`w-full p-3 rounded-xl border focus:ring-2 focus:ring-ink/20 focus:border-transparent outline-none ${formErrors.name ? 'border-red-400' : 'border-gray-200'}`}
                     value={checkoutData.name}
                     onChange={e => {
                       setCheckoutData(prev => ({ ...prev, name: e.target.value }));
@@ -916,7 +1130,7 @@ export default function App() {
                     placeholder="0501234567"
                     maxLength={13}
                     aria-invalid={!!formErrors.phone}
-                    className={`w-full p-3 rounded-xl border focus:ring-2 focus:ring-[#ff9a9e] focus:border-transparent outline-none ${formErrors.phone ? 'border-red-400' : 'border-gray-200'}`}
+                    className={`w-full p-3 rounded-xl border focus:ring-2 focus:ring-ink/20 focus:border-transparent outline-none ${formErrors.phone ? 'border-red-400' : 'border-gray-200'}`}
                     value={checkoutData.phone}
                     onChange={e => {
                       // Strip everything except digits and a leading '+' (for +972…)
@@ -934,7 +1148,7 @@ export default function App() {
                   <label className="block text-sm font-medium text-gray-700 mb-1">אימייל (אופציונלי)</label>
                   <input
                     type="email"
-                    className="w-full p-3 rounded-xl border-gray-200 border focus:ring-2 focus:ring-[#ff9a9e] focus:border-transparent outline-none"
+                    className="w-full p-3 rounded-xl border-gray-200 border focus:ring-2 focus:ring-ink/20 focus:border-transparent outline-none"
                     value={checkoutData.email}
                     onChange={e => setCheckoutData(prev => ({ ...prev, email: e.target.value }))}
                   />
@@ -942,13 +1156,13 @@ export default function App() {
                 <div className="flex gap-4">
                   <button
                     onClick={() => setCheckoutData(prev => ({ ...prev, delivery: 'pickup' }))}
-                    className={`flex-1 p-3 rounded-xl border transition-all ${checkoutData.delivery === 'pickup' ? 'bg-[#a1c4fd] text-white border-[#a1c4fd]' : 'bg-white text-gray-500 border-gray-200'}`}
+                    className={`flex-1 p-3 rounded-xl border transition-all ${checkoutData.delivery === 'pickup' ? 'bg-ink text-white border-ink' : 'bg-white text-gray-500 border-gray-200'}`}
                   >
                     איסוף עצמי
                   </button>
                   <button
                     onClick={() => setCheckoutData(prev => ({ ...prev, delivery: 'delivery' }))}
-                    className={`flex-1 p-3 rounded-xl border transition-all ${checkoutData.delivery === 'delivery' ? 'bg-[#a1c4fd] text-white border-[#a1c4fd]' : 'bg-white text-gray-500 border-gray-200'}`}
+                    className={`flex-1 p-3 rounded-xl border transition-all ${checkoutData.delivery === 'delivery' ? 'bg-ink text-white border-ink' : 'bg-white text-gray-500 border-gray-200'}`}
                   >
                     משלוח עד הבית
                   </button>
@@ -959,7 +1173,7 @@ export default function App() {
                     <input
                       type="text"
                       placeholder="רחוב, מספר בית, עיר"
-                      className="w-full p-3 rounded-xl border-gray-200 border focus:ring-2 focus:ring-[#ff9a9e] focus:border-transparent outline-none"
+                      className="w-full p-3 rounded-xl border-gray-200 border focus:ring-2 focus:ring-ink/20 focus:border-transparent outline-none"
                       value={checkoutData.shippingAddress}
                       onChange={e => setCheckoutData(prev => ({ ...prev, shippingAddress: e.target.value }))}
                     />
@@ -968,7 +1182,7 @@ export default function App() {
               </div>
 
               {/* Dedication Section */}
-              <div className="border-t pt-4 space-y-3" style={{ background: 'linear-gradient(135deg,#fff5f8,#fff0f5)', borderRadius: 16, padding: 20, marginTop: 8 }}>
+              <div className="border-t pt-4 space-y-3" style={{ background: '#EDE9E3', borderRadius: 16, padding: 20, marginTop: 8 }}>
                 <h3 className="font-bold text-gray-800 flex items-center gap-2">
                   💌 ברכה אישית <span className="text-sm font-normal text-gray-400">(אופציונלי)</span>
                 </h3>
@@ -976,7 +1190,7 @@ export default function App() {
                 <textarea
                   placeholder="כתוב כאן את ההקדשה שלך..."
                   rows={3}
-                  className="w-full p-3 rounded-xl border border-gray-200 focus:ring-2 focus:ring-[#ff9a9e] focus:border-transparent outline-none resize-none text-sm"
+                  className="w-full p-3 rounded-xl border border-gray-200 focus:ring-2 focus:ring-ink/20 focus:border-transparent outline-none resize-none text-sm"
                   value={dedication.message}
                   onChange={e => setDedication(prev => ({ ...prev, message: e.target.value }))}
                 />
@@ -986,7 +1200,7 @@ export default function App() {
                   <button
                     type="button"
                     onClick={() => setDedication(prev => ({ ...prev, cardType: prev.cardType === 'printed' ? 'digital' : 'printed' }))}
-                    className={`w-full p-3 rounded-xl border text-sm font-medium transition-all ${dedication.cardType === 'printed' ? 'bg-[#ff9a9e] text-white border-[#ff9a9e] shadow-sm' : 'bg-white text-gray-500 border-gray-200 hover:border-[#ff9a9e]'}`}
+                    className={`w-full p-3 rounded-xl border text-sm font-medium transition-all ${dedication.cardType === 'printed' ? 'bg-ink text-white border-ink shadow-sm' : 'bg-white text-gray-500 border-gray-200 hover:border-ink'}`}
                   >
                     🖨️ כרטיס מודפס פרימיום<br/><span className="text-xs font-normal opacity-75">+₪{formatPrice(settings.printed_card_price || 15)}</span>
                   </button>
@@ -999,7 +1213,7 @@ export default function App() {
                 <textarea
                   placeholder="הערות מיוחדות להזמנה..."
                   rows={2}
-                  className="w-full p-3 rounded-xl border border-gray-200 focus:ring-2 focus:ring-[#ff9a9e] focus:border-transparent outline-none resize-none text-sm"
+                  className="w-full p-3 rounded-xl border border-gray-200 focus:ring-2 focus:ring-ink/20 focus:border-transparent outline-none resize-none text-sm"
                   value={customerNotes}
                   onChange={e => setCustomerNotes(e.target.value)}
                 />
@@ -1022,7 +1236,7 @@ export default function App() {
                     <input
                       type="text"
                       placeholder="הזן קוד קופון"
-                      className="flex-1 p-3 rounded-xl border border-gray-200 focus:ring-2 focus:ring-[#ff9a9e] focus:border-transparent outline-none uppercase"
+                      className="flex-1 p-3 rounded-xl border border-gray-200 focus:ring-2 focus:ring-ink/20 focus:border-transparent outline-none uppercase"
                       value={couponInput}
                       onChange={e => { setCouponInput(e.target.value); setCouponError(null); }}
                       onKeyDown={e => e.key === 'Enter' && handleApplyCoupon()}
@@ -1030,7 +1244,7 @@ export default function App() {
                     <button
                       onClick={handleApplyCoupon}
                       disabled={isValidatingCoupon || !couponInput.trim()}
-                      className="px-4 py-3 bg-[#a1c4fd] text-white rounded-xl font-medium disabled:opacity-50 hover:bg-[#7fb3fc] transition-colors"
+                      className="px-4 py-3 bg-ink text-white rounded-xl font-medium disabled:opacity-50 hover:bg-ink transition-colors"
                     >
                       {isValidatingCoupon ? <Loader2 size={18} className="animate-spin" /> : 'החל'}
                     </button>
@@ -1042,12 +1256,12 @@ export default function App() {
               <div className="border-t pt-6 space-y-2">
                 <div className="flex justify-between text-gray-500">
                   <span>סיכום מוצרים:</span>
-                  <span>₪{cartTotal}</span>
+                  <span>₪{formatPrice(cartTotal)}</span>
                 </div>
                 {appliedCoupon && (
                   <div className="flex justify-between text-green-600 font-medium">
                     <span>הנחת קופון ({appliedCoupon.code}):</span>
-                    <span>-₪{discountAmount}</span>
+                    <span>-₪{formatPrice(discountAmount)}</span>
                   </div>
                 )}
                 {checkoutData.delivery === 'delivery' && (
@@ -1088,14 +1302,14 @@ export default function App() {
               <ChevronRight size={20} /> חזרה לחנות
             </button>
             <div className="text-center space-y-2">
-              <h2 className="text-3xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-[#ff9a9e] to-[#a1c4fd]">✨ בנה את המארז שלך</h2>
+              <h2 className="text-3xl font-bold text-ink">✨ בנה את המארז שלך</h2>
               <p className="text-gray-500">בחר בסיס מארז ואחר כך הוסף מוצרים לפי בחירתך</p>
             </div>
 
             {/* Step 1: Select Box Base */}
-            <div className="pastel-card p-6 space-y-4">
+            <div className="surface-card p-6 space-y-4">
               <h3 className="text-lg font-bold text-gray-800 flex items-center gap-2">
-                <span className="w-7 h-7 rounded-full bg-[#ff9a9e] text-white text-sm flex items-center justify-center font-bold">1</span>
+                <span className="w-7 h-7 rounded-full bg-ink text-white text-sm flex items-center justify-center font-bold">1</span>
                 בחר סגנון מארז
               </h3>
               {(() => {
@@ -1109,7 +1323,7 @@ export default function App() {
                       <div
                         key={box.id}
                         onClick={() => setSelectedBoxBase(box)}
-                        className={`cursor-pointer rounded-2xl border-2 overflow-hidden transition-all ${selectedBoxBase?.id === box.id ? 'border-[#ff9a9e] shadow-lg scale-[1.02]' : 'border-gray-100 hover:border-[#ffd6e8]'}`}
+                        className={`cursor-pointer rounded-2xl border-2 overflow-hidden transition-all ${selectedBoxBase?.id === box.id ? 'border-ink shadow-lg scale-[1.02]' : 'border-gray-100 hover:border-line-strong'}`}
                       >
                         <div className="aspect-square bg-gray-50 relative">
                           {box.main_image ? (
@@ -1118,14 +1332,14 @@ export default function App() {
                             <div className="w-full h-full flex items-center justify-center"><Gift size={32} className="text-gray-200" /></div>
                           )}
                           {selectedBoxBase?.id === box.id && (
-                            <div className="absolute top-2 right-2 w-6 h-6 rounded-full bg-[#ff9a9e] flex items-center justify-center">
+                            <div className="absolute top-2 right-2 w-6 h-6 rounded-full bg-ink flex items-center justify-center">
                               <CheckCircle2 size={14} color="white" />
                             </div>
                           )}
                         </div>
                         <div className="p-3">
                           <p className="font-semibold text-sm">{box.name}</p>
-                          <p className="text-[#ff9a9e] font-bold text-sm">₪{formatPrice(box.price)}</p>
+                          <p className="text-ink font-bold text-sm">₪{formatPrice(box.price)}</p>
                         </div>
                       </div>
                     ))}
@@ -1136,16 +1350,16 @@ export default function App() {
 
             {/* Step 2: Add Items */}
             {selectedBoxBase && (
-              <div className="pastel-card p-6 space-y-4">
+              <div className="surface-card p-6 space-y-4">
                 <h3 className="text-lg font-bold text-gray-800 flex items-center gap-2">
-                  <span className="w-7 h-7 rounded-full bg-[#a1c4fd] text-white text-sm flex items-center justify-center font-bold">2</span>
+                  <span className="w-7 h-7 rounded-full bg-ink text-white text-sm flex items-center justify-center font-bold">2</span>
                   הוסף מוצרים למארז
                 </h3>
                 <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
                   {products.filter(p => !p.isBoxBase).map(product => {
                     const inBundle = bundleItems.find(bi => bi.product.id === product.id);
                     return (
-                      <div key={product.id} className={`rounded-2xl border-2 overflow-hidden transition-all ${inBundle ? 'border-[#a1c4fd] shadow-md' : 'border-gray-100'}`}>
+                      <div key={product.id} className={`rounded-2xl border-2 overflow-hidden transition-all ${inBundle ? 'border-ink shadow-md' : 'border-gray-100'}`}>
                         <div className="aspect-square bg-gray-50">
                           {product.main_image ? (
                             <img src={product.main_image} alt={product.name} className="w-full h-full object-cover" referrerPolicy="no-referrer" />
@@ -1155,7 +1369,7 @@ export default function App() {
                         </div>
                         <div className="p-3 space-y-2">
                           <p className="font-semibold text-sm leading-tight">{product.name}</p>
-                          <p className="text-[#ff9a9e] font-bold text-sm">₪{formatPrice(product.price)}</p>
+                          <p className="text-ink font-bold text-sm">₪{formatPrice(product.price)}</p>
                           {inBundle ? (
                             <div className="flex items-center justify-between">
                               <button onClick={() => updateBundleQty(product.id, -1)} className="w-7 h-7 rounded-full border flex items-center justify-center hover:bg-gray-100 text-gray-400"><Minus size={14} /></button>
@@ -1166,7 +1380,7 @@ export default function App() {
                           ) : (
                             <button
                               onClick={() => addBundleItem(product)}
-                              className="w-full text-xs py-1.5 rounded-lg border border-[#ff9a9e] text-[#ff9a9e] hover:bg-[#ff9a9e] hover:text-white transition-all flex items-center justify-center gap-1"
+                              className="w-full text-xs py-1.5 rounded-lg border border-ink text-ink hover:bg-ink hover:text-white transition-all flex items-center justify-center gap-1"
                             >
                               <Plus size={12} /> הוסף
                             </button>
@@ -1181,7 +1395,7 @@ export default function App() {
 
             {/* Summary & Add to Cart */}
             {selectedBoxBase && (
-              <div className="pastel-card p-6 space-y-4 sticky bottom-4">
+              <div className="surface-card p-6 space-y-4 sticky bottom-4">
                 <h3 className="text-lg font-bold text-gray-800">📦 סיכום המארז</h3>
                 <div className="space-y-2 text-sm">
                   <div className="flex justify-between text-gray-600">
@@ -1196,7 +1410,7 @@ export default function App() {
                   ))}
                   <div className="border-t pt-2 flex justify-between font-bold text-lg">
                     <span>סה"כ:</span>
-                    <span className="text-[#ff9a9e]">₪{formatPrice(bundleTotal)}</span>
+                    <span className="text-ink">₪{formatPrice(bundleTotal)}</span>
                   </div>
                 </div>
                 <button
@@ -1217,9 +1431,9 @@ export default function App() {
       </main>
 
       {/* Footer */}
-      <footer className="bg-white/60 border-t border-pink-100 mt-16 px-6 py-10">
-        <div className="max-w-6xl mx-auto">
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-8 mb-8">
+      <footer className="bg-surface border-t border-line mt-16 px-6 py-10">
+        <div className="max-w-[980px] mx-auto">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-8 mb-8">
             {/* Brand */}
             <div className="space-y-2">
               <div className="flex items-center">
@@ -1233,7 +1447,7 @@ export default function App() {
               <h4 className="font-bold text-gray-700 text-sm">ניווט מהיר</h4>
               <div className="flex flex-col gap-1.5">
                 {[['/', 'החנות']].map(([href, label]) => (
-                  <a key={href} href={href} className="text-sm text-gray-500 hover:text-[#ff9a9e] transition-colors">{label}</a>
+                  <a key={href} href={href} className="text-sm text-gray-500 hover:text-ink transition-colors">{label}</a>
                 ))}
               </div>
             </div>
@@ -1248,17 +1462,42 @@ export default function App() {
                   ['/privacy', 'מדיניות פרטיות'],
                   ['/shipping', 'משלוחים והחזרות'],
                 ].map(([href, label]) => (
-                  <a key={href} href={href} className="text-sm text-gray-500 hover:text-[#ff9a9e] transition-colors">{label}</a>
+                  <a key={href} href={href} className="text-sm text-gray-500 hover:text-ink transition-colors">{label}</a>
                 ))}
+              </div>
+            </div>
+
+            {/* Social */}
+            <div className="space-y-2">
+              <h4 className="font-bold text-gray-700 text-sm">עקבו אחרינו</h4>
+              <div className="flex items-center gap-3">
+                <a
+                  href={INSTAGRAM_URL}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  aria-label="Instagram"
+                  className="w-10 h-10 rounded-full border border-line flex items-center justify-center text-ink hover:bg-ink hover:text-cream transition-colors"
+                >
+                  <Instagram size={18} />
+                </a>
+                <a
+                  href={getWhatsAppLink()}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  aria-label="WhatsApp"
+                  className="w-10 h-10 rounded-full border border-line flex items-center justify-center text-ink hover:bg-ink hover:text-cream transition-colors"
+                >
+                  <WhatsAppIcon size={18} />
+                </a>
               </div>
             </div>
           </div>
 
-          <div className="border-t border-pink-100 pt-6 flex flex-wrap items-center justify-between gap-3 text-xs text-gray-400">
+          <div className="border-t border-line pt-6 flex flex-wrap items-center justify-between gap-3 text-xs text-gray-400">
             <span>© {new Date().getFullYear()} Tony — אמנות המיתוג. כל הזכויות שמורות.</span>
             <div className="flex gap-4 flex-wrap">
               {[['/accessibility','נגישות'],['/terms','תקנון'],['/privacy','פרטיות'],['/shipping','משלוחים']].map(([href, label]) => (
-                <a key={href} href={href} className="hover:text-[#ff9a9e] transition-colors">{label}</a>
+                <a key={href} href={href} className="hover:text-ink transition-colors">{label}</a>
               ))}
             </div>
           </div>
@@ -1294,7 +1533,7 @@ export default function App() {
               <div className="flex-grow overflow-y-auto p-6 space-y-2">
                 <button
                   onClick={() => { setSelectedCategory(null); setIsMenuOpen(false); navigateTo('user'); }}
-                  className={`w-full text-right px-6 py-4 rounded-2xl transition-all font-bold ${!selectedCategory ? 'bg-[#ff9a9e]/10 text-[#ff9a9e]' : 'hover:bg-gray-50 text-gray-600'}`}
+                  className={`w-full text-right px-6 py-4 rounded-2xl transition-all font-bold ${!selectedCategory ? 'bg-ink/5 text-ink' : 'hover:bg-gray-50 text-gray-600'}`}
                 >
                   הכל
                 </button>
@@ -1302,11 +1541,33 @@ export default function App() {
                   <button
                     key={cat.id}
                     onClick={() => { setSelectedCategory(cat.id); setIsMenuOpen(false); navigateTo('user'); }}
-                    className={`w-full text-right px-6 py-4 rounded-2xl transition-all font-bold ${selectedCategory === cat.id ? 'bg-[#ff9a9e]/10 text-[#ff9a9e]' : 'hover:bg-gray-50 text-gray-600'}`}
+                    className={`w-full text-right px-6 py-4 rounded-2xl transition-all font-bold ${selectedCategory === cat.id ? 'bg-ink/5 text-ink' : 'hover:bg-gray-50 text-gray-600'}`}
                   >
                     {cat.name}
                   </button>
                 ))}
+              </div>
+
+              {/* Socials live here too — the header hides them below sm */}
+              <div className="p-6 border-t border-line flex items-center gap-3">
+                <a
+                  href={INSTAGRAM_URL}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  aria-label="Instagram"
+                  className="w-10 h-10 rounded-full border border-line flex items-center justify-center text-ink hover:bg-ink hover:text-cream transition-colors"
+                >
+                  <Instagram size={18} />
+                </a>
+                <a
+                  href={getWhatsAppLink()}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  aria-label="WhatsApp"
+                  className="w-10 h-10 rounded-full border border-line flex items-center justify-center text-ink hover:bg-ink hover:text-cream transition-colors"
+                >
+                  <WhatsAppIcon size={18} />
+                </a>
               </div>
             </motion.div>
           </>
@@ -1349,22 +1610,22 @@ export default function App() {
                   </div>
                 ) : (
                   cart.map(item => (
-                    <div key={getCartKey(item.id, item.selectedVariations)} className="flex gap-4 items-center">
-                      <div className="w-20 h-20 rounded-2xl bg-gray-100 overflow-hidden flex-shrink-0">
-                        {item.main_image && <img src={item.main_image} className="w-full h-full object-cover" referrerPolicy="no-referrer" />}
+                    <div key={getCartKey(item)} className="flex gap-4 items-center">
+                      <div className="w-20 h-20 bg-cream overflow-hidden flex-shrink-0">
+                        {(item.selectedColor?.imageUrl || item.main_image) && (
+                          <img src={item.selectedColor?.imageUrl || item.main_image} className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+                        )}
                       </div>
                       <div className="flex-grow">
-                        <h4 className="font-bold">{item.name}</h4>
-                        {item.selectedVariations && Object.keys(item.selectedVariations).length > 0 && (
-                          <p className="text-xs text-gray-400 mt-0.5">
-                            {Object.entries(item.selectedVariations).map(([k, v]) => `${k}: ${v}`).join(' | ')}
-                          </p>
+                        <h4 className="font-medium text-ink">{item.name}</h4>
+                        {cartLineOptions(item) && (
+                          <p className="text-xs text-muted mt-0.5">{cartLineOptions(item)}</p>
                         )}
-                        <p className="text-[#ff9a9e] font-bold">₪{formatPrice(item.price)}</p>
+                        <p className="text-ink font-semibold">₪{formatPrice(unitPriceOf(item))}</p>
                         <div className="flex items-center gap-3 mt-2">
                           <button
-                            onClick={() => updateQuantity(item.id, -1, item.selectedVariations)}
-                            className="w-8 h-8 rounded-full border flex items-center justify-center hover:bg-gray-100 transition-colors text-gray-400"
+                            onClick={() => updateQuantity(item, -1)}
+                            className="w-8 h-8 rounded-full border border-line flex items-center justify-center hover:bg-cream transition-colors text-muted"
                           >
                             <Minus size={16} />
                           </button>
@@ -1372,18 +1633,18 @@ export default function App() {
                             type="number"
                             min="1"
                             value={item.quantity}
-                            onChange={(e) => updateQuantity(item.id, (parseInt(e.target.value) || 1) - item.quantity, item.selectedVariations)}
-                            className="w-12 text-center bg-transparent font-bold outline-none"
+                            onChange={(e) => updateQuantity(item, (parseInt(e.target.value) || 1) - item.quantity)}
+                            className="w-12 text-center bg-transparent font-semibold outline-none"
                           />
                           <button
-                            onClick={() => updateQuantity(item.id, 1, item.selectedVariations)}
-                            className="w-8 h-8 rounded-full border flex items-center justify-center hover:bg-gray-100 transition-colors text-gray-400"
+                            onClick={() => updateQuantity(item, 1)}
+                            className="w-8 h-8 rounded-full border border-line flex items-center justify-center hover:bg-cream transition-colors text-muted"
                           >
                             <Plus size={16} />
                           </button>
                         </div>
                       </div>
-                      <button onClick={() => removeFromCart(item.id, item.selectedVariations)} className="text-gray-300 hover:text-red-400 transition-colors">
+                      <button onClick={() => removeFromCart(item)} className="text-line-strong hover:text-red-500 transition-colors">
                         <Trash2 size={20} />
                       </button>
                     </div>
@@ -1392,10 +1653,10 @@ export default function App() {
               </div>
 
               {cart.length > 0 && (
-                <div className="p-6 border-t bg-gray-50 space-y-4">
-                  <div className="flex justify-between text-xl font-bold">
+                <div className="p-6 border-t border-line bg-cream space-y-4">
+                  <div className="flex justify-between text-xl font-semibold text-ink">
                     <span>סה"כ:</span>
-                    <span>₪{cartTotal}</span>
+                    <span>₪{formatPrice(cartTotal)}</span>
                   </div>
                   <button
                     onClick={() => { setIsCartOpen(false); navigateTo('checkout'); }}
@@ -1442,7 +1703,7 @@ export default function App() {
                 style={{ background: 'linear-gradient(135deg,#25D366,#128C7E)', boxShadow: '0 4px 20px rgba(37,211,102,0.4)' }}
                 className="w-14 h-14 rounded-full flex items-center justify-center text-white hover:scale-110 transition-transform"
               >
-                <MessageCircle size={28} fill="white" />
+                <WhatsAppIcon size={28} />
               </a>
               <button
                 onClick={() => setWaVisible(false)}

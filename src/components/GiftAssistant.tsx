@@ -110,7 +110,7 @@ export default function GiftAssistant({ onNavigateToProduct }: GiftAssistantProp
               width: 58,
               height: 58,
               borderRadius: '50%',
-              background: 'linear-gradient(135deg,#ff9a9e,#fecfef)',
+              background: '#1A1A18',
               border: 'none',
               cursor: 'pointer',
               display: 'flex',
@@ -143,18 +143,18 @@ export default function GiftAssistant({ onNavigateToProduct }: GiftAssistantProp
               zIndex: 300,
               width: 'min(380px, calc(100vw - 32px))',
               height: 'min(560px, calc(100dvh - 120px))',
-              background: '#FFFCFD',
+              background: '#FFFFFF',
               borderRadius: 24,
               boxShadow: '0 20px 60px rgba(0,0,0,0.15)',
               display: 'flex',
               flexDirection: 'column',
               overflow: 'hidden',
-              border: '1px solid #fecfef',
+              border: '1px solid #E7D7C9',
             }}
           >
             {/* Header */}
             <div style={{
-              background: 'linear-gradient(135deg,#ff9a9e,#fecfef)',
+              background: '#1A1A18',
               padding: '14px 18px',
               display: 'flex',
               alignItems: 'center',
@@ -189,11 +189,11 @@ export default function GiftAssistant({ onNavigateToProduct }: GiftAssistantProp
                     maxWidth: '85%',
                     padding: '10px 14px',
                     borderRadius: msg.role === 'user' ? '18px 18px 18px 4px' : '18px 18px 4px 18px',
-                    background: msg.role === 'user' ? 'white' : 'linear-gradient(135deg,#fff0f5,#fff5f8)',
-                    border: msg.role === 'user' ? '1px solid #f0e6ea' : '1px solid #fecfef',
+                    background: msg.role === 'user' ? 'white' : '#EDE9E3',
+                    border: msg.role === 'user' ? '1px solid #f0e6ea' : '1px solid #E7D7C9',
                     fontSize: 13.5,
                     lineHeight: 1.6,
-                    color: '#3a3a3a',
+                    color: '#1A1A18',
                     whiteSpace: 'pre-wrap',
                     direction: 'rtl',
                     textAlign: 'right',
@@ -212,7 +212,7 @@ export default function GiftAssistant({ onNavigateToProduct }: GiftAssistantProp
                             flexShrink: 0,
                             width: 110,
                             background: 'white',
-                            border: '1px solid #fecfef',
+                            border: '1px solid #E7D7C9',
                             borderRadius: 14,
                             overflow: 'hidden',
                             cursor: 'pointer',
@@ -230,15 +230,15 @@ export default function GiftAssistant({ onNavigateToProduct }: GiftAssistantProp
                             (e.currentTarget as HTMLButtonElement).style.boxShadow = '0 2px 8px rgba(255,154,158,0.1)';
                           }}
                         >
-                          <div style={{ width: '100%', height: 80, background: '#FFF5F7', overflow: 'hidden' }}>
+                          <div style={{ width: '100%', height: 80, background: '#EDE9E3', overflow: 'hidden' }}>
                             {p.main_image
                               ? <img src={p.main_image} alt={p.name} style={{ width: '100%', height: '100%', objectFit: 'cover' }} referrerPolicy="no-referrer" />
                               : <div style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 24 }}>🎁</div>
                             }
                           </div>
                           <div style={{ padding: '6px 8px' }}>
-                            <p style={{ margin: 0, fontSize: 11, fontWeight: 600, color: '#3a3a3a', lineHeight: 1.3, direction: 'rtl' }}>{p.name}</p>
-                            <p style={{ margin: '2px 0 0', fontSize: 12, color: '#ff9a9e', fontWeight: 700 }}>₪{p.price}</p>
+                            <p style={{ margin: 0, fontSize: 11, fontWeight: 600, color: '#1A1A18', lineHeight: 1.3, direction: 'rtl' }}>{p.name}</p>
+                            <p style={{ margin: '2px 0 0', fontSize: 12, color: '#1A1A18', fontWeight: 700 }}>₪{p.price}</p>
                           </div>
                         </button>
                       ))}
@@ -252,8 +252,8 @@ export default function GiftAssistant({ onNavigateToProduct }: GiftAssistantProp
                 <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
                   <div style={{
                     padding: '10px 16px',
-                    background: 'linear-gradient(135deg,#fff0f5,#fff5f8)',
-                    border: '1px solid #fecfef',
+                    background: '#EDE9E3',
+                    border: '1px solid #E7D7C9',
                     borderRadius: '18px 18px 4px 18px',
                     display: 'flex',
                     alignItems: 'center',
@@ -272,7 +272,7 @@ export default function GiftAssistant({ onNavigateToProduct }: GiftAssistantProp
             {/* Input */}
             <div style={{
               padding: '8px 14px 12px',
-              borderTop: '1px solid #fce4ec',
+              borderTop: '1px solid #E2E2E2',
               background: 'white',
               flexShrink: 0,
             }}>
@@ -296,17 +296,17 @@ export default function GiftAssistant({ onNavigateToProduct }: GiftAssistantProp
                 disabled={loading}
                 style={{
                   flex: 1,
-                  border: '1.5px solid #fce4ec',
+                  border: '1.5px solid #E2E2E2',
                   borderRadius: 999,
                   padding: '10px 16px',
                   fontSize: 13,
                   outline: 'none',
                   background: '#fff5f7',
-                  color: '#3a3a3a',
+                  color: '#1A1A18',
                   direction: 'rtl',
                 }}
-                onFocus={e => (e.target.style.borderColor = '#ff9a9e')}
-                onBlur={e => (e.target.style.borderColor = '#fce4ec')}
+                onFocus={e => (e.target.style.borderColor = '#1A1A18')}
+                onBlur={e => (e.target.style.borderColor = '#E2E2E2')}
               />
               <button
                 onClick={handleSend}
@@ -315,7 +315,7 @@ export default function GiftAssistant({ onNavigateToProduct }: GiftAssistantProp
                   width: 40,
                   height: 40,
                   borderRadius: '50%',
-                  background: loading || !input.trim() ? '#fce4ec' : 'linear-gradient(135deg,#ff9a9e,#fecfef)',
+                  background: loading || !input.trim() ? '#E2E2E2' : '#1A1A18',
                   border: 'none',
                   cursor: loading || !input.trim() ? 'default' : 'pointer',
                   display: 'flex',
