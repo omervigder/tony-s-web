@@ -73,6 +73,12 @@ service cloud.firestore {
       allow write: if isAdmin();
     }
 
+    // ── Homepage banners & arrival popup — guests must see them ───────────
+    match /site_banners/{id} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
     // ── Store settings & content — guests need delivery cost, address ─────
     match /settings/{id} {
       allow read: if true;
