@@ -8,3 +8,6 @@ coverage/
 .env.local
 nul
 serviceAccount.json
+
+# Firebase deploy state — rewritten on every deploy, per-machine, never merged.
+.firebase/
