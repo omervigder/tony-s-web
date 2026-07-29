@@ -34,6 +34,9 @@ export interface SelectedOptions {
   selectedColor?: ProductColorOption;
   selectedLength?: { label: string; priceDelta: number };
   selectedBranding?: { id: string; label: string; extraCost: number };
+  /** The name/text the customer wants printed on a branded item. Only ever set
+   *  alongside `selectedBranding`; free text, so it also keys the cart line. */
+  brandingText?: string;
 }
 
 /** A price reduction on a product. `value` is a percentage (1–99) or a ₪ amount. */
@@ -61,6 +64,8 @@ export interface Product {
   colorOptions?: ProductColorOption[];
   lengthOptions?: ProductLengthOption[];
   brandingOptionIds?: string[];
+  /** Show the customer a free-text box for the name to print on this product. */
+  allowBrandingName?: boolean;
   isBoxBase?: boolean;
   created_at?: Date;
 }
