@@ -85,6 +85,11 @@ async function upsertCustomer(order) {
   }
 }
 
+/** Neutralise the legacy-Markdown control characters Telegram parses. */
+function escapeMarkdown(text) {
+  return String(text).replace(/([_*[\]`])/g, "\\$1");
+}
+
 // ── Shared: build and send order notification to Telegram ─────────────────────
 async function sendOrderToTelegram(orderId, order, pickupAddress, BOT_TOKEN, CHAT_ID, totalOrders = 1) {
   const items = Array.isArray(order.items) ? order.items : [];
@@ -108,6 +113,9 @@ async function sendOrderToTelegram(orderId, order, pickupAddress, BOT_TOKEN, CHA
       if (i.selectedBranding) {
         line += `\n  ✨ מיתוג: ${i.selectedBranding.label} (+₪${Number(i.selectedBranding.extraCost || 0).toFixed(2)})`;
       }
+      // Customer-typed, so escape it — an unbalanced * or _ makes Telegram reject
+      // the whole message with a parse error and the notification is lost.
+      if (i.brandingText) line += `\n  ✍️ שם למיתוג: ${escapeMarkdown(i.brandingText)}`;
       return line;
     })
     .join("\n");

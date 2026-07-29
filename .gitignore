@@ -8,3 +8,10 @@ coverage/
 .env.local
 nul
 serviceAccount.json
+
+# Firebase deploy state — rewritten on every deploy, per-machine, never merged.
+.firebase/
+
+# Per-machine Claude Code permission state. Shared config (.claude/settings.json,
+# .claude/skills/) stays tracked.
+.claude/settings.local.json

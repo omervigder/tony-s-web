@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import AccessibilityWidget from './components/AccessibilityWidget';
 import GiftAssistant from './components/GiftAssistant';
 import CheckoutSuccess from './components/CheckoutSuccess';
-import { ShoppingCart, Package, Plus, Minus, Trash2, Camera, ChevronRight, CheckCircle2, X, Menu, Loader2, ChevronDown, Copy, Star, MessageCircle, Gift, Box, Check, Instagram } from 'lucide-react';
+import { ShoppingCart, Package, Plus, Minus, Trash2, Camera, ChevronRight, CheckCircle2, X, Menu, Loader2, ChevronDown, Copy, Star, MessageCircle, Gift, Check, Instagram } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Product, Category, Settings, CartItem, Coupon, SiteContent, Review, BrandingOption, SelectedOptions, ProductColorOption, ProductLengthOption, SiteBanner } from './types';
 import { effectivePrice } from './lib/pricing';
@@ -83,6 +83,7 @@ export default function App() {
   const [selectedColor, setSelectedColor] = useState<ProductColorOption | null>(null);
   const [selectedLength, setSelectedLength] = useState<ProductLengthOption | null>(null);
   const [selectedBrandingId, setSelectedBrandingId] = useState<string>('');
+  const [brandingText, setBrandingText] = useState<string>('');
   const [dedication, setDedication] = useState<{ message: string; cardType: 'digital' | 'printed' }>({ message: '', cardType: 'digital' });
   const [customerNotes, setCustomerNotes] = useState('');
 
@@ -300,6 +301,7 @@ export default function App() {
     setSelectedColor(null);
     setSelectedLength(null);
     setSelectedBrandingId('');
+    setBrandingText('');
     setReviews([]);
     setReviewForm({ rating: 5, message: '', customerName: '', photoFile: null, photoPreview: '' });
     navigateTo('product', id);
@@ -409,13 +411,15 @@ export default function App() {
   };
 
   /** Identity of a cart line: same product with different options is a different line. */
-  type CartLine = Pick<CartItem, 'id' | 'selectedVariations' | 'selectedColor' | 'selectedLength' | 'selectedBranding'>;
+  type CartLine = Pick<CartItem, 'id' | 'selectedVariations' | 'selectedColor' | 'selectedLength' | 'selectedBranding' | 'brandingText'>;
   const getCartKey = (item: CartLine) =>
     `${item.id}|${JSON.stringify({
       v: item.selectedVariations ?? null,
       c: item.selectedColor?.name ?? null,
       l: item.selectedLength?.label ?? null,
       b: item.selectedBranding?.id ?? null,
+      // Two of the same box branded with different names are two different lines.
+      bt: item.brandingText ?? null,
     })}`;
 
   /** Price of one unit, including length and branding surcharges.
@@ -464,6 +468,7 @@ export default function App() {
     item.selectedColor && `צבע: ${item.selectedColor.name}`,
     item.selectedLength && `אורך: ${item.selectedLength.label}`,
     item.selectedBranding && `מיתוג: ${item.selectedBranding.label}`,
+    item.brandingText && `שם למיתוג: ${item.brandingText}`,
   ].filter(Boolean).join(' | ');
 
   const cartTotal = cart.reduce((sum, item) => sum + (unitPriceOf(item) * item.quantity), 0);
@@ -481,6 +486,11 @@ export default function App() {
     ? brandingOptions.filter(b => (selectedProduct.brandingOptionIds ?? []).includes(b.id))
     : [];
   const selectedBranding = productBrandingOptions.find(b => b.id === selectedBrandingId) ?? null;
+  /** Admin opts a product into the printed-name box. When the product also offers
+   *  priced branding options, asking for a name before one is picked is noise —
+   *  "ללא מיתוג" means nothing gets printed. */
+  const showBrandingNameField = !!selectedProduct?.allowBrandingName
+    && (productBrandingOptions.length === 0 || !!selectedBranding);
   const productSurcharge = (selectedLength?.priceDelta ?? 0) + (selectedBranding?.extraCost ?? 0);
   const productPricing = selectedProduct
     ? effectivePrice(selectedProduct)
@@ -549,6 +559,7 @@ export default function App() {
       ...(i.selectedColor && { selectedColor: { name: i.selectedColor.name, hex: i.selectedColor.hex } }),
       ...(i.selectedLength && { selectedLength: i.selectedLength }),
       ...(i.selectedBranding && { selectedBranding: i.selectedBranding }),
+      ...(i.brandingText && { brandingText: i.brandingText }),
       };
     });
     const dedicationData = dedication.message.trim()
@@ -700,8 +711,8 @@ export default function App() {
         </div>
       )}
 
-      {/* Header — 3-column grid so the logo stays optically centered regardless of
-          how wide the side clusters get (flex justify-between would not). */}
+      {/* Header — 3-column grid so the centre slot stays optically centered regardless
+          of how wide the side clusters get (flex justify-between would not). */}
       <header className="bg-surface/85 backdrop-blur-md sticky top-0 z-50 border-b border-line">
         <div className="max-w-[980px] mx-auto px-4 md:px-6 h-16 md:h-20 grid grid-cols-3 items-center">
           <div className="flex items-center gap-1 justify-self-start">
@@ -732,8 +743,14 @@ export default function App() {
             </a>
           </div>
 
-          <button onClick={() => navigateTo('user')} aria-label="Tony — לדף הבית" className="justify-self-center">
-            <img src="/logo.jpeg" alt="Tony Amrami" className="h-10 md:h-12 object-contain" style={{ mixBlendMode: 'multiply' }} />
+          {/* The wordmark now lives large in the hero, so the header keeps only an
+              unobtrusive home link in the centre slot. */}
+          <button
+            onClick={() => navigateTo('user')}
+            aria-label="Tony — לדף הבית"
+            className="justify-self-center text-ink text-sm tracking-[0.3em] uppercase hover:opacity-60 transition-opacity"
+          >
+            Tony
           </button>
 
           <div className="justify-self-end">
@@ -763,28 +780,18 @@ export default function App() {
 
         {view === 'user' && (
           <div className="space-y-12">
-            {/* Hero Section */}
-            <div className="text-center py-10 space-y-4">
-              {isContentLoading ? (
-                <div className="space-y-3 flex flex-col items-center">
-                  <div className="h-10 w-80 bg-gradient-to-r from-gray-100 to-gray-200 rounded-2xl animate-pulse" />
-                  <div className="h-5 w-96 bg-gradient-to-r from-gray-100 to-gray-200 rounded-xl animate-pulse" />
-                  <div className="h-5 w-72 bg-gradient-to-r from-gray-100 to-gray-200 rounded-xl animate-pulse" />
-                </div>
-              ) : (
-                <>
-                  {siteContent.heroTitle && (
-                    <h2 className="text-4xl md:text-5xl text-ink leading-tight">
-                      {siteContent.heroTitle}
-                    </h2>
-                  )}
-                  {siteContent.heroSubtitle && (
-                    <p className="text-muted text-lg max-w-xl mx-auto leading-relaxed">
-                      {siteContent.heroSubtitle}
-                    </p>
-                  )}
-                </>
-              )}
+            {/* Hero Section — the wordmark itself is the headline. /logo.png is
+                background-free, so it needs no mixBlendMode and sits on cream. */}
+            <div className="text-center py-10">
+              <h1 className="sr-only">{siteContent.heroTitle || 'Tony Amrami'}</h1>
+              <img
+                src="/logo.png"
+                alt="Tony Amrami"
+                width={2100}
+                height={1014}
+                fetchPriority="high"
+                className="w-full max-w-2xl mx-auto h-auto"
+              />
             </div>
 
             {/* Admin-uploaded promo banners */}
@@ -812,25 +819,6 @@ export default function App() {
                 })}
               </div>
             )}
-
-            {/* Build-A-Box Banner */}
-            <div
-              onClick={() => { setSelectedBoxBase(null); setBundleItems([]); navigateTo('build-box'); window.scrollTo(0,0); }}
-              className="cursor-pointer overflow-hidden bg-sand border border-line hover:border-line-strong transition-colors"
-            >
-              <div className="p-6 flex items-center gap-6">
-                <div className="w-16 h-16 flex items-center justify-center flex-shrink-0 bg-ink">
-                  <Gift size={32} className="text-cream" />
-                </div>
-                <div className="flex-grow">
-                  <h3 className="text-xl text-ink">✨ בנה את המארז שלך</h3>
-                  <p className="text-muted text-sm mt-1">בחר בסיס מארז, הוסף מוצרים ויצור חוויה מותאמת אישית</p>
-                </div>
-                <div className="btn-primary px-5 py-2 flex items-center gap-2 flex-shrink-0">
-                  <Box size={16} /> בנה עכשיו
-                </div>
-              </div>
-            </div>
 
             {/* Collections Title */}
             <div className="flex items-center gap-4">
@@ -893,11 +881,14 @@ export default function App() {
             </button>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-12">
               <div className="space-y-4">
-                <div className="aspect-square rounded-3xl overflow-hidden bg-gray-100 shadow-inner">
+                {/* No forced aspect ratio here: whatever the admin uploaded is shown
+                    whole. `object-contain` + a max height keeps a very tall photo from
+                    running off the screen without ever cropping it. */}
+                <div className="rounded-3xl overflow-hidden bg-cream shadow-inner flex items-center justify-center min-h-[280px]">
                   <img
                     src={selectedProduct.images?.[selectedImageIndex] || selectedProduct.main_image}
                     alt={selectedProduct.name}
-                    className="w-full h-full object-cover"
+                    className="w-full max-h-[620px] object-contain"
                     referrerPolicy="no-referrer"
                   />
                 </div>
@@ -906,10 +897,11 @@ export default function App() {
                     {selectedProduct.images.map((img, idx) => (
                       <div
                         key={idx}
-                        className={`aspect-square rounded-xl overflow-hidden cursor-pointer border-2 transition-all ${selectedImageIndex === idx ? 'border-ink' : 'border-transparent'}`}
+                        className={`aspect-square rounded-xl overflow-hidden cursor-pointer bg-cream border-2 transition-all ${selectedImageIndex === idx ? 'border-ink' : 'border-transparent'}`}
                         onClick={() => setSelectedImageIndex(idx)}
                       >
-                        <img src={img} className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+                        {/* Contain too, so the thumbnail previews the same framing as the main image. */}
+                        <img src={img} className="w-full h-full object-contain" referrerPolicy="no-referrer" />
                       </div>
                     ))}
                   </div>
@@ -1014,23 +1006,55 @@ export default function App() {
                   </div>
                 )}
 
-                {/* Branding (מיתוג) — resolved from the global catalog */}
-                {productBrandingOptions.length > 0 && (
+                {/* Branding (מיתוג) — catalog picker and/or the printed-name box.
+                    Either half can appear without the other. */}
+                {(productBrandingOptions.length > 0 || showBrandingNameField) && (
                   <div>
-                    <label htmlFor="branding-select" className="block text-sm font-medium text-ink mb-2">מיתוג:</label>
-                    <select
-                      id="branding-select"
-                      value={selectedBrandingId}
-                      onChange={(e) => setSelectedBrandingId(e.target.value)}
-                      className="w-full bg-surface border border-line px-4 py-3 text-ink outline-none focus:border-ink transition-colors"
-                    >
-                      <option value="">— ללא מיתוג —</option>
-                      {productBrandingOptions.map(b => (
-                        <option key={b.id} value={b.id}>
-                          {b.label}{b.extraCost > 0 ? ` (+₪${formatPrice(b.extraCost)})` : ''}
-                        </option>
-                      ))}
-                    </select>
+                    {productBrandingOptions.length > 0 && (
+                      <>
+                        <label htmlFor="branding-select" className="block text-sm font-medium text-ink mb-2">מיתוג:</label>
+                        <select
+                          id="branding-select"
+                          value={selectedBrandingId}
+                          onChange={(e) => {
+                            setSelectedBrandingId(e.target.value);
+                            // Dropping back to "ללא מיתוג" must not leave an orphan name.
+                            if (!e.target.value) setBrandingText('');
+                          }}
+                          className="w-full bg-surface border border-line px-4 py-3 text-ink outline-none focus:border-ink transition-colors"
+                        >
+                          <option value="">— ללא מיתוג —</option>
+                          {productBrandingOptions.map(b => (
+                            <option key={b.id} value={b.id}>
+                              {b.label}{b.extraCost > 0 ? ` (+₪${formatPrice(b.extraCost)})` : ''}
+                            </option>
+                          ))}
+                        </select>
+                      </>
+                    )}
+
+                    {/* Admin opt-in per product. Gated on an actual branding choice
+                        only when the product offers any — a product with none is
+                        branded by definition, so the name applies immediately. */}
+                    {showBrandingNameField && (
+                      <div className="mt-3">
+                        <label htmlFor="branding-text" className="block text-sm font-medium text-ink mb-2">
+                          השם למיתוג <span className="text-muted font-normal">(אופציונלי)</span>
+                        </label>
+                        <input
+                          id="branding-text"
+                          type="text"
+                          maxLength={40}
+                          value={brandingText}
+                          onChange={(e) => setBrandingText(e.target.value)}
+                          placeholder="למשל: משפחת כהן"
+                          className="w-full bg-surface border border-line px-4 py-3 text-ink outline-none focus:border-ink transition-colors"
+                        />
+                        <p className="text-muted text-xs mt-1">
+                          נדפיס בדיוק כפי שיוקלד. אפשר להשאיר ריק ונתאם איתך בהמשך.
+                        </p>
+                      </div>
+                    )}
                   </div>
                 )}
 
@@ -1084,6 +1108,11 @@ export default function App() {
                             label: selectedBranding.label,
                             extraCost: selectedBranding.extraCost,
                           },
+                        }),
+                        // Independent of selectedBranding: a product can take a
+                        // printed name without offering any priced branding option.
+                        ...(showBrandingNameField && brandingText.trim() && {
+                          brandingText: brandingText.trim(),
                         }),
                       },
                     );
