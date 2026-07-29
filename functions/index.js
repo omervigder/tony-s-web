@@ -85,6 +85,42 @@ async function upsertCustomer(order) {
   }
 }
 
+// ── Helper: count a coupon redemption ────────────────────────────────────────
+// Runs when an order is actually paid, not when it is created — an abandoned
+// checkout must not burn a limited code. `coupon_counted` on the order makes it
+// idempotent, so the retries and re-triggers Firestore functions are subject to
+// can never double-count. A guest cannot write to `coupons`, so this (Admin SDK,
+// rules bypassed) is the only place `usageCount` ever moves.
+async function recordCouponUsage(orderId, order) {
+  const code = order.coupon_code;
+  if (!code || order.coupon_counted === true) return;
+
+  const orderRef = db.collection("orders").doc(orderId);
+
+  // Coupons created by the admin panel use the code as their document id; ones
+  // created before that convention have a random id, hence the query fallback.
+  let couponRef = db.collection("coupons").doc(order.coupon_id || code);
+  const direct = await couponRef.get();
+  if (!direct.exists) {
+    const found = await db.collection("coupons").where("code", "==", code).limit(1).get();
+    if (found.empty) {
+      logger.warn(`recordCouponUsage: coupon ${code} not found for order ${orderId}`);
+      // Flag it anyway so a deleted coupon does not make every later trigger retry.
+      await orderRef.update({ coupon_counted: true });
+      return;
+    }
+    couponRef = found.docs[0].ref;
+  }
+
+  await db.runTransaction(async (tx) => {
+    const fresh = await tx.get(orderRef);
+    if (!fresh.exists || fresh.data().coupon_counted === true) return;
+    tx.update(couponRef, { usageCount: FieldValue.increment(1) });
+    tx.update(orderRef, { coupon_counted: true });
+  });
+  logger.info(`recordCouponUsage: counted ${code} for order ${orderId}`);
+}
+
 /** Neutralise the legacy-Markdown control characters Telegram parses. */
 function escapeMarkdown(text) {
   return String(text).replace(/([_*[\]`])/g, "\\$1");
@@ -103,7 +139,9 @@ async function sendOrderToTelegram(orderId, order, pickupAddress, BOT_TOKEN, CHA
   const itemsList = items
     .map(i => {
       // i.price is the unit price actually charged (base + length/branding surcharges).
-      let line = `• ${i.name} x${i.quantity} — ₪${(i.price * i.quantity).toFixed(2)}`;
+      let line = i.isGift
+        ? `🎁 ${i.name} x${i.quantity} — מתנה`
+        : `• ${i.name} x${i.quantity} — ₪${(i.price * i.quantity).toFixed(2)}`;
       if (i.selectedVariations && Object.keys(i.selectedVariations).length > 0) {
         const vars = Object.entries(i.selectedVariations).map(([k, v]) => `${k}: ${v}`).join(", ");
         line += `\n  🎨 ${vars}`;
@@ -119,6 +157,20 @@ async function sendOrderToTelegram(orderId, order, pickupAddress, BOT_TOKEN, CHA
       return line;
     })
     .join("\n");
+
+  // How the total was reached. Written by checkout, not recomputed here — the
+  // notification must show what the customer was actually charged.
+  const money = (v) => Number(v || 0).toFixed(2);
+  const breakdown = [
+    order.subtotal != null ? `🧾 סכום מוצרים: ₪${money(order.subtotal)}` : "",
+    order.coupon_code ? `🏷️ קופון ${order.coupon_code}: −₪${money(order.discount_amount)}` : "",
+    order.delivery_method === "delivery"
+      ? (order.free_shipping ? "🚚 משלוח: חינם" : (order.shipping_cost != null ? `🚚 משלוח: ₪${money(order.shipping_cost)}` : ""))
+      : "",
+    order.card_cost ? `🃏 כרטיס ברכה: ₪${money(order.card_cost)}` : "",
+    order.gift_item?.name ? `🎁 מתנה: ${escapeMarkdown(order.gift_item.name)}` : "",
+  ].filter(Boolean).join("\n");
+  const breakdownBlock = breakdown ? `\n\n${breakdown}` : "";
 
   const dedicationLine = order.dedication?.message
     ? `\n\n💌 *הקדשה:* ${order.dedication.message}\n🃏 *סוג כרטיס:* ${order.dedication.cardType === "printed" ? "מודפס" : "דיגיטלי"}`
@@ -141,7 +193,7 @@ async function sendOrderToTelegram(orderId, order, pickupAddress, BOT_TOKEN, CHA
 ${deliveryLine}
 
 🛒 *פריטים:*
-${itemsList}
+${itemsList}${breakdownBlock}
 
 💰 *סה"כ לתשלום: ₪${Number(order.total_price).toFixed(2)}*
 ${paymentLine}${dedicationLine}${notesLine}
@@ -204,6 +256,14 @@ exports.onOrderCreated = onDocumentCreated(
       logger.warn(`Could not upsert customer for order ${orderId}:`, err);
     }
 
+    // Only reached by orders that are live on creation (the pending_payment path
+    // returned above and is counted by onOrderPaid instead).
+    try {
+      await recordCouponUsage(orderId, order);
+    } catch (err) {
+      logger.warn(`Could not record coupon usage for order ${orderId}:`, err);
+    }
+
     try {
       await sendOrderToTelegram(orderId, order, pickupAddress, BOT_TOKEN, CHAT_ID, totalOrders);
       logger.info(`Telegram notification sent for order ${orderId}`);
@@ -250,6 +310,12 @@ exports.onOrderPaid = onDocumentUpdated(
       totalOrders = await upsertCustomer(after);
     } catch (e) {
       logger.warn(`onOrderPaid: upsertCustomer failed for ${orderId}:`, e);
+    }
+
+    try {
+      await recordCouponUsage(orderId, after);
+    } catch (e) {
+      logger.warn(`onOrderPaid: recordCouponUsage failed for ${orderId}:`, e);
     }
 
     try {
