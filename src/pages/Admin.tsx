@@ -16,18 +16,20 @@ import {
   ShoppingBag, BarChart3, Package, Settings as SettingsIcon,
   Menu, X, Plus, Trash2, Pencil, Camera, Loader2,
   MessageCircle, DollarSign, CheckCircle2, Download, ChevronDown, ChevronUp, Users, Sparkles,
-  Archive, ArchiveRestore, Image as ImageIcon, Tag
+  Archive, ArchiveRestore, Image as ImageIcon, Tag, Copy, Gift, Truck
 } from 'lucide-react';
 
 /* ─────────────────────────────── Types ─────────────────────────────── */
 // Product/OrderItem/Category and the option types are shared with the storefront —
 // keeping private copies here is what let the two drift apart in the first place.
 import type {
-  OrderItem, Product, Category, BrandingOption,
+  OrderItem, Product, Category, BrandingOption, Coupon,
   ProductColorOption, ProductLengthOption, ProductDiscount, SiteBanner,
+  Settings as StoreSettings,
 } from '../types';
 import { COLOR_PALETTE } from '../constants/colors';
 import { effectivePrice } from '../lib/pricing';
+import { money, validateCoupon } from '../lib/cart';
 
 interface Order {
   id: string; customer_name: string; customer_phone: string;
@@ -36,13 +38,12 @@ interface Order {
   adminNote?: string;
   isArchived?: boolean;
 }
-interface StoreSettings { pickup_address: string; delivery_cost: string; bit_phone: string; }
 interface Customer {
   id: string; name: string; phone: string; email?: string;
   totalOrders: number; totalSpend: number;
   firstOrderDate: string; lastOrderDate: string;
 }
-type TabName = 'orders' | 'analytics' | 'products' | 'branding' | 'design' | 'customers' | 'settings';
+type TabName = 'orders' | 'analytics' | 'products' | 'branding' | 'coupons' | 'design' | 'customers' | 'settings';
 
 /* ─────────────────────────────── Constants ──────────────────────────── */
 const INK = '#1A1A18';
@@ -1477,45 +1478,145 @@ function CustomersView({ customers }: { customers: Customer[] }) {
 }
 
 /* ─────────────────────────────── SettingsView ───────────────────────── */
-function SettingsView({ settings: init }: { settings: StoreSettings }) {
-  const [s, setS] = useState(init);
+// Declared at module scope, not inside SettingsView: a component defined during
+// render is a new type on every keystroke, so React would remount the input and
+// the field would lose focus after each character typed.
+const SETTINGS_FIELD_CLS =
+  'w-full bg-cream border border-line rounded-xl p-3 text-ink outline-none text-sm focus:border-ink transition-colors';
+
+const SettingToggle = ({ on, onClick }: { on: boolean; onClick: () => void }) => (
+  <button onClick={onClick} type="button"
+    className={`relative w-11 h-6 rounded-full transition-colors flex-shrink-0 ${on ? 'bg-ink' : 'bg-line'}`}>
+    <span className={`absolute top-0.5 w-5 h-5 rounded-full bg-white shadow transition-transform ${on ? 'translate-x-0.5' : 'translate-x-5'}`} />
+  </button>
+);
+
+const SettingCard = ({ icon: Icon, title, hint, children }: {
+  icon?: any; title: string; hint?: string; children: React.ReactNode;
+}) => (
+  <div className="bg-white border border-line rounded-2xl p-6 space-y-4">
+    <div>
+      <h3 className="text-ink font-bold flex items-center gap-2">
+        {Icon && <Icon size={17} />}{title}
+      </h3>
+      {hint && <p className="text-gray-500 text-xs mt-1">{hint}</p>}
+    </div>
+    {children}
+  </div>
+);
+
+const SettingField = ({ label, ...props }: { label: string } & React.InputHTMLAttributes<HTMLInputElement>) => (
+  <div>
+    <label className="block text-sm text-gray-400 mb-2">{label}</label>
+    <input className={SETTINGS_FIELD_CLS} {...props} />
+  </div>
+);
+
+/** Every global rule the storefront runs on: fees, the free-shipping and gift
+ *  thresholds, the minimum order, and the announcement strip. */
+function SettingsView({
+  settings: init, products, announcement: initAnnouncement,
+}: { settings: StoreSettings; products: Product[]; announcement: string }) {
+  const [s, setS] = useState<StoreSettings>(init);
+  const [announcement, setAnnouncement] = useState(initAnnouncement);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
+  const [error, setError] = useState('');
 
   useEffect(() => { setS(init); }, [init]);
+  useEffect(() => { setAnnouncement(initAnnouncement); }, [initAnnouncement]);
+
+  const set = (key: keyof StoreSettings, v: string | boolean) => setS(p => ({ ...p, [key]: v }));
 
   const save = async () => {
     setSaving(true);
+    setError('');
     try {
-      await setDoc(doc(db, 'settings', 'store'), s);
+      // `merge` on purpose: this form does not own every key in the document
+      // (older installs carry fields no input here renders), and a plain `set`
+      // would silently drop them.
+      await setDoc(doc(db, 'settings', 'store'), s, { merge: true });
+      await setDoc(doc(db, 'settings', 'content'), { announcementBar: announcement }, { merge: true });
       setSaved(true); setTimeout(() => setSaved(false), 2500);
-    } catch (err) { console.error(err); }
+    } catch (err) {
+      console.error('[Settings] save failed:', err);
+      setError('שמירת ההגדרות נכשלה. נסו שוב.');
+    }
     finally { setSaving(false); }
   };
 
+  const field = SETTINGS_FIELD_CLS;
+
   return (
-    <div className="space-y-6 max-w-lg">
-      <h2 className="text-xl font-bold text-ink">הגדרות</h2>
-      <div className="bg-white border border-line rounded-2xl p-6 space-y-5">
-        {[
-          { key: 'pickup_address', label: 'כתובת לאיסוף עצמי', type: 'text', placeholder: 'רחוב...' },
-          { key: 'delivery_cost', label: 'עלות משלוח (₪)', type: 'number', placeholder: '30' },
-          { key: 'bit_phone', label: 'מספר Bit לתשלום', type: 'tel', placeholder: '05X-XXXXXXX' },
-        ].map(({ key, label, type, placeholder }) => (
-          <div key={key}>
-            <label className="block text-sm text-gray-400 mb-2">{label}</label>
-            <input type={type} placeholder={placeholder}
-              value={s[key as keyof StoreSettings]}
-              onChange={e => setS(p => ({ ...p, [key]: e.target.value }))}
-              className="w-full bg-cream border border-line rounded-xl p-3 text-ink outline-none text-sm focus:border-ink transition-colors" />
-          </div>
-        ))}
-        <button onClick={save} disabled={saving}
-          className="w-full py-3 rounded-xl font-bold text-white flex items-center justify-center gap-2 disabled:opacity-60 transition-all"
-          style={{ background: `${INK}` }}>
-          {saving ? <Loader2 size={16} className="animate-spin" /> : saved ? '✓ נשמר בהצלחה!' : 'שמור הגדרות'}
-        </button>
-      </div>
+    <div className="space-y-5 max-w-2xl" dir="rtl">
+      <h2 className="text-xl font-bold text-ink">הגדרות החנות</h2>
+
+      <SettingCard title="כללי">
+        <SettingField label="כתובת לאיסוף עצמי" type="text" placeholder="רחוב..."
+          value={s.pickup_address ?? ''} onChange={e => set('pickup_address', e.target.value)} />
+        <SettingField label="מספר Bit לתשלום" type="tel" placeholder="05X-XXXXXXX"
+          value={s.bit_phone ?? ''} onChange={e => set('bit_phone', e.target.value)} />
+        <SettingField label="מחיר כרטיס ברכה מודפס (₪)" type="number" placeholder="15"
+          value={s.printed_card_price ?? ''} onChange={e => set('printed_card_price', e.target.value)} />
+        <SettingField label="סכום הזמנה מינימלי (₪) — 0 לביטול" type="number" placeholder="0"
+          value={s.min_order_amount ?? ''} onChange={e => set('min_order_amount', e.target.value)} />
+      </SettingCard>
+
+      <SettingCard icon={Truck} title="משלוח" hint="הסף נבדק מול סכום המוצרים אחרי הנחת קופון.">
+        <SettingField label="עלות משלוח (₪)" type="number" placeholder="30"
+          value={s.delivery_cost ?? ''} onChange={e => set('delivery_cost', e.target.value)} />
+        <div className="flex items-center justify-between gap-3">
+          <span className="text-sm text-ink">משלוח חינם מעל סכום מסוים</span>
+          <SettingToggle on={s.free_shipping_enabled === true} onClick={() => set('free_shipping_enabled', !s.free_shipping_enabled)} />
+        </div>
+        {s.free_shipping_enabled && (
+          <SettingField label="סף למשלוח חינם (₪)" type="number" placeholder="200"
+            value={s.free_shipping_threshold ?? ''} onChange={e => set('free_shipping_threshold', e.target.value)} />
+        )}
+      </SettingCard>
+
+      <SettingCard icon={Gift} title="מתנה אוטומטית" hint="המתנה תתווסף לסל וללקוח אוטומטית כשההזמנה חוצה את הסף.">
+        <div className="flex items-center justify-between gap-3">
+          <span className="text-sm text-ink">הוסף מתנה מעל סכום מסוים</span>
+          <SettingToggle on={s.gift_enabled === true} onClick={() => set('gift_enabled', !s.gift_enabled)} />
+        </div>
+        {s.gift_enabled && (
+          <>
+            <SettingField label="סף למתנה (₪)" type="number" placeholder="350"
+              value={s.gift_threshold ?? ''} onChange={e => set('gift_threshold', e.target.value)} />
+            <div>
+              <label className="block text-sm text-gray-400 mb-2">מוצר המתנה</label>
+              <select className={field} value={s.gift_product_id ?? ''}
+                onChange={e => set('gift_product_id', e.target.value)}>
+                <option value="">— ללא מוצר מהקטלוג —</option>
+                {products.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+              </select>
+            </div>
+            <SettingField label="שם המתנה (כשלא נבחר מוצר מהקטלוג)" type="text" placeholder="שוקולד מתנה"
+              value={s.gift_name ?? ''} onChange={e => set('gift_name', e.target.value)} />
+          </>
+        )}
+      </SettingCard>
+
+      <SettingCard icon={Tag} title="קופונים">
+        <div className="flex items-center justify-between gap-3">
+          <span className="text-sm text-ink">הצג תיבת קוד קופון בתשלום</span>
+          <SettingToggle on={s.coupons_enabled !== false} onClick={() => set('coupons_enabled', s.coupons_enabled === false)} />
+        </div>
+      </SettingCard>
+
+      <SettingCard title="פס ההודעות באתר" hint="הרצועה השחורה בראש העמוד. השאירו ריק כדי להסתיר אותה.">
+        <input type="text" className={field} placeholder="משלוח חינם בהזמנות מעל ₪200 ✨"
+          value={announcement} onChange={e => setAnnouncement(e.target.value)} />
+      </SettingCard>
+
+      {error && <p className="text-red-500 text-sm">{error}</p>}
+
+      <button onClick={save} disabled={saving}
+        className="w-full py-3 rounded-xl font-bold text-white flex items-center justify-center gap-2 disabled:opacity-60 transition-all"
+        style={{ background: `${INK}` }}>
+        {saving ? <Loader2 size={16} className="animate-spin" /> : saved ? '✓ נשמר בהצלחה!' : 'שמור הגדרות'}
+      </button>
     </div>
   );
 }
@@ -1640,6 +1741,258 @@ function BrandingView({ brandingOptions }: { brandingOptions: BrandingOption[] }
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+/* ─────────────────────────────── CouponsView ────────────────────────── */
+/** Discount codes. The document id is the code itself, so a duplicate code is
+ *  impossible and the storefront resolves one with a single `getDoc`. */
+
+const EMPTY_COUPON_FORM = {
+  code: '', type: 'percent' as Coupon['type'], value: '',
+  minOrderAmount: '', maxDiscount: '', usageLimit: '',
+  expiryDate: '', freeShipping: false, description: '',
+};
+
+/** Why a code is not currently usable — the same rules the storefront applies. */
+function couponStatus(c: Coupon): { label: string; cls: string } {
+  if (!c.isActive) return { label: 'כבוי', cls: 'bg-gray-400/15 text-gray-500 border-gray-400/30' };
+  // Checked against a subtotal high enough to clear any minimum: a minimum is not
+  // a defect in the code, it is a condition on the cart.
+  const check = validateCoupon(c, Number.MAX_SAFE_INTEGER);
+  if (!check.ok && check.reason === 'expired') return { label: 'פג תוקף', cls: 'bg-red-500/15 text-red-500 border-red-500/30' };
+  if (!check.ok && check.reason === 'exhausted') return { label: 'מוצה', cls: 'bg-amber-500/15 text-amber-600 border-amber-500/30' };
+  return { label: 'פעיל', cls: 'bg-green-500/15 text-green-600 border-green-500/30' };
+}
+
+function CouponsView({ coupons }: { coupons: Coupon[] }) {
+  const [form, setForm] = useState(EMPTY_COUPON_FORM);
+  const [saving, setSaving] = useState(false);
+  const [toast, setToast] = useState('');
+  const showToast = (msg: string) => { setToast(msg); setTimeout(() => setToast(''), 2500); };
+
+  const set = <K extends keyof typeof form>(key: K, v: (typeof form)[K]) => setForm(p => ({ ...p, [key]: v }));
+
+  const handleAdd = async () => {
+    const code = form.code.trim().toUpperCase();
+    const value = money(form.value);
+    if (!/^[A-Z0-9_-]{2,30}$/.test(code)) {
+      return alert('קוד קופון חייב להכיל 2–30 תווים באנגלית, ספרות, מקף או קו תחתון (ללא רווחים)');
+    }
+    // A code with no discount and no free shipping does nothing at all.
+    if (value <= 0 && !form.freeShipping) return alert('נא להזין ערך הנחה, או לסמן "משלוח חינם"');
+    if (form.type === 'percent' && value > 100) return alert('הנחה באחוזים לא יכולה לעלות על 100');
+
+    setSaving(true);
+    try {
+      // The doc id is the code — this read is the uniqueness check.
+      const existing = await getDoc(doc(db, 'coupons', code));
+      if (existing.exists()) { alert(`הקוד ${code} כבר קיים`); return; }
+
+      // Firestore rejects `undefined`, so optional fields go in by conditional spread.
+      await setDoc(doc(db, 'coupons', code), {
+        code,
+        type: form.type,
+        value,
+        expiryDate: form.expiryDate || '',
+        isActive: true,
+        usageCount: 0,
+        ...(money(form.minOrderAmount) > 0 && { minOrderAmount: money(form.minOrderAmount) }),
+        ...(form.type === 'percent' && money(form.maxDiscount) > 0 && { maxDiscount: money(form.maxDiscount) }),
+        ...(money(form.usageLimit) > 0 && { usageLimit: money(form.usageLimit) }),
+        ...(form.freeShipping && { freeShipping: true }),
+        ...(form.description.trim() && { description: form.description.trim() }),
+        created_at: new Date(),
+      });
+      setForm(EMPTY_COUPON_FORM);
+      showToast('הקופון נוצר!');
+    } catch (err) {
+      console.error('[Coupons] create failed:', err);
+      alert('יצירת הקופון נכשלה.');
+    } finally { setSaving(false); }
+  };
+
+  const patch = async (id: string, data: Partial<Coupon>) => {
+    try { await updateDoc(doc(db, 'coupons', id), data); }
+    catch (err) { console.error('[Coupons] update failed:', err); }
+  };
+
+  const remove = async (c: Coupon) => {
+    if (!confirm(`למחוק את הקופון ${c.code}?`)) return;
+    await deleteDoc(doc(db, 'coupons', c.id));
+    showToast('הקופון נמחק');
+  };
+
+  const copyCode = (code: string) => {
+    navigator.clipboard?.writeText(code)
+      .then(() => showToast(`הקוד ${code} הועתק`))
+      .catch(() => {});
+  };
+
+  const field = 'w-full bg-cream border border-line rounded-xl p-3 text-ink outline-none text-sm focus:border-ink transition-colors';
+  const rowField = 'w-full bg-white border border-line rounded-lg p-2 text-ink text-sm outline-none focus:border-ink transition-colors';
+
+  return (
+    <div className="space-y-5 max-w-4xl" dir="rtl">
+      {toast && (
+        <div className="fixed top-6 left-1/2 -translate-x-1/2 z-50 bg-green-500 text-white px-5 py-2.5 rounded-xl text-sm font-bold shadow-lg">
+          {toast}
+        </div>
+      )}
+
+      <h2 className="text-xl font-bold text-ink">קופונים</h2>
+
+      {/* ── Create ─────────────────────────────────────────────────────── */}
+      <div className="bg-white border border-line rounded-2xl p-5">
+        <h3 className="text-ink font-bold mb-1">קופון חדש</h3>
+        <p className="text-gray-500 text-xs mb-4">
+          הקוד הוא מזהה הקופון — הוא ייכתב באותיות גדולות ולא ניתן לשנותו אחרי היצירה.
+        </p>
+
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+          <div>
+            <label className="block text-gray-400 text-xs mb-1.5">קוד</label>
+            <input type="text" dir="ltr" placeholder="WELCOME10" className={`${field} uppercase`}
+              value={form.code} onChange={e => set('code', e.target.value)} />
+          </div>
+          <div>
+            <label className="block text-gray-400 text-xs mb-1.5">סוג הנחה</label>
+            <select className={field} value={form.type}
+              onChange={e => set('type', e.target.value as Coupon['type'])}>
+              <option value="percent">אחוזים (%)</option>
+              <option value="fixed">סכום קבוע (₪)</option>
+            </select>
+          </div>
+          <div>
+            <label className="block text-gray-400 text-xs mb-1.5">
+              ערך {form.type === 'percent' ? '(%)' : '(₪)'}
+            </label>
+            <input type="number" min="0" placeholder={form.type === 'percent' ? '10' : '50'} className={field}
+              value={form.value} onChange={e => set('value', e.target.value)} />
+          </div>
+          <div>
+            <label className="block text-gray-400 text-xs mb-1.5">הזמנה מינימלית (₪)</label>
+            <input type="number" min="0" placeholder="ללא" className={field}
+              value={form.minOrderAmount} onChange={e => set('minOrderAmount', e.target.value)} />
+          </div>
+          {form.type === 'percent' && (
+            <div>
+              <label className="block text-gray-400 text-xs mb-1.5">תקרת הנחה (₪)</label>
+              <input type="number" min="0" placeholder="ללא" className={field}
+                value={form.maxDiscount} onChange={e => set('maxDiscount', e.target.value)} />
+            </div>
+          )}
+          <div>
+            <label className="block text-gray-400 text-xs mb-1.5">מגבלת שימושים</label>
+            <input type="number" min="0" placeholder="ללא הגבלה" className={field}
+              value={form.usageLimit} onChange={e => set('usageLimit', e.target.value)} />
+          </div>
+          <div>
+            <label className="block text-gray-400 text-xs mb-1.5">בתוקף עד (כולל)</label>
+            <input type="date" className={field}
+              value={form.expiryDate} onChange={e => set('expiryDate', e.target.value)} />
+          </div>
+          <div className="sm:col-span-2">
+            <label className="block text-gray-400 text-xs mb-1.5">תיאור פנימי</label>
+            <input type="text" placeholder="למשל: קמפיין אינסטגרם" className={field}
+              value={form.description} onChange={e => set('description', e.target.value)} />
+          </div>
+        </div>
+
+        <label className="flex items-center gap-2.5 mt-4 cursor-pointer w-fit">
+          <input type="checkbox" checked={form.freeShipping}
+            onChange={e => set('freeShipping', e.target.checked)}
+            className="w-4 h-4 accent-black" />
+          <span className="text-ink text-sm">מזכה גם במשלוח חינם</span>
+        </label>
+
+        <button onClick={handleAdd} disabled={saving}
+          className="mt-4 flex items-center justify-center gap-1.5 px-5 py-3 rounded-xl text-sm font-bold text-white disabled:opacity-50 transition-opacity hover:opacity-90"
+          style={{ background: INK }}>
+          {saving ? <Loader2 size={16} className="animate-spin" /> : <Plus size={16} />}
+          צור קופון
+        </button>
+      </div>
+
+      {/* ── List ───────────────────────────────────────────────────────── */}
+      {coupons.length === 0 ? (
+        <div className="bg-white border border-line rounded-2xl p-10 text-center text-gray-400">
+          <Tag size={36} className="mx-auto mb-2 opacity-20" />
+          <p className="text-sm">אין קופונים עדיין</p>
+        </div>
+      ) : (
+        <div className="space-y-3">
+          {coupons.map(c => {
+            const status = couponStatus(c);
+            const used = money(c.usageCount);
+            const limit = money(c.usageLimit);
+            return (
+              <div key={c.id} className="bg-white border border-line rounded-2xl p-4 space-y-3">
+                <div className="flex items-center gap-2.5 flex-wrap">
+                  <span dir="ltr" className="font-mono font-bold text-ink bg-cream border border-line rounded-lg px-3 py-1.5">
+                    {c.code}
+                  </span>
+                  <button onClick={() => copyCode(c.code)} title="העתק קוד"
+                    className="p-1.5 text-gray-400 hover:text-ink transition-colors">
+                    <Copy size={15} />
+                  </button>
+                  <span className={`text-[11px] font-bold px-2 py-1 rounded-lg border ${status.cls}`}>{status.label}</span>
+                  {c.freeShipping && (
+                    <span className="text-[11px] px-2 py-1 rounded-lg border border-line text-gray-500 flex items-center gap-1">
+                      <Truck size={12} /> משלוח חינם
+                    </span>
+                  )}
+                  <span className="text-xs text-gray-400 mr-auto">
+                    נוצל {used}{limit > 0 ? ` / ${limit}` : ''}
+                  </span>
+                  <button onClick={() => patch(c.id, { isActive: !c.isActive })}
+                    title={c.isActive ? 'פעיל' : 'כבוי'}
+                    className={`relative w-11 h-6 rounded-full transition-colors flex-shrink-0 ${c.isActive ? 'bg-ink' : 'bg-line'}`}>
+                    <span className={`absolute top-0.5 w-5 h-5 rounded-full bg-white shadow transition-transform ${c.isActive ? 'translate-x-0.5' : 'translate-x-5'}`} />
+                  </button>
+                  <button onClick={() => remove(c)} className="p-2 text-red-400 hover:text-red-500 transition-colors">
+                    <Trash2 size={16} />
+                  </button>
+                </div>
+
+                <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2.5">
+                  <div>
+                    <label className="block text-gray-400 text-[11px] mb-1">סוג</label>
+                    <select className={rowField} value={c.type}
+                      onChange={e => patch(c.id, { type: e.target.value as Coupon['type'] })}>
+                      <option value="percent">אחוזים</option>
+                      <option value="fixed">₪ קבוע</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-gray-400 text-[11px] mb-1">ערך {c.type === 'percent' ? '%' : '₪'}</label>
+                    <input type="number" min="0" className={rowField} value={c.value}
+                      onChange={e => patch(c.id, { value: money(e.target.value) })} />
+                  </div>
+                  <div>
+                    <label className="block text-gray-400 text-[11px] mb-1">מינימום ₪</label>
+                    <input type="number" min="0" placeholder="0" className={rowField} value={c.minOrderAmount ?? ''}
+                      onChange={e => patch(c.id, { minOrderAmount: money(e.target.value) })} />
+                  </div>
+                  <div>
+                    <label className="block text-gray-400 text-[11px] mb-1">מגבלת שימושים</label>
+                    <input type="number" min="0" placeholder="∞" className={rowField} value={c.usageLimit ?? ''}
+                      onChange={e => patch(c.id, { usageLimit: money(e.target.value) })} />
+                  </div>
+                  <div>
+                    <label className="block text-gray-400 text-[11px] mb-1">בתוקף עד</label>
+                    <input type="date" className={rowField} value={c.expiryDate ?? ''}
+                      onChange={e => patch(c.id, { expiryDate: e.target.value })} />
+                  </div>
+                </div>
+
+                {c.description && <p className="text-xs text-gray-400">{c.description}</p>}
+              </div>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }
@@ -1813,7 +2166,9 @@ function AdminDashboard() {
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [brandingOptions, setBrandingOptions] = useState<BrandingOption[]>([]);
   const [banners, setBanners] = useState<SiteBanner[]>([]);
+  const [coupons, setCoupons] = useState<Coupon[]>([]);
   const [settings, setSettings] = useState<StoreSettings>({ pickup_address: '', delivery_cost: '0', bit_phone: '' });
+  const [announcement, setAnnouncement] = useState('');
   const [dataError, setDataError] = useState('');
 
   useEffect(() => {
@@ -1851,10 +2206,21 @@ function AdminDashboard() {
       snap => setBanners(snap.docs.map(d => ({ id: d.id, ...d.data() } as SiteBanner))),
       onErr('site_banners')
     );
+    const unsubCoupons = onSnapshot(
+      collection(db, 'coupons'),
+      snap => setCoupons(
+        snap.docs.map(d => ({ id: d.id, ...d.data() } as Coupon))
+          .sort((a, b) => a.code.localeCompare(b.code))
+      ),
+      onErr('coupons')
+    );
     getDoc(doc(db, 'settings', 'store'))
       .then(d => { if (d.exists()) setSettings(d.data() as StoreSettings); })
       .catch(err => console.error('[Admin] settings fetch error:', err));
-    return () => { unsubO(); unsubP(); unsubC(); unsubCust(); unsubB(); unsubBanners(); };
+    getDoc(doc(db, 'settings', 'content'))
+      .then(d => { if (d.exists()) setAnnouncement(d.data()?.announcementBar ?? ''); })
+      .catch(err => console.error('[Admin] content fetch error:', err));
+    return () => { unsubO(); unsubP(); unsubC(); unsubCust(); unsubB(); unsubBanners(); unsubCoupons(); };
   }, []);
 
   // Archived orders are out of sight everywhere except the archive tab — they must not
@@ -1867,6 +2233,7 @@ function AdminDashboard() {
     { tab: 'analytics', label: 'סטטיסטיקה', icon: BarChart3 },
     { tab: 'products', label: 'מוצרים', icon: Package },
     { tab: 'branding', label: 'מיתוג', icon: Sparkles },
+    { tab: 'coupons', label: 'קופונים', icon: Tag },
     { tab: 'design', label: 'עיצוב', icon: ImageIcon },
     { tab: 'customers', label: 'לקוחות', icon: Users },
     { tab: 'settings', label: 'הגדרות', icon: SettingsIcon },
@@ -1944,9 +2311,10 @@ function AdminDashboard() {
           {activeTab === 'analytics' && <AnalyticsView orders={activeOrders} products={products} categories={categories} />}
           {activeTab === 'products' && <ProductsView products={products} categories={categories} brandingOptions={brandingOptions} />}
           {activeTab === 'branding' && <BrandingView brandingOptions={brandingOptions} />}
+          {activeTab === 'coupons' && <CouponsView coupons={coupons} />}
           {activeTab === 'design' && <DesignView banners={banners} />}
           {activeTab === 'customers' && <CustomersView customers={customers} />}
-          {activeTab === 'settings' && <SettingsView settings={settings} />}
+          {activeTab === 'settings' && <SettingsView settings={settings} products={products} announcement={announcement} />}
         </main>
       </div>
 

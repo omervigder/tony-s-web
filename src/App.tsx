@@ -4,10 +4,12 @@ import GiftAssistant from './components/GiftAssistant';
 import CheckoutSuccess from './components/CheckoutSuccess';
 import { ShoppingCart, Package, Plus, Minus, Trash2, Camera, ChevronRight, CheckCircle2, X, Menu, Loader2, ChevronDown, Copy, Star, MessageCircle, Gift, Check, Instagram } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
-import { Product, Category, Settings, CartItem, Coupon, SiteContent, Review, BrandingOption, SelectedOptions, ProductColorOption, ProductLengthOption, SiteBanner } from './types';
+import { Product, Category, CartItem, Coupon, OrderItem, SiteContent, Review, BrandingOption, ProductColorOption, ProductLengthOption, SiteBanner } from './types';
 import { effectivePrice } from './lib/pricing';
+import { getCartKey, unitPriceOf } from './lib/cart';
+import { CartProvider, useCart } from './contexts/CartContext';
 import { db, storage } from './firebase';
-import { collection, addDoc, getDocs, doc, getDoc, setDoc, query, orderBy, where } from "firebase/firestore";
+import { collection, addDoc, getDocs, doc, getDoc, query, orderBy, where } from "firebase/firestore";
 import { ref, uploadBytes, getDownloadURL } from "firebase/storage";
 
 const INSTAGRAM_URL = 'https://www.instagram.com/tony_amrami__branding?igsh=M2QycXNhZDk2Z2s2&utm_source=qr';
@@ -49,6 +51,28 @@ const PriceTag = ({
   );
 };
 
+/** What an applied coupon gives, in one phrase. A code can carry a ₪/% discount,
+ *  free shipping, or both, so this is not just a percentage. */
+const couponBenefit = (c: Coupon): string => {
+  const parts: string[] = [];
+  if (c.value > 0) parts.push(c.type === 'percent' ? `${c.value}% הנחה` : `₪${formatPrice(c.value)} הנחה`);
+  if (c.freeShipping) parts.push('משלוח חינם');
+  return parts.join(' + ') || 'הנחה';
+};
+
+/** "Spend ₪X more and…" — the progress bar that makes a threshold feel reachable. */
+const ThresholdNudge = ({ text, progress }: { text: string; progress: number }) => (
+  <div className="bg-cream border border-line rounded-xl px-4 py-3 space-y-2">
+    <p className="text-sm font-medium text-ink">{text}</p>
+    <div className="h-1.5 bg-white rounded-full overflow-hidden">
+      <div
+        className="h-full bg-ink rounded-full transition-all duration-500"
+        style={{ width: `${Math.min(100, Math.max(0, progress * 100))}%` }}
+      />
+    </div>
+  </div>
+);
+
 /** The compact price used inside the Build-A-Box picker tiles. */
 const BundlePrice = ({ product }: { product: Product }) => {
   const p = effectivePrice(product);
@@ -60,20 +84,28 @@ const BundlePrice = ({ product }: { product: Product }) => {
   );
 };
 
-export default function App() {
+/** The storefront. Wrapped by `<CartProvider>` (see the default export below) —
+ *  the basket, the applied coupon, the store rules and every ₪ derived from them
+ *  come from `useCart()`, so the cart drawer, the checkout summary and the order
+ *  document can never disagree about what the customer owes. */
+function StoreApp() {
   const [view, setView] = useState<'user' | 'checkout' | 'success' | 'product' | 'build-box'>('user');
+
+  const {
+    cart, addToCart, addLine, removeFromCart, updateQuantity, clearCart,
+    deliveryMethod, setDeliveryMethod, dedication, setDedication,
+    appliedCoupon, couponInput, setCouponInput, couponError, clearCouponError,
+    isValidatingCoupon, applyCoupon, removeCoupon, totals,
+  } = useCart();
 
   const [products, setProducts] = useState<Product[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
-  const [settings, setSettings] = useState<Settings>({ pickup_address: '', delivery_cost: '0', bit_phone: '' });
-  const [cart, setCart] = useState<CartItem[]>(() => {
-    try { return JSON.parse(localStorage.getItem('tony_store_cart') || '[]'); } catch { return []; }
-  });
   const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
   const [isCartOpen, setIsCartOpen] = useState(false);
   const [isMenuOpen, setIsMenuOpen] = useState(false);
   const [isLoadingProduct, setIsLoadingProduct] = useState(false);
-  const [checkoutData, setCheckoutData] = useState({ name: '', phone: '', email: '', delivery: 'pickup' as 'pickup' | 'delivery', shippingAddress: '' });
+  // The delivery choice lives in the cart context — it changes the total.
+  const [checkoutData, setCheckoutData] = useState({ name: '', phone: '', email: '', shippingAddress: '' });
   const [lastOrderId, setLastOrderId] = useState<string | null>(null);
   const [selectedProduct, setSelectedProduct] = useState<Product | null>(null);
   const [selectedImageIndex, setSelectedImageIndex] = useState(0);
@@ -84,7 +116,6 @@ export default function App() {
   const [selectedLength, setSelectedLength] = useState<ProductLengthOption | null>(null);
   const [selectedBrandingId, setSelectedBrandingId] = useState<string>('');
   const [brandingText, setBrandingText] = useState<string>('');
-  const [dedication, setDedication] = useState<{ message: string; cardType: 'digital' | 'printed' }>({ message: '', cardType: 'digital' });
   const [customerNotes, setCustomerNotes] = useState('');
 
   // Reviews
@@ -108,12 +139,6 @@ export default function App() {
   const waTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const urlInitDone = useRef(false);
-
-  // Coupon — storefront
-  const [couponInput, setCouponInput] = useState('');
-  const [appliedCoupon, setAppliedCoupon] = useState<Coupon | null>(null);
-  const [couponError, setCouponError] = useState<string | null>(null);
-  const [isValidatingCoupon, setIsValidatingCoupon] = useState(false);
 
   // Site content (CMS)
   const DEFAULT_CONTENT: SiteContent = {
@@ -151,11 +176,6 @@ export default function App() {
     };
   }, []);
 
-  // Persist cart to localStorage on every change
-  useEffect(() => {
-    localStorage.setItem('tony_store_cart', JSON.stringify(cart));
-  }, [cart]);
-
   const homeBanners = banners.filter(b => b.placement === 'home');
 
   // Arrival popup — the first active popup banner, shown once per browser session.
@@ -189,7 +209,9 @@ export default function App() {
 
   const fetchData = async () => {
     try {
-      const [productsSnapshot, categoriesSnapshot, brandingSnapshot, bannersSnapshot, settingsDoc, contentDoc] = await Promise.all([
+      // `settings/store` is not fetched here — the cart context subscribes to it,
+      // so the store rules stay live rather than being read once at boot.
+      const [productsSnapshot, categoriesSnapshot, brandingSnapshot, bannersSnapshot, contentDoc] = await Promise.all([
         getDocs(query(collection(db, "products"), orderBy("created_at", "desc"))),
         getDocs(collection(db, "categories")),
         getDocs(collection(db, "branding_options")),
@@ -199,7 +221,6 @@ export default function App() {
           console.error("[Banners] fetch failed:", err);
           return null;
         }),
-        getDoc(doc(db, "settings", "store")),
         getDoc(doc(db, "settings", "content")),
       ]);
 
@@ -216,7 +237,6 @@ export default function App() {
             .sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0))
         );
       }
-      if (settingsDoc.exists()) setSettings(settingsDoc.data() as Settings);
       if (contentDoc.exists()) setSiteContent(prev => ({ ...prev, ...contentDoc.data() as SiteContent }));
     } catch (err) {
       console.error("Fetch error:", err);
@@ -269,7 +289,7 @@ export default function App() {
     if (window.location.pathname !== '/success') return;
     const orderId = new URLSearchParams(window.location.search).get('orderId');
     if (orderId) setLastOrderId(orderId);
-    setCart([]);                // clear cart now that the customer has returned from payment
+    clearCart();                // clear cart now that the customer has returned from payment
     setView('success');
     urlInitDone.current = true; // prevent the products-dependent effect from overriding
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
@@ -391,7 +411,7 @@ export default function App() {
         price: effectivePrice(bi.product).final, quantity: bi.qty,
       })),
     };
-    setCart(prev => [...prev, cartBundle]);
+    addLine(cartBundle);
     setSelectedBoxBase(null);
     setBundleItems([]);
     setBundleBoxStyle('');
@@ -410,58 +430,6 @@ export default function App() {
     return `https://wa.me/${phone}?text=${encodeURIComponent(msg)}`;
   };
 
-  /** Identity of a cart line: same product with different options is a different line. */
-  type CartLine = Pick<CartItem, 'id' | 'selectedVariations' | 'selectedColor' | 'selectedLength' | 'selectedBranding' | 'brandingText'>;
-  const getCartKey = (item: CartLine) =>
-    `${item.id}|${JSON.stringify({
-      v: item.selectedVariations ?? null,
-      c: item.selectedColor?.name ?? null,
-      l: item.selectedLength?.label ?? null,
-      b: item.selectedBranding?.id ?? null,
-      // Two of the same box branded with different names are two different lines.
-      bt: item.brandingText ?? null,
-    })}`;
-
-  /** Price of one unit, including length and branding surcharges.
-   *  The `?? price` fallback covers carts persisted to localStorage before options shipped. */
-  const unitPriceOf = (item: Pick<CartItem, 'price' | 'unitPrice'>) => item.unitPrice ?? item.price;
-
-  /** Surcharges stack on the *discounted* base — a sale price is the price we build from. */
-  const priceWithOptions = (product: Product, opts: SelectedOptions) =>
-    effectivePrice(product).final + (opts.selectedLength?.priceDelta ?? 0) + (opts.selectedBranding?.extraCost ?? 0);
-
-  const addToCart = (product: Product, quantity: number = 1, variations?: Record<string, string>, options: SelectedOptions = {}) => {
-    const line: CartItem = {
-      ...product,
-      quantity,
-      selectedVariations: variations,
-      ...options,
-      unitPrice: priceWithOptions(product, options),
-    };
-    const key = getCartKey(line);
-    setCart(prev => {
-      const existing = prev.find(item => getCartKey(item) === key);
-      if (existing) {
-        return prev.map(item =>
-          getCartKey(item) === key ? { ...item, quantity: item.quantity + quantity } : item
-        );
-      }
-      return [...prev, line];
-    });
-  };
-
-  const removeFromCart = (target: CartLine) => {
-    const key = getCartKey(target);
-    setCart(prev => prev.filter(item => getCartKey(item) !== key));
-  };
-
-  const updateQuantity = (target: CartLine, delta: number) => {
-    const key = getCartKey(target);
-    setCart(prev => prev.map(item =>
-      getCartKey(item) === key ? { ...item, quantity: Math.max(1, item.quantity + delta) } : item
-    ));
-  };
-
   /** One-line summary of everything the shopper picked, for the cart drawer. */
   const cartLineOptions = (item: CartItem) => [
     ...Object.entries(item.selectedVariations ?? {}).map(([k, v]) => `${k}: ${v}`),
@@ -471,14 +439,9 @@ export default function App() {
     item.brandingText && `שם למיתוג: ${item.brandingText}`,
   ].filter(Boolean).join(' | ');
 
-  const cartTotal = cart.reduce((sum, item) => sum + (unitPriceOf(item) * item.quantity), 0);
-  const discountAmount = appliedCoupon
-    ? appliedCoupon.type === 'percent'
-      ? Math.round(cartTotal * appliedCoupon.value / 100)
-      : Math.min(appliedCoupon.value, cartTotal)
-    : 0;
-  const cardCost = dedication.message.trim() && dedication.cardType === 'printed' ? Number(settings.printed_card_price || 15) : 0;
-  const finalTotal = Math.max(0, cartTotal - discountAmount + (checkoutData.delivery === 'delivery' ? Number(settings.delivery_cost) : 0) + cardCost);
+  // Every ₪ below comes out of the cart context's single `computeTotals()` pass —
+  // coupon discount, free-shipping waiver, threshold gift and greeting card included.
+  const { subtotal: cartTotal, discountAmount, shippingCost, cardCost, total: finalTotal } = totals;
 
   // ── Product page: live option pricing ──────────────────────────────────
   // The branding options this product opted into, resolved against the global catalog.
@@ -536,13 +499,14 @@ export default function App() {
       document.getElementById(nameErr ? 'checkout-name' : 'checkout-phone')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
       return;
     }
-    if (checkoutData.delivery === 'delivery' && !checkoutData.shippingAddress.trim()) return alert("נא להזין כתובת למשלוח");
+    if (deliveryMethod === 'delivery' && !checkoutData.shippingAddress.trim()) return alert("נא להזין כתובת למשלוח");
+    if (!totals.meetsMinimum) return alert(`סכום ההזמנה המינימלי הוא ₪${formatPrice(totals.minOrderAmount)}`);
     // Guard against a NaN/negative total (rules require total_price >= 0), e.g. malformed delivery_cost setting.
     if (!Number.isFinite(finalTotal) || finalTotal < 0) return alert("שגיאה בחישוב הסכום. רעננו את הדף ונסו שוב.");
 
     setIsCreatingPayment(true);
 
-    const orderItems = cart.map(i => {
+    const orderItems: OrderItem[] = cart.map(i => {
       const pricing = effectivePrice(i);
       return {
       id: i.id,
@@ -562,6 +526,21 @@ export default function App() {
       ...(i.brandingText && { brandingText: i.brandingText }),
       };
     });
+
+    // The threshold gift ships with the order, so it has to appear in `items` for
+    // whoever packs the box — at ₪0, and carrying its cost so profit stays honest.
+    if (totals.gift) {
+      orderItems.push({
+        id: totals.gift.id,
+        name: totals.gift.name,
+        price: 0,
+        basePrice: 0,
+        costPrice: totals.gift.costPrice,
+        quantity: 1,
+        isGift: true,
+      });
+    }
+
     const dedicationData = dedication.message.trim()
       ? { message: dedication.message.trim(), cardType: dedication.cardType }
       : undefined;
@@ -573,15 +552,27 @@ export default function App() {
         customer_name: checkoutData.name,
         customer_phone: checkoutData.phone,
         ...(checkoutData.email && { customer_email: checkoutData.email }),
-        delivery_method: checkoutData.delivery,
+        delivery_method: deliveryMethod,
         total_price: finalTotal,
         items: orderItems,
         status: 'pending_payment',
         orderStatus: 'PendingPayment',
         isPaid: false,
-        ...(checkoutData.delivery === 'delivery' && { shippingAddress: checkoutData.shippingAddress }),
+        ...(deliveryMethod === 'delivery' && { shippingAddress: checkoutData.shippingAddress }),
         created_at: new Date().toISOString(),
-        ...(appliedCoupon && { coupon_code: appliedCoupon.code, discount_amount: discountAmount }),
+        // The full money breakdown, so the order records how the total was reached
+        // rather than leaving admin/analytics to re-derive it from stale settings.
+        subtotal: cartTotal,
+        shipping_cost: shippingCost,
+        free_shipping: totals.freeShipping,
+        ...(cardCost > 0 && { card_cost: cardCost }),
+        ...(appliedCoupon && {
+          coupon_code: appliedCoupon.code,
+          coupon_id: appliedCoupon.id,
+          coupon_type: appliedCoupon.type,
+          discount_amount: discountAmount,
+        }),
+        ...(totals.gift && { gift_item: { id: totals.gift.id, name: totals.gift.name } }),
         ...(dedicationData && { dedication: dedicationData }),
         ...(customerNotes.trim() && { customer_notes: customerNotes.trim() }),
       });
@@ -645,41 +636,6 @@ export default function App() {
     // ── 4. Redirect to the payment page — page navigates away here ──
     console.log("[Checkout] Redirecting to payment URL for order", orderDoc.id, "→", responseData.payment_url);
     window.location.href = responseData.payment_url;
-  };
-
-  // ── Coupon: storefront ──────────────────────────────────────────────────────
-  const handleApplyCoupon = async () => {
-    const code = couponInput.trim().toUpperCase();
-    if (!code) return;
-    setIsValidatingCoupon(true);
-    setCouponError(null);
-    setAppliedCoupon(null);
-    try {
-      const q = query(collection(db, "coupons"), where("code", "==", code));
-      const snap = await getDocs(q);
-      if (snap.empty) {
-        setCouponError("קוד קופון לא קיים");
-        return;
-      }
-      const coupon = { id: snap.docs[0].id, ...snap.docs[0].data() } as Coupon;
-      if (!coupon.isActive) { setCouponError("קוד קופון אינו פעיל"); return; }
-      if (coupon.expiryDate && new Date(coupon.expiryDate) < new Date()) {
-        setCouponError("קוד הקופון פג תוקף"); return;
-      }
-      setAppliedCoupon(coupon);
-      setCouponInput('');
-    } catch (err) {
-      console.error("Coupon validation error:", err);
-      setCouponError("שגיאה בבדיקת הקופון");
-    } finally {
-      setIsValidatingCoupon(false);
-    }
-  };
-
-  const removeAppliedCoupon = () => {
-    setAppliedCoupon(null);
-    setCouponError(null);
-    setCouponInput('');
   };
 
   const filteredProducts = selectedCategory
@@ -1310,19 +1266,19 @@ export default function App() {
                 </div>
                 <div className="flex gap-4">
                   <button
-                    onClick={() => setCheckoutData(prev => ({ ...prev, delivery: 'pickup' }))}
-                    className={`flex-1 p-3 rounded-xl border transition-all ${checkoutData.delivery === 'pickup' ? 'bg-ink text-white border-ink' : 'bg-white text-gray-500 border-gray-200'}`}
+                    onClick={() => setDeliveryMethod('pickup')}
+                    className={`flex-1 p-3 rounded-xl border transition-all ${deliveryMethod === 'pickup' ? 'bg-ink text-white border-ink' : 'bg-white text-gray-500 border-gray-200'}`}
                   >
                     איסוף עצמי
                   </button>
                   <button
-                    onClick={() => setCheckoutData(prev => ({ ...prev, delivery: 'delivery' }))}
-                    className={`flex-1 p-3 rounded-xl border transition-all ${checkoutData.delivery === 'delivery' ? 'bg-ink text-white border-ink' : 'bg-white text-gray-500 border-gray-200'}`}
+                    onClick={() => setDeliveryMethod('delivery')}
+                    className={`flex-1 p-3 rounded-xl border transition-all ${deliveryMethod === 'delivery' ? 'bg-ink text-white border-ink' : 'bg-white text-gray-500 border-gray-200'}`}
                   >
                     משלוח עד הבית
                   </button>
                 </div>
-                {checkoutData.delivery === 'delivery' && (
+                {deliveryMethod === 'delivery' && (
                   <div>
                     <label className="block text-sm font-medium text-gray-700 mb-1">כתובת למשלוח *</label>
                     <input
@@ -1357,7 +1313,7 @@ export default function App() {
                     onClick={() => setDedication(prev => ({ ...prev, cardType: prev.cardType === 'printed' ? 'digital' : 'printed' }))}
                     className={`w-full p-3 rounded-xl border text-sm font-medium transition-all ${dedication.cardType === 'printed' ? 'bg-ink text-white border-ink shadow-sm' : 'bg-white text-gray-500 border-gray-200 hover:border-ink'}`}
                   >
-                    🖨️ כרטיס מודפס פרימיום<br/><span className="text-xs font-normal opacity-75">+₪{formatPrice(settings.printed_card_price || 15)}</span>
+                    🖨️ כרטיס מודפס פרימיום<br/><span className="text-xs font-normal opacity-75">+₪{formatPrice(totals.rules.printedCardPrice)}</span>
                   </button>
                 </div>
               </div>
@@ -1375,54 +1331,93 @@ export default function App() {
               </div>
 
               {/* Coupon input */}
-              <div className="space-y-2">
-                <label className="block text-sm font-medium text-gray-700">קוד קופון</label>
-                {appliedCoupon ? (
-                  <div className="flex items-center justify-between bg-green-50 border border-green-200 rounded-xl px-4 py-3">
-                    <span className="text-green-700 font-semibold">
-                      ✅ {appliedCoupon.code} — {appliedCoupon.type === 'percent' ? `${appliedCoupon.value}% הנחה` : `₪${formatPrice(appliedCoupon.value)} הנחה`}
-                    </span>
-                    <button onClick={removeAppliedCoupon} className="text-gray-400 hover:text-red-500 mr-2">
-                      <X size={16} />
-                    </button>
-                  </div>
-                ) : (
-                  <div className="flex gap-2">
-                    <input
-                      type="text"
-                      placeholder="הזן קוד קופון"
-                      className="flex-1 p-3 rounded-xl border border-gray-200 focus:ring-2 focus:ring-ink/20 focus:border-transparent outline-none uppercase"
-                      value={couponInput}
-                      onChange={e => { setCouponInput(e.target.value); setCouponError(null); }}
-                      onKeyDown={e => e.key === 'Enter' && handleApplyCoupon()}
+              {totals.rules.couponsEnabled && (
+                <div className="space-y-2">
+                  <label className="block text-sm font-medium text-gray-700">קוד קופון</label>
+                  {appliedCoupon ? (
+                    <div className="flex items-center justify-between bg-green-50 border border-green-200 rounded-xl px-4 py-3">
+                      <span className="text-green-700 font-semibold">
+                        ✅ {appliedCoupon.code} — {couponBenefit(appliedCoupon)}
+                      </span>
+                      <button onClick={removeCoupon} className="text-gray-400 hover:text-red-500 mr-2">
+                        <X size={16} />
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="flex gap-2">
+                      <input
+                        type="text"
+                        placeholder="הזן קוד קופון"
+                        className="flex-1 p-3 rounded-xl border border-gray-200 focus:ring-2 focus:ring-ink/20 focus:border-transparent outline-none uppercase"
+                        value={couponInput}
+                        onChange={e => { setCouponInput(e.target.value); clearCouponError(); }}
+                        onKeyDown={e => e.key === 'Enter' && applyCoupon()}
+                      />
+                      <button
+                        onClick={() => applyCoupon()}
+                        disabled={isValidatingCoupon || !couponInput.trim()}
+                        className="px-4 py-3 bg-ink text-white rounded-xl font-medium disabled:opacity-50 hover:bg-ink transition-colors"
+                      >
+                        {isValidatingCoupon ? <Loader2 size={18} className="animate-spin" /> : 'החל'}
+                      </button>
+                    </div>
+                  )}
+                  {couponError && <p className="text-red-500 text-sm">{couponError}</p>}
+                </div>
+              )}
+
+              {/* Live threshold nudges — the numbers come from settings/store, so
+                  what the shopper is promised is what checkout actually charges. */}
+              {(totals.amountToFreeShipping !== null || totals.amountToGift !== null || totals.gift) && (
+                <div className="space-y-2">
+                  {totals.amountToFreeShipping !== null && totals.amountToFreeShipping > 0 && (
+                    <ThresholdNudge
+                      text={`עוד ₪${formatPrice(totals.amountToFreeShipping)} ותקבלו משלוח חינם 🚚`}
+                      progress={totals.discountedSubtotal / totals.rules.freeShippingThreshold}
                     />
-                    <button
-                      onClick={handleApplyCoupon}
-                      disabled={isValidatingCoupon || !couponInput.trim()}
-                      className="px-4 py-3 bg-ink text-white rounded-xl font-medium disabled:opacity-50 hover:bg-ink transition-colors"
-                    >
-                      {isValidatingCoupon ? <Loader2 size={18} className="animate-spin" /> : 'החל'}
-                    </button>
-                  </div>
-                )}
-                {couponError && <p className="text-red-500 text-sm">{couponError}</p>}
-              </div>
+                  )}
+                  {totals.amountToGift !== null && totals.amountToGift > 0 && (
+                    <ThresholdNudge
+                      text={`עוד ₪${formatPrice(totals.amountToGift)} ותקבלו מתנה 🎁`}
+                      progress={totals.discountedSubtotal / totals.rules.giftThreshold}
+                    />
+                  )}
+                  {totals.gift && (
+                    <p className="text-sm font-medium text-green-700 bg-green-50 border border-green-200 rounded-xl px-4 py-2.5">
+                      🎁 מתנה שצורפה להזמנה: {totals.gift.name}
+                    </p>
+                  )}
+                </div>
+              )}
 
               <div className="border-t pt-6 space-y-2">
                 <div className="flex justify-between text-gray-500">
                   <span>סיכום מוצרים:</span>
                   <span>₪{formatPrice(cartTotal)}</span>
                 </div>
-                {appliedCoupon && (
+                {discountAmount > 0 && (
                   <div className="flex justify-between text-green-600 font-medium">
-                    <span>הנחת קופון ({appliedCoupon.code}):</span>
+                    <span>הנחת קופון ({appliedCoupon?.code}):</span>
                     <span>-₪{formatPrice(discountAmount)}</span>
                   </div>
                 )}
-                {checkoutData.delivery === 'delivery' && (
+                {deliveryMethod === 'delivery' && (
                   <div className="flex justify-between text-gray-500">
                     <span>דמי משלוח:</span>
-                    <span>₪{formatPrice(settings.delivery_cost)}</span>
+                    {totals.freeShipping ? (
+                      <span className="text-green-600 font-medium">
+                        <span className="line-through text-gray-400 ml-2">₪{formatPrice(totals.shippingBase)}</span>
+                        חינם
+                      </span>
+                    ) : (
+                      <span>₪{formatPrice(shippingCost)}</span>
+                    )}
+                  </div>
+                )}
+                {totals.gift && (
+                  <div className="flex justify-between text-green-600 font-medium">
+                    <span>🎁 {totals.gift.name}:</span>
+                    <span>חינם</span>
                   </div>
                 )}
                 {cardCost > 0 && (
@@ -1437,9 +1432,15 @@ export default function App() {
                 </div>
               </div>
 
+              {!totals.meetsMinimum && (
+                <p className="text-sm text-red-500 text-center">
+                  סכום ההזמנה המינימלי הוא ₪{formatPrice(totals.minOrderAmount)} — הוסיפו עוד ₪{formatPrice(totals.minOrderAmount - cartTotal)} לסל
+                </p>
+              )}
+
               <button
                 onClick={handleCheckout}
-                disabled={isCreatingPayment}
+                disabled={isCreatingPayment || !totals.meetsMinimum}
                 className="w-full btn-primary text-lg py-4 shadow-lg disabled:opacity-60 disabled:cursor-not-allowed"
               >
                 {isCreatingPayment
@@ -1852,13 +1853,54 @@ export default function App() {
 
               {cart.length > 0 && (
                 <div className="p-6 border-t border-line bg-cream space-y-4">
+                  {/* Threshold state, live — the drawer is where the shopper decides
+                      whether to add one more item, so it has to say what that earns. */}
+                  {totals.amountToFreeShipping !== null && totals.amountToFreeShipping > 0 && (
+                    <ThresholdNudge
+                      text={`עוד ₪${formatPrice(totals.amountToFreeShipping)} ותקבלו משלוח חינם 🚚`}
+                      progress={totals.discountedSubtotal / totals.rules.freeShippingThreshold}
+                    />
+                  )}
+                  {totals.freeShippingEarned && (
+                    <p className="text-sm font-medium text-green-700 text-center">🚚 יש לכם משלוח חינם!</p>
+                  )}
+                  {totals.amountToGift !== null && totals.amountToGift > 0 && (
+                    <ThresholdNudge
+                      text={`עוד ₪${formatPrice(totals.amountToGift)} ותקבלו מתנה 🎁`}
+                      progress={totals.discountedSubtotal / totals.rules.giftThreshold}
+                    />
+                  )}
+                  {totals.gift && (
+                    <div className="flex items-center gap-3 bg-white border border-green-200 rounded-xl p-2.5">
+                      {totals.gift.imageUrl && (
+                        <img src={totals.gift.imageUrl} alt="" className="w-10 h-10 object-cover rounded-lg" referrerPolicy="no-referrer" />
+                      )}
+                      <div className="flex-grow min-w-0">
+                        <p className="text-sm font-medium text-ink truncate">🎁 {totals.gift.name}</p>
+                        <p className="text-xs text-green-700">מתנה על ההזמנה</p>
+                      </div>
+                      <span className="text-sm font-semibold text-green-700">חינם</span>
+                    </div>
+                  )}
+                  {discountAmount > 0 && (
+                    <div className="flex justify-between text-sm text-green-700 font-medium">
+                      <span>הנחת קופון ({appliedCoupon?.code}):</span>
+                      <span>-₪{formatPrice(discountAmount)}</span>
+                    </div>
+                  )}
                   <div className="flex justify-between text-xl font-semibold text-ink">
                     <span>סה"כ:</span>
-                    <span>₪{formatPrice(cartTotal)}</span>
+                    <span>₪{formatPrice(totals.discountedSubtotal)}</span>
                   </div>
+                  {!totals.meetsMinimum && (
+                    <p className="text-sm text-red-500 text-center">
+                      סכום ההזמנה המינימלי הוא ₪{formatPrice(totals.minOrderAmount)}
+                    </p>
+                  )}
                   <button
                     onClick={() => { setIsCartOpen(false); navigateTo('checkout'); }}
-                    className="w-full btn-primary text-lg py-4 shadow-lg"
+                    disabled={!totals.meetsMinimum}
+                    className="w-full btn-primary text-lg py-4 shadow-lg disabled:opacity-60 disabled:cursor-not-allowed"
                   >
                     מעבר לתשלום
                   </button>
@@ -1914,5 +1956,13 @@ export default function App() {
         )}
       </AnimatePresence>
     </div>
+  );
+}
+
+export default function App() {
+  return (
+    <CartProvider>
+      <StoreApp />
+    </CartProvider>
   );
 }
