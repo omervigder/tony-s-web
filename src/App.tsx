@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import AccessibilityWidget from './components/AccessibilityWidget';
 import GiftAssistant from './components/GiftAssistant';
 import CheckoutSuccess from './components/CheckoutSuccess';
-import { ShoppingCart, Package, Plus, Minus, Trash2, Camera, ChevronRight, CheckCircle2, X, Menu, Loader2, ChevronDown, Copy, Star, MessageCircle, Gift, Check, Instagram } from 'lucide-react';
+import { ShoppingCart, Package, Plus, Minus, Trash2, Camera, ChevronRight, ChevronLeft, CheckCircle2, X, Menu, Loader2, ChevronDown, Copy, Star, MessageCircle, Gift, Check, Instagram } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Product, Category, CartItem, Coupon, OrderItem, SiteContent, Review, BrandingOption, ProductColorOption, ProductLengthOption, SiteBanner } from './types';
 import { effectivePrice } from './lib/pricing';
@@ -88,11 +88,122 @@ const BundlePrice = ({ product }: { product: Product }) => {
  *  the basket, the applied coupon, the store rules and every ₪ derived from them
  *  come from `useCart()`, so the cart drawer, the checkout summary and the order
  *  document can never disagree about what the customer owes. */
+/** True when the product has options the shopper must choose before it can be added. */
+const needsOptions = (p: Product) => !!(
+  p.variations?.length || p.colorOptions?.length || p.lengthOptions?.length || p.brandingOptionIds?.length
+);
+
+/** The catalog tile — shared by the home showcase and the full catalog so the
+ *  two can never drift into looking like different stores. */
+const ProductCard: React.FC<{
+  product: Product; onOpen: (id: string) => void; onAdd: (p: Product) => void;
+}> = ({ product, onOpen, onAdd }) => (
+  <motion.div
+    layout
+    initial={{ opacity: 0, y: 20 }}
+    animate={{ opacity: 1, y: 0 }}
+    className="surface-card overflow-hidden flex flex-col cursor-pointer"
+    onClick={() => onOpen(product.id)}
+  >
+    <div className="aspect-square relative overflow-hidden bg-cream">
+      {product.main_image ? (
+        <img src={product.main_image} alt={product.alt_text || product.name} className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+      ) : (
+        <div className="w-full h-full flex items-center justify-center text-line-strong">
+          <Package size={48} />
+        </div>
+      )}
+    </div>
+    <div className="p-6 flex flex-col flex-grow">
+      <h3 className="text-lg text-ink mb-2">{product.name}</h3>
+      <p className="text-muted text-sm mb-4 line-clamp-2">{product.description}</p>
+      <div className="flex justify-between items-center gap-3 mt-auto">
+        <PriceTag product={product} />
+        <button
+          onClick={(e) => {
+            e.stopPropagation();
+            // A configurable product can't be added blind — send the shopper
+            // to the product page to pick its options first.
+            if (needsOptions(product)) { onOpen(product.id); return; }
+            onAdd(product);
+          }}
+          className="btn-primary flex items-center gap-2"
+        >
+          <Plus size={18} />
+          {needsOptions(product) ? 'בחירת אפשרויות' : 'הוספה לסל'}
+        </button>
+      </div>
+    </div>
+  </motion.div>
+);
+
+/** The showcase strip: the admin's chosen products looping past the shopper.
+ *
+ *  The list is tiled until it comfortably overflows the strip, and that whole
+ *  pass is then rendered twice; the track slides exactly one pass-width, which
+ *  is what makes the loop seamless. Without the tiling, two or three featured
+ *  products would run out mid-loop and leave a gap. */
+const FeaturedMarquee = ({ products, onOpen }: {
+  products: Product[]; onOpen: (id: string) => void;
+}) => {
+  if (products.length === 0) return null;
+
+  // A tile is 176px wide at its narrowest (w-40 + mx-2) and the strip is at most
+  // 980px, so ~6 tiles already fill it. Ten is that with room to spare, which is
+  // what keeps two or three featured products from leaving a gap mid-loop.
+  const MIN_TILES_PER_PASS = 10;
+  const repeats = Math.max(1, Math.ceil(MIN_TILES_PER_PASS / products.length));
+  const set = Array.from({ length: repeats }, () => products).flat();
+  // 5s per tile — the pass grows with the repeats, so the pixel speed stays put.
+  const duration = `${set.length * 5}s`;
+
+  const tile = (product: Product, key: string, ariaHidden: boolean) => (
+    <button
+      key={key}
+      type="button"
+      dir="rtl"
+      aria-hidden={ariaHidden}
+      tabIndex={ariaHidden ? -1 : 0}
+      onClick={() => onOpen(product.id)}
+      className="group w-40 sm:w-52 flex-shrink-0 mx-2 text-right"
+    >
+      <div className="aspect-square overflow-hidden bg-surface border border-line group-hover:border-line-strong transition-colors">
+        {product.main_image ? (
+          <img
+            src={product.main_image}
+            alt={product.alt_text || product.name}
+            className="w-full h-full object-cover"
+            referrerPolicy="no-referrer"
+            loading="lazy"
+          />
+        ) : (
+          <div className="w-full h-full flex items-center justify-center text-line-strong">
+            <Package size={36} />
+          </div>
+        )}
+      </div>
+      <p className="mt-2 text-sm text-ink truncate">{product.name}</p>
+      <PriceTag product={product} />
+    </button>
+  );
+
+  return (
+    <div className="marquee-viewport" style={{ ['--marquee-duration' as string]: duration }}>
+      <div className="marquee-track py-1">
+        {set.map((p, i) => tile(p, `a-${i}-${p.id}`, false))}
+        {/* The second pass exists only to cover the seam — hidden from AT. */}
+        {set.map((p, i) => tile(p, `b-${i}-${p.id}`, true))}
+      </div>
+    </div>
+  );
+};
+
 function StoreApp() {
-  const [view, setView] = useState<'user' | 'checkout' | 'success' | 'product' | 'build-box'>('user');
+  const [view, setView] = useState<'user' | 'catalog' | 'checkout' | 'success' | 'product' | 'build-box'>('user');
 
   const {
     cart, addToCart, addLine, removeFromCart, updateQuantity, clearCart,
+    settings,
     deliveryMethod, setDeliveryMethod, dedication, setDedication,
     appliedCoupon, couponInput, setCouponInput, couponError, clearCouponError,
     isValidatingCoupon, applyCoupon, removeCoupon, totals,
@@ -260,7 +371,7 @@ function StoreApp() {
 
   // ── URL-based navigation ───────────────────────────────────────────────────
   const VIEW_URLS: Record<string, string> = {
-    user: '/', checkout: '/checkout', success: '/success', 'build-box': '/build-box',
+    user: '/', catalog: '/catalog', checkout: '/checkout', success: '/success', 'build-box': '/build-box',
   };
   const navigateTo = (newView: typeof view, productId?: string) => {
     const url = newView === 'product' && productId
@@ -308,6 +419,8 @@ function StoreApp() {
       setView('success');
     } else if (path === '/build-box') {
       setView('build-box');
+    } else if (path === '/catalog') {
+      setView('catalog');
     }
   }, [products]);
 
@@ -465,11 +578,6 @@ function StoreApp() {
     productBrandingOptions.some(b => b.extraCost > 0)
   );
   const hasPickedSurcharge = productSurcharge > 0;
-
-  /** True when the product has options the shopper must choose before it can be added. */
-  const needsOptions = (p: Product) => !!(
-    p.variations?.length || p.colorOptions?.length || p.lengthOptions?.length || p.brandingOptionIds?.length
-  );
 
   /** Pick a legible check mark for a swatch — dark tick on pale colors, white on dark ones. */
   const isLightHex = (hex: string) => {
@@ -642,6 +750,35 @@ function StoreApp() {
     ? products.filter(p => p.category_id === selectedCategory)
     : products;
 
+  // ── The home-page showcase ────────────────────────────────────────────────
+  // The admin picks which products advertise the store; the rest live behind
+  // the catalog link. Ids are resolved against the catalog, so one pointing at
+  // a deleted product simply drops out — and if nothing survives (or nothing
+  // was ever picked) the home page falls back to showing the whole catalog,
+  // which is what every install did before this setting existed.
+  const featuredProducts = settings.featured_enabled === false
+    ? []
+    : (settings.featured_product_ids ?? [])
+        .map(id => products.find(p => p.id === id))
+        .filter((p): p is Product => !!p);
+  const isShowcase = featuredProducts.length > 0;
+  const featuredTitle = settings.featured_title?.trim() || 'מוצרים נבחרים';
+
+  const openCatalog = (categoryId: string | null = null) => {
+    setSelectedCategory(categoryId);
+    navigateTo('catalog');
+    window.scrollTo(0, 0);
+  };
+
+  /** The catalog grid — the home page in fallback mode, and the whole of /catalog. */
+  const productGrid = (list: Product[]) => (
+    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-8">
+      {list.map(product => (
+        <ProductCard key={product.id} product={product} onOpen={fetchProductDetails} onAdd={addToCart} />
+      ))}
+    </div>
+  );
+
   return (
     <div className="min-h-screen pb-20">
       {/* Toast */}
@@ -776,57 +913,79 @@ function StoreApp() {
               </div>
             )}
 
-            {/* Collections Title */}
+            {/* Showcase strip — the products the admin is advertising. It breaks
+                out of the 980px column so the tiles run edge to edge. */}
+            {isShowcase && (
+              <section className="space-y-5" aria-label={featuredTitle}>
+                <div className="flex items-center gap-4">
+                  <h2 className="text-2xl font-bold text-gray-800">{featuredTitle}</h2>
+                  <div className="flex-1 h-px bg-gradient-to-r from-[#1A1A18]/30 to-transparent" />
+                </div>
+                <div className="-mx-6">
+                  <FeaturedMarquee products={featuredProducts} onOpen={fetchProductDetails} />
+                </div>
+              </section>
+            )}
+
+            {/* In showcase mode the strip above *is* the home page — no grid
+                under it. Without a selection this is still the catalog. */}
+            {isShowcase ? (
+              <div className="text-center">
+                <button onClick={() => openCatalog(null)} className="btn-secondary inline-flex items-center gap-2">
+                  לקטלוג המלא
+                  <ChevronLeft size={18} />
+                </button>
+                <p className="text-muted text-sm mt-3">
+                  {products.length} מוצרים בחנות
+                </p>
+              </div>
+            ) : (
+              <>
+                <div className="flex items-center gap-4">
+                  {isContentLoading
+                    ? <div className="h-7 w-40 bg-gradient-to-r from-gray-100 to-gray-200 rounded-lg animate-pulse" />
+                    : <h3 className="text-2xl font-bold text-gray-800">{siteContent.collectionsTitle}</h3>}
+                  <div className="flex-1 h-px bg-gradient-to-r from-[#1A1A18]/30 to-transparent" />
+                </div>
+                {productGrid(products)}
+              </>
+            )}
+          </div>
+        )}
+
+        {view === 'catalog' && (
+          <div className="space-y-8">
+            <button onClick={() => navigateTo('user')} className="flex items-center gap-2 text-gray-500 hover:text-gray-800">
+              <ChevronRight size={20} /> חזרה לדף הבית
+            </button>
+
             <div className="flex items-center gap-4">
-              {isContentLoading
-                ? <div className="h-7 w-40 bg-gradient-to-r from-gray-100 to-gray-200 rounded-lg animate-pulse" />
-                : <h3 className="text-2xl font-bold text-gray-800">{siteContent.collectionsTitle}</h3>}
+              <h2 className="text-2xl font-bold text-gray-800">
+                {categories.find(c => c.id === selectedCategory)?.name ?? 'כל המוצרים'}
+              </h2>
               <div className="flex-1 h-px bg-gradient-to-r from-[#1A1A18]/30 to-transparent" />
             </div>
 
-            {/* Products Grid */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-8">
-              {filteredProducts.map(product => (
-                <motion.div
-                  layout
-                  initial={{ opacity: 0, y: 20 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  key={product.id}
-                  className="surface-card overflow-hidden flex flex-col cursor-pointer"
-                  onClick={() => fetchProductDetails(product.id)}
-                >
-                  <div className="aspect-square relative overflow-hidden bg-cream">
-                    {product.main_image ? (
-                      <img src={product.main_image} alt={product.alt_text || product.name} className="w-full h-full object-cover" referrerPolicy="no-referrer" />
-                    ) : (
-                      <div className="w-full h-full flex items-center justify-center text-line-strong">
-                        <Package size={48} />
-                      </div>
-                    )}
-                  </div>
-                  <div className="p-6 flex flex-col flex-grow">
-                    <h3 className="text-lg text-ink mb-2">{product.name}</h3>
-                    <p className="text-muted text-sm mb-4 line-clamp-2">{product.description}</p>
-                    <div className="flex justify-between items-center gap-3 mt-auto">
-                      <PriceTag product={product} />
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          // A configurable product can't be added blind — send the shopper
-                          // to the product page to pick its options first.
-                          if (needsOptions(product)) { fetchProductDetails(product.id); return; }
-                          addToCart(product);
-                        }}
-                        className="btn-primary flex items-center gap-2"
-                      >
-                        <Plus size={18} />
-                        {needsOptions(product) ? 'בחירת אפשרויות' : 'הוספה לסל'}
-                      </button>
-                    </div>
-                  </div>
-                </motion.div>
-              ))}
-            </div>
+            {/* Category filter — the drawer does this too, but a shopper who
+                landed on /catalog directly shouldn't have to go find it. */}
+            {categories.length > 0 && (
+              <div className="flex flex-wrap gap-2">
+                <button onClick={() => setSelectedCategory(null)}
+                  className={`px-4 py-2 rounded-full text-sm border transition-colors ${!selectedCategory ? 'bg-ink text-cream border-ink' : 'border-line text-body hover:border-line-strong'}`}>
+                  הכל
+                </button>
+                {categories.map(cat => (
+                  <button key={cat.id} onClick={() => setSelectedCategory(cat.id)}
+                    className={`px-4 py-2 rounded-full text-sm border transition-colors ${selectedCategory === cat.id ? 'bg-ink text-cream border-ink' : 'border-line text-body hover:border-line-strong'}`}>
+                    {cat.name}
+                  </button>
+                ))}
+              </div>
+            )}
+
+            {filteredProducts.length === 0
+              ? <p className="text-muted text-center py-12">אין מוצרים בקטגוריה הזו.</p>
+              : productGrid(filteredProducts)}
           </div>
         )}
 
@@ -1688,7 +1847,7 @@ function StoreApp() {
 
               <div className="flex-grow overflow-y-auto p-6 space-y-2">
                 <button
-                  onClick={() => { setSelectedCategory(null); setIsMenuOpen(false); navigateTo('user'); }}
+                  onClick={() => { setIsMenuOpen(false); openCatalog(null); }}
                   className={`w-full text-right px-6 py-4 rounded-2xl transition-all font-bold ${!selectedCategory ? 'bg-ink/5 text-ink' : 'hover:bg-gray-50 text-gray-600'}`}
                 >
                   הכל
@@ -1696,7 +1855,7 @@ function StoreApp() {
                 {categories.map(cat => (
                   <button
                     key={cat.id}
-                    onClick={() => { setSelectedCategory(cat.id); setIsMenuOpen(false); navigateTo('user'); }}
+                    onClick={() => { setIsMenuOpen(false); openCatalog(cat.id); }}
                     className={`w-full text-right px-6 py-4 rounded-2xl transition-all font-bold ${selectedCategory === cat.id ? 'bg-ink/5 text-ink' : 'hover:bg-gray-50 text-gray-600'}`}
                   >
                     {cat.name}
