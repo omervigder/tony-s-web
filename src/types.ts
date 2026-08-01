@@ -205,6 +205,15 @@ export interface Settings {
   min_order_amount?: string;
   /** Master switch for the coupon box at checkout. Absent = enabled. */
   coupons_enabled?: boolean;
+  /** Master switch for the home-page showcase. Absent = enabled — what really
+   *  gates the showcase is whether `featured_product_ids` resolves to anything. */
+  featured_enabled?: boolean;
+  /** Products the admin wants to advertise, in display order. They are the only
+   *  ones the home page shows; everything else moves behind the catalog link.
+   *  Empty (or all ids stale) = the home page falls back to the full catalog. */
+  featured_product_ids?: string[];
+  /** Heading above the showcase strip. Absent = 'מוצרים נבחרים'. */
+  featured_title?: string;
 }
 
 export interface CartItem extends Product, SelectedOptions {

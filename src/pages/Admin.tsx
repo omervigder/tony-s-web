@@ -1512,6 +1512,96 @@ const SettingField = ({ label, ...props }: { label: string } & React.InputHTMLAt
   </div>
 );
 
+/** Picks the products advertised on the home page, and the order they run in.
+ *  Order is the reason this is a two-part control rather than a checkbox list:
+ *  the chosen tiles are reorderable, the pool below only adds to them. */
+function FeaturedPicker({ products, ids, onChange }: {
+  products: Product[]; ids: string[]; onChange: (next: string[]) => void;
+}) {
+  const [search, setSearch] = useState('');
+
+  const byId = new Map(products.map(p => [p.id, p]));
+  // A deleted product leaves its id behind; drop it here so the list on screen
+  // matches what the storefront will actually be able to render.
+  const chosen = ids.map(id => byId.get(id)).filter((p): p is Product => !!p);
+
+  const term = search.trim().toLowerCase();
+  const pool = products.filter(p =>
+    !ids.includes(p.id) && (!term || p.name.toLowerCase().includes(term))
+  );
+
+  const add = (id: string) => onChange([...ids, id]);
+  const remove = (id: string) => onChange(ids.filter(x => x !== id));
+  const move = (index: number, delta: number) => {
+    const next = [...ids];
+    const target = index + delta;
+    if (target < 0 || target >= next.length) return;
+    [next[index], next[target]] = [next[target], next[index]];
+    onChange(next);
+  };
+
+  return (
+    <div className="space-y-4">
+      <div>
+        <label className="block text-sm text-gray-400 mb-2">
+          המוצרים שיוצגו ({chosen.length})
+        </label>
+        {chosen.length === 0 ? (
+          <p className="text-gray-400 text-xs bg-cream border border-line rounded-xl p-3">
+            לא נבחרו מוצרים — דף הבית יציג את כל הקטלוג כרגיל.
+          </p>
+        ) : (
+          <div className="space-y-2">
+            {chosen.map((p, i) => (
+              <div key={p.id} className="flex items-center gap-3 bg-cream border border-line rounded-xl p-2">
+                <span className="w-6 text-center text-xs font-bold text-gray-400">{i + 1}</span>
+                {p.main_image
+                  ? <img src={p.main_image} alt="" className="w-10 h-10 rounded-lg object-cover flex-shrink-0" referrerPolicy="no-referrer" />
+                  : <div className="w-10 h-10 rounded-lg bg-line flex items-center justify-center flex-shrink-0"><Package size={16} className="text-gray-400" /></div>}
+                <span className="flex-1 text-sm text-ink truncate">{p.name}</span>
+                <button type="button" onClick={() => move(i, -1)} disabled={i === 0}
+                  aria-label="הזז למעלה"
+                  className="p-1.5 rounded-lg text-gray-400 hover:text-ink hover:bg-white disabled:opacity-30 transition-colors">
+                  <ChevronUp size={16} />
+                </button>
+                <button type="button" onClick={() => move(i, 1)} disabled={i === chosen.length - 1}
+                  aria-label="הזז למטה"
+                  className="p-1.5 rounded-lg text-gray-400 hover:text-ink hover:bg-white disabled:opacity-30 transition-colors">
+                  <ChevronDown size={16} />
+                </button>
+                <button type="button" onClick={() => remove(p.id)} aria-label={`הסר את ${p.name}`}
+                  className="p-1.5 rounded-lg text-gray-400 hover:text-red-500 hover:bg-white transition-colors">
+                  <X size={16} />
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      <div>
+        <label className="block text-sm text-gray-400 mb-2">הוספת מוצר</label>
+        <input type="search" className={SETTINGS_FIELD_CLS} placeholder="חיפוש מוצר..."
+          value={search} onChange={e => setSearch(e.target.value)} />
+        <div className="mt-2 max-h-56 overflow-y-auto border border-line rounded-xl divide-y divide-line">
+          {pool.length === 0 ? (
+            <p className="text-gray-400 text-xs p-3">אין מוצרים להוספה.</p>
+          ) : pool.map(p => (
+            <button key={p.id} type="button" onClick={() => add(p.id)}
+              className="w-full flex items-center gap-3 p-2 text-right hover:bg-cream transition-colors">
+              {p.main_image
+                ? <img src={p.main_image} alt="" className="w-9 h-9 rounded-lg object-cover flex-shrink-0" referrerPolicy="no-referrer" />
+                : <div className="w-9 h-9 rounded-lg bg-cream flex items-center justify-center flex-shrink-0"><Package size={14} className="text-gray-400" /></div>}
+              <span className="flex-1 text-sm text-ink truncate">{p.name}</span>
+              <Plus size={16} className="text-gray-400 flex-shrink-0" />
+            </button>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /** Every global rule the storefront runs on: fees, the free-shipping and gift
  *  thresholds, the minimum order, and the announcement strip. */
 function SettingsView({
@@ -1526,7 +1616,7 @@ function SettingsView({
   useEffect(() => { setS(init); }, [init]);
   useEffect(() => { setAnnouncement(initAnnouncement); }, [initAnnouncement]);
 
-  const set = (key: keyof StoreSettings, v: string | boolean) => setS(p => ({ ...p, [key]: v }));
+  const set = (key: keyof StoreSettings, v: string | boolean | string[]) => setS(p => ({ ...p, [key]: v }));
 
   const save = async () => {
     setSaving(true);
@@ -1594,6 +1684,22 @@ function SettingsView({
             </div>
             <SettingField label="שם המתנה (כשלא נבחר מוצר מהקטלוג)" type="text" placeholder="שוקולד מתנה"
               value={s.gift_name ?? ''} onChange={e => set('gift_name', e.target.value)} />
+          </>
+        )}
+      </SettingCard>
+
+      <SettingCard icon={Sparkles} title="מוצרים נבחרים לדף הבית"
+        hint="בחרו אילו מוצרים יוצגו בדף הבית כדוגמה ויתגלגלו בפס הנע. שאר המוצרים יישארו זמינים דרך הקטלוג המלא.">
+        <div className="flex items-center justify-between gap-3">
+          <span className="text-sm text-ink">הצג רק מוצרים נבחרים בדף הבית</span>
+          <SettingToggle on={s.featured_enabled !== false} onClick={() => set('featured_enabled', s.featured_enabled === false)} />
+        </div>
+        {s.featured_enabled !== false && (
+          <>
+            <SettingField label="כותרת הפס" type="text" placeholder="מוצרים נבחרים"
+              value={s.featured_title ?? ''} onChange={e => set('featured_title', e.target.value)} />
+            <FeaturedPicker products={products} ids={s.featured_product_ids ?? []}
+              onChange={next => set('featured_product_ids', next)} />
           </>
         )}
       </SettingCard>
