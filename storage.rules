@@ -1,0 +1,56 @@
+rules_version = '2';
+
+// Storage rules were not tracked in this repo, so whatever is in the console is
+// what has been enforced — including, possibly, the open dev defaults. Bringing
+// them under `firebase deploy --only storage` makes the bucket's access rules
+// reviewable in the same place as everything else.
+//
+// ⚠ Deploying this REPLACES the rules currently live in the console. Read them
+// first (Firebase console → Storage → Rules) and fold in anything not covered.
+
+service firebase.storage {
+  match /b/{bucket}/o {
+
+    // Admin = signed-in, verified email, whitelisted in Firestore `admins` with
+    // role 'admin'. Same definition as firestore.rules and AuthContext.
+    function isAdmin() {
+      return request.auth != null
+          && request.auth.token.email_verified == true
+          && firestore.exists(/databases/default/documents/admins/$(request.auth.token.email))
+          && firestore.get(/databases/default/documents/admins/$(request.auth.token.email)).data.role == 'admin';
+    }
+
+    function isImage() {
+      return request.resource.contentType.matches('image/.*');
+    }
+
+    // ── Product and banner imagery — public catalogue, admin-managed ────────
+    // Anyone may view; only an admin may add or replace.
+    match /products/{allPaths=**} {
+      allow read: if true;
+      allow write: if isAdmin() && isImage() && request.resource.size < 10 * 1024 * 1024;
+    }
+
+    match /banners/{allPaths=**} {
+      allow read: if true;
+      allow write: if isAdmin() && isImage() && request.resource.size < 10 * 1024 * 1024;
+    }
+
+    // ── Review photos — guests upload these, so the limits do the work ──────
+    // A guest write is unavoidable here (the photo is attached before
+    // `submitReview` runs), so it is capped hard: images only, 5 MB, and
+    // create-only — an uploaded photo cannot be overwritten or deleted by the
+    // next visitor. `submitReview` additionally refuses any photo_url that does
+    // not point at this bucket, so a file here is inert until a review cites it.
+    match /reviews/{fileName} {
+      allow read: if true;
+      allow create: if isImage() && request.resource.size < 5 * 1024 * 1024;
+      allow update, delete: if isAdmin();
+    }
+
+    // ── Everything else is denied ──────────────────────────────────────────
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}

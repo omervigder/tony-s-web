@@ -222,6 +222,10 @@ export interface CartItem extends Product, SelectedOptions {
   /** base price + length delta + branding surcharge. Absent on carts persisted before options shipped. */
   unitPrice?: number;
   bundleItems?: { id: string; name: string; price: number; quantity: number }[];
+  /** Build-A-Box only: the catalog product the box was built on. A bundle line's
+   *  own `id` is synthetic (`bundle_<ts>`), so this is what lets the server
+   *  re-price the box from the catalog at checkout. */
+  boxBaseId?: string;
 }
 
 export interface SiteContent {

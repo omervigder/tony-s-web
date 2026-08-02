@@ -6,41 +6,15 @@ service cloud.firestore {
     // with role 'admin'. Mirrors AuthContext.tsx, which gates the admin panel the same
     // way. (The `admin` custom claim is never set on the client, so a token-claim check
     // would always be false — we resolve admin status from Firestore instead.)
+    // `email_verified` matters because the whitelist is keyed by address: without
+    // it, any sign-in method that lets the caller assert an arbitrary email would
+    // be enough to match an admin entry.
     function isAdmin() {
       let adminRef = /databases/$(database)/documents/admins/$(request.auth.token.email);
       return request.auth != null
+          && request.auth.token.email_verified == true
           && exists(adminRef)
           && get(adminRef).data.role == 'admin';
-    }
-
-    // ── Schema validation — guest-submitted order ─────────────────────────
-    function isValidOrderCreate() {
-      let d = request.resource.data;
-      return d.customer_name is string
-          && d.customer_name.size() >= 1
-          && d.customer_name.size() <= 100
-          && d.customer_phone is string
-          && d.customer_phone.size() >= 7
-          && d.customer_phone.size() <= 20
-          && d.delivery_method in ['pickup', 'delivery']
-          && d.total_price is number
-          && d.total_price >= 0
-          && d.items is list;
-    }
-
-    // ── Schema validation — guest-submitted review ────────────────────────
-    function isValidReviewCreate() {
-      let d = request.resource.data;
-      return d.product_id is string
-          && d.product_id.size() > 0
-          && d.customer_name is string
-          && d.customer_name.size() >= 1
-          && d.customer_name.size() <= 100
-          && d.rating is int
-          && d.rating >= 1
-          && d.rating <= 5
-          && d.message is string
-          && d.message.size() <= 1000;
     }
 
     // ── Public catalogue — guests browse freely ───────────────────────────
@@ -54,16 +28,25 @@ service cloud.firestore {
       allow write: if isAdmin();
     }
 
-    // ── Coupons — guests validate codes at checkout ───────────────────────
+    // ── Coupons — admin-only ──────────────────────────────────────────────
+    // These used to be world-readable so the cart could look a code up
+    // directly, which also let one query enumerate every code, value and
+    // expiry in the store. Guests now resolve a code through the
+    // `validateCouponCode` function, which answers about one code at a time
+    // and is rate-limited against guessing.
     match /coupons/{id} {
-      allow read: if true;
+      allow read: if isAdmin();
       allow write: if isAdmin();
     }
 
-    // ── Reviews — guests read and submit (schema-validated) ──────────────
+    // ── Reviews — publicly readable, written server-side ──────────────────
+    // Creates are denied to clients: an unauthenticated, unthrottled create
+    // rule is an open invitation to automated posting, and rules cannot rate
+    // limit. `submitReview` validates, throttles per caller, and takes the
+    // product name from the catalog instead of from the submission.
     match /reviews/{id} {
       allow read: if true;
-      allow create: if isValidReviewCreate();
+      allow create: if false;
       allow update, delete: if isAdmin();
     }
 
@@ -93,8 +76,13 @@ service cloud.firestore {
 
     // ── Orders ────────────────────────────────────────────────────────────
     match /orders/{id} {
-      // Guests place orders (schema-validated, no auth required)
-      allow create: if isValidOrderCreate();
+      // Client creates are denied outright. Guests used to write orders here
+      // directly, which meant `total_price` was whatever the browser claimed —
+      // rules can validate a shape but cannot recompute a price, so the only
+      // check possible was `>= 0` and a crafted order bought the cart for ₪1.
+      // Orders are now written by the `createOrder` Cloud Function, which prices
+      // the cart from the catalog and runs under the Admin SDK (rules bypassed).
+      allow create: if false;
       // Only whitelisted admins may read customer PII, mark paid, or delete
       allow read, update, delete: if isAdmin();
     }
