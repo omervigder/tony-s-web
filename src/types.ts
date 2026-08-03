@@ -86,8 +86,6 @@ export interface Product {
   colorOptions?: ProductColorOption[];
   lengthOptions?: ProductLengthOption[];
   brandingOptionIds?: string[];
-  /** Show the customer a free-text box for the name to print on this product. */
-  allowBrandingName?: boolean;
   /** Per-product name embroidery, priced per half. Absent = not offered. */
   embroidery?: ProductEmbroidery;
   isBoxBase?: boolean;
