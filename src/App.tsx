@@ -301,7 +301,6 @@ function StoreApp() {
   const [selectedColor, setSelectedColor] = useState<ProductColorOption | null>(null);
   const [selectedLength, setSelectedLength] = useState<ProductLengthOption | null>(null);
   const [selectedBrandingId, setSelectedBrandingId] = useState<string>('');
-  const [brandingText, setBrandingText] = useState<string>('');
   const [embroidery, setEmbroidery] = useState(EMPTY_EMBROIDERY_CHOICE);
   const [customerNotes, setCustomerNotes] = useState('');
 
@@ -510,7 +509,6 @@ function StoreApp() {
     setSelectedColor(null);
     setSelectedLength(null);
     setSelectedBrandingId('');
-    setBrandingText('');
     setEmbroidery(EMPTY_EMBROIDERY_CHOICE);
     setReviews([]);
     setReviewForm({ rating: 5, message: '', customerName: '', photoFile: null, photoPreview: '' });
@@ -647,11 +645,6 @@ function StoreApp() {
     ? brandingOptions.filter(b => (selectedProduct.brandingOptionIds ?? []).includes(b.id))
     : [];
   const selectedBranding = productBrandingOptions.find(b => b.id === selectedBrandingId) ?? null;
-  /** Admin opts a product into the printed-name box. When the product also offers
-   *  priced branding options, asking for a name before one is picked is noise —
-   *  "ללא מיתוג" means nothing gets printed. */
-  const showBrandingNameField = !!selectedProduct?.allowBrandingName
-    && (productBrandingOptions.length === 0 || !!selectedBranding);
   /** Name embroidery, per half. The admin enables and prices each one on the
    *  product itself, so a half that is off simply isn't offered. */
   const embroideryOffered = {
@@ -1235,55 +1228,24 @@ function StoreApp() {
                   </div>
                 )}
 
-                {/* Branding (מיתוג) — catalog picker and/or the printed-name box.
-                    Either half can appear without the other. */}
-                {(productBrandingOptions.length > 0 || showBrandingNameField) && (
+                {/* Branding (מיתוג) — catalog picker. The name itself is collected
+                    by the embroidery fields below, not here. */}
+                {productBrandingOptions.length > 0 && (
                   <div>
-                    {productBrandingOptions.length > 0 && (
-                      <>
-                        <label htmlFor="branding-select" className="block text-sm font-medium text-ink mb-2">מיתוג:</label>
-                        <select
-                          id="branding-select"
-                          value={selectedBrandingId}
-                          onChange={(e) => {
-                            setSelectedBrandingId(e.target.value);
-                            // Dropping back to "ללא מיתוג" must not leave an orphan name.
-                            if (!e.target.value) setBrandingText('');
-                          }}
-                          className="w-full bg-surface border border-line px-4 py-3 text-ink outline-none focus:border-ink transition-colors"
-                        >
-                          <option value="">— ללא מיתוג —</option>
-                          {productBrandingOptions.map(b => (
-                            <option key={b.id} value={b.id}>
-                              {b.label}{b.extraCost > 0 ? ` (+₪${formatPrice(b.extraCost)})` : ''}
-                            </option>
-                          ))}
-                        </select>
-                      </>
-                    )}
-
-                    {/* Admin opt-in per product. Gated on an actual branding choice
-                        only when the product offers any — a product with none is
-                        branded by definition, so the name applies immediately. */}
-                    {showBrandingNameField && (
-                      <div className="mt-3">
-                        <label htmlFor="branding-text" className="block text-sm font-medium text-ink mb-2">
-                          השם למיתוג <span className="text-muted font-normal">(אופציונלי)</span>
-                        </label>
-                        <input
-                          id="branding-text"
-                          type="text"
-                          maxLength={40}
-                          value={brandingText}
-                          onChange={(e) => setBrandingText(e.target.value)}
-                          placeholder="למשל: משפחת כהן"
-                          className="w-full bg-surface border border-line px-4 py-3 text-ink outline-none focus:border-ink transition-colors"
-                        />
-                        <p className="text-muted text-xs mt-1">
-                          נדפיס בדיוק כפי שיוקלד. אפשר להשאיר ריק ונתאם איתך בהמשך.
-                        </p>
-                      </div>
-                    )}
+                    <label htmlFor="branding-select" className="block text-sm font-medium text-ink mb-2">מיתוג:</label>
+                    <select
+                      id="branding-select"
+                      value={selectedBrandingId}
+                      onChange={(e) => setSelectedBrandingId(e.target.value)}
+                      className="w-full bg-surface border border-line px-4 py-3 text-ink outline-none focus:border-ink transition-colors"
+                    >
+                      <option value="">— ללא מיתוג —</option>
+                      {productBrandingOptions.map(b => (
+                        <option key={b.id} value={b.id}>
+                          {b.label}{b.extraCost > 0 ? ` (+₪${formatPrice(b.extraCost)})` : ''}
+                        </option>
+                      ))}
+                    </select>
                   </div>
                 )}
 
@@ -1394,11 +1356,6 @@ function StoreApp() {
                             label: selectedBranding.label,
                             extraCost: selectedBranding.extraCost,
                           },
-                        }),
-                        // Independent of selectedBranding: a product can take a
-                        // printed name without offering any priced branding option.
-                        ...(showBrandingNameField && brandingText.trim() && {
-                          brandingText: brandingText.trim(),
                         }),
                         ...(embroideryPicked.firstName && {
                           embroideryFirstName: {

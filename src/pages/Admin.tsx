@@ -710,7 +710,6 @@ const EMPTY_FORM = {
   colorOptions: [] as ProductColorOption[],
   lengthOptions: [] as ProductLengthOption[],
   brandingOptionIds: [] as string[],
-  allowBrandingName: false,
   embroidery: EMPTY_EMBROIDERY,
   isBoxBase: false,
   discount: { type: 'percent', value: 0, isActive: false, label: '' } as ProductDiscount & { label: string },
@@ -769,7 +768,6 @@ function ProductsView({ products, categories, brandingOptions }: { products: Pro
       colorOptions: p.colorOptions ?? [],
       lengthOptions: p.lengthOptions ?? [],
       brandingOptionIds: p.brandingOptionIds ?? [],
-      allowBrandingName: p.allowBrandingName ?? false,
       // Read half by half: products created before embroidery shipped have no
       // `embroidery` field at all, and an older doc may carry only one half.
       embroidery: {
@@ -900,7 +898,6 @@ function ProductsView({ products, categories, brandingOptions }: { products: Pro
         colorOptions,
         lengthOptions: form.lengthOptions.filter(l => l.label.trim()),
         brandingOptionIds: form.brandingOptionIds,
-        allowBrandingName: form.allowBrandingName,
         // Written whole, both halves always present: an edit that turns
         // embroidery off has to overwrite what is already on the document.
         // A disabled half is stored at ₪0 so a stale price can never be charged.
@@ -1405,20 +1402,6 @@ function ProductsView({ products, categories, brandingOptions }: { products: Pro
                     ))}
                   </div>
                 )}
-
-                {/* Sits outside the catalog list on purpose: a product can be branded
-                    with a name even when it opts into no priced branding option. */}
-                <label className="mt-3 flex items-center justify-between p-3 bg-cream border border-line rounded-xl cursor-pointer hover:border-ink/40 transition-colors">
-                  <div>
-                    <p className="text-ink text-sm font-medium">שדה שם למיתוג</p>
-                    <p className="text-gray-500 text-xs mt-0.5">הלקוח יוכל להקליד את השם שיודפס על המוצר</p>
-                  </div>
-                  <div
-                    onClick={() => setForm(p => ({ ...p, allowBrandingName: !p.allowBrandingName }))}
-                    className={`relative w-11 h-6 rounded-full transition-colors flex-shrink-0 ${form.allowBrandingName ? 'bg-ink' : 'bg-line'}`}>
-                    <span className={`absolute top-0.5 w-5 h-5 rounded-full bg-white shadow transition-transform ${form.allowBrandingName ? 'translate-x-0.5' : 'translate-x-5'}`} />
-                  </div>
-                </label>
               </div>
 
               {/* Embroidery (רקמת שם) — per-product, and priced per product:
