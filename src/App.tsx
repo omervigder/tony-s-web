@@ -4,15 +4,83 @@ import GiftAssistant from './components/GiftAssistant';
 import CheckoutSuccess from './components/CheckoutSuccess';
 import { ShoppingCart, Package, Plus, Minus, Trash2, Camera, ChevronRight, ChevronLeft, CheckCircle2, X, Menu, Loader2, ChevronDown, Copy, Star, MessageCircle, Gift, Check, Instagram } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
-import { Product, Category, CartItem, Coupon, OrderItem, SiteContent, Review, BrandingOption, ProductColorOption, ProductLengthOption, SiteBanner } from './types';
+import { Product, Category, CartItem, Coupon, SiteContent, Review, BrandingOption, ProductColorOption, ProductLengthOption, SiteBanner } from './types';
 import { effectivePrice } from './lib/pricing';
-import { getCartKey, unitPriceOf } from './lib/cart';
+import { embroideryPrice, getCartKey, unitPriceOf } from './lib/cart';
 import { CartProvider, useCart } from './contexts/CartContext';
-import { db, storage } from './firebase';
-import { collection, addDoc, getDocs, doc, getDoc, query, orderBy, where } from "firebase/firestore";
+import { app, db, storage } from './firebase';
+import { collection, getDocs, doc, getDoc, query, orderBy, where } from "firebase/firestore";
+import { getFunctions, httpsCallable } from 'firebase/functions';
 import { ref, uploadBytes, getDownloadURL } from "firebase/storage";
 
 const INSTAGRAM_URL = 'https://www.instagram.com/tony_amrami__branding?igsh=M2QycXNhZDk2Z2s2&utm_source=qr';
+
+/** What the shopper picked — never what it costs.
+ *
+ *  The order total is computed by the `createOrder` Cloud Function from the
+ *  catalog, the coupon document and `settings/store`; the totals rendered around
+ *  the checkout are a preview of that calculation, not an input to it. */
+interface CreateOrderLine {
+  /** Absent on a Build-A-Box line, which is priced from `bundle` instead. */
+  productId?: string;
+  quantity: number;
+  selectedVariations?: Record<string, string>;
+  selectedColorName?: string;
+  selectedLengthLabel?: string;
+  selectedBrandingId?: string;
+  brandingText?: string;
+  /** The names to embroider. Only the text travels — the server takes the ₪ for
+   *  each half from the product document. */
+  embroideryFirstName?: string;
+  embroideryLastName?: string;
+  /** A box the shopper assembled — the server re-prices it from the box base
+   *  and the contents, so the browser's `bundle_<ts>` line never sets a price. */
+  bundle?: {
+    boxBaseId: string;
+    items: { productId: string; quantity: number }[];
+  };
+}
+
+interface CreateOrderRequest {
+  customerName: string;
+  customerPhone: string;
+  customerEmail?: string;
+  deliveryMethod: 'pickup' | 'delivery';
+  shippingAddress?: string;
+  items: CreateOrderLine[];
+  couponCode?: string;
+  dedicationMessage?: string;
+  dedicationCardType?: 'digital' | 'printed';
+  customerNotes?: string;
+  /** What the storefront displayed. Compared, never trusted for pricing — the
+   *  server refuses to create an order whose total the shopper has not seen. */
+  expectedTotal: number;
+}
+
+interface CreateOrderResponse {
+  orderId: string;
+  total: number;
+  subtotal: number;
+  discountAmount: number;
+  shippingCost: number;
+  cardCost: number;
+  couponApplied: boolean;
+}
+
+const createOrderFn = httpsCallable<CreateOrderRequest, CreateOrderResponse>(
+  getFunctions(app),
+  'createOrder',
+);
+
+/** Reviews are written server-side so submissions can be rate-limited and the
+ *  product name taken from the catalog rather than from the submission. */
+const submitReviewFn = httpsCallable<{
+  productId: string;
+  customerName: string;
+  rating: number;
+  message: string;
+  photoUrl?: string;
+}, { ok: boolean }>(getFunctions(app), 'submitReview');
 
 // lucide-react ships no WhatsApp glyph, so the mark lives here and is shared by
 // the header, the footer and the floating bubble.
@@ -88,6 +156,13 @@ const BundlePrice = ({ product }: { product: Product }) => {
  *  the basket, the applied coupon, the store rules and every ₪ derived from them
  *  come from `useCart()`, so the cart drawer, the checkout summary and the order
  *  document can never disagree about what the customer owes. */
+/** What the shopper has opted into on the product page. Embroidery is a paid
+ *  extra, so it is off until they tick it — never pre-selected. */
+const EMPTY_EMBROIDERY_CHOICE = {
+  firstName: { on: false, text: '' },
+  lastName: { on: false, text: '' },
+};
+
 /** True when the product has options the shopper must choose before it can be added. */
 const needsOptions = (p: Product) => !!(
   p.variations?.length || p.colorOptions?.length || p.lengthOptions?.length || p.brandingOptionIds?.length
@@ -202,7 +277,7 @@ function StoreApp() {
   const [view, setView] = useState<'user' | 'catalog' | 'checkout' | 'success' | 'product' | 'build-box'>('user');
 
   const {
-    cart, addToCart, addLine, removeFromCart, updateQuantity, clearCart,
+    cart, addToCart, addLine, removeFromCart, updateQuantity, clearCart, repriceCart,
     settings,
     deliveryMethod, setDeliveryMethod, dedication, setDedication,
     appliedCoupon, couponInput, setCouponInput, couponError, clearCouponError,
@@ -227,6 +302,7 @@ function StoreApp() {
   const [selectedLength, setSelectedLength] = useState<ProductLengthOption | null>(null);
   const [selectedBrandingId, setSelectedBrandingId] = useState<string>('');
   const [brandingText, setBrandingText] = useState<string>('');
+  const [embroidery, setEmbroidery] = useState(EMPTY_EMBROIDERY_CHOICE);
   const [customerNotes, setCustomerNotes] = useState('');
 
   // Reviews
@@ -435,6 +511,7 @@ function StoreApp() {
     setSelectedLength(null);
     setSelectedBrandingId('');
     setBrandingText('');
+    setEmbroidery(EMPTY_EMBROIDERY_CHOICE);
     setReviews([]);
     setReviewForm({ rating: 5, message: '', customerName: '', photoFile: null, photoPreview: '' });
     navigateTo('product', id);
@@ -467,21 +544,24 @@ function StoreApp() {
         await uploadBytes(storageRef, reviewForm.photoFile);
         photoUrl = await getDownloadURL(storageRef);
       }
-      await addDoc(collection(db, 'reviews'), {
-        product_id: selectedProduct.id,
-        product_name: selectedProduct.name,
-        customer_name: reviewForm.customerName.trim(),
+      // Written server-side: `reviews` creates are denied to clients so the
+      // submission can be throttled, which a Firestore rule cannot do.
+      await submitReviewFn({
+        productId: selectedProduct.id,
+        customerName: reviewForm.customerName.trim(),
         rating: reviewForm.rating,
         message: reviewForm.message.trim(),
-        ...(photoUrl && { photo_url: photoUrl }),
-        created_at: new Date().toISOString(),
+        ...(photoUrl && { photoUrl }),
       });
       showToast('תודה על הביקורת! 🌸');
       setReviewForm({ rating: 5, message: '', customerName: '', photoFile: null, photoPreview: '' });
       fetchReviews(selectedProduct.id);
     } catch (err) {
       console.error('Error submitting review:', err);
-      alert('שגיאה בשליחת הביקורת');
+      // submitReview returns Hebrew copy for what the visitor can act on —
+      // a rating out of range, an empty field, or the throttle having tripped.
+      const message = (err as { message?: string })?.message;
+      alert(message && !/internal|unavailable/i.test(message) ? message : 'שגיאה בשליחת הביקורת');
     } finally {
       setIsSubmittingReview(false);
     }
@@ -519,6 +599,9 @@ function StoreApp() {
       ...bundleProduct,
       quantity: 1,
       unitPrice: bundleProduct.price,
+      // The line id is synthetic, so the box base is recorded separately — it is
+      // what `createOrder` re-prices the bundle from at checkout.
+      boxBaseId: selectedBoxBase.id,
       bundleItems: bundleItems.map(bi => ({
         id: bi.product.id, name: bi.product.name,
         price: effectivePrice(bi.product).final, quantity: bi.qty,
@@ -550,6 +633,8 @@ function StoreApp() {
     item.selectedLength && `אורך: ${item.selectedLength.label}`,
     item.selectedBranding && `מיתוג: ${item.selectedBranding.label}`,
     item.brandingText && `שם למיתוג: ${item.brandingText}`,
+    item.embroideryFirstName && `רקמת שם פרטי: ${item.embroideryFirstName.text}`,
+    item.embroideryLastName && `רקמת שם משפחה: ${item.embroideryLastName.text}`,
   ].filter(Boolean).join(' | ');
 
   // Every ₪ below comes out of the cart context's single `computeTotals()` pass —
@@ -567,7 +652,28 @@ function StoreApp() {
    *  "ללא מיתוג" means nothing gets printed. */
   const showBrandingNameField = !!selectedProduct?.allowBrandingName
     && (productBrandingOptions.length === 0 || !!selectedBranding);
-  const productSurcharge = (selectedLength?.priceDelta ?? 0) + (selectedBranding?.extraCost ?? 0);
+  /** Name embroidery, per half. The admin enables and prices each one on the
+   *  product itself, so a half that is off simply isn't offered. */
+  const embroideryOffered = {
+    firstName: selectedProduct?.embroidery?.firstName?.enabled === true,
+    lastName: selectedProduct?.embroidery?.lastName?.enabled === true,
+  };
+  const embroideryPrices = {
+    firstName: embroideryPrice(selectedProduct?.embroidery?.firstName),
+    lastName: embroideryPrice(selectedProduct?.embroidery?.lastName),
+  };
+  /** Only counts once the half is both offered *and* ticked — an add-on the
+   *  product no longer offers must not survive in the price the shopper sees. */
+  const embroideryPicked = {
+    firstName: embroideryOffered.firstName && embroidery.firstName.on,
+    lastName: embroideryOffered.lastName && embroidery.lastName.on,
+  };
+  const embroiderySurcharge =
+    (embroideryPicked.firstName ? embroideryPrices.firstName : 0) +
+    (embroideryPicked.lastName ? embroideryPrices.lastName : 0);
+
+  const productSurcharge =
+    (selectedLength?.priceDelta ?? 0) + (selectedBranding?.extraCost ?? 0) + embroiderySurcharge;
   const productPricing = selectedProduct
     ? effectivePrice(selectedProduct)
     : { list: 0, final: 0, isDiscounted: false, percentOff: 0 };
@@ -575,7 +681,8 @@ function StoreApp() {
   // Show a "starting from" prefix until the shopper has picked every option that could add cost.
   const hasSurchargeOptions = !!(
     selectedProduct?.lengthOptions?.some(l => l.priceDelta > 0) ||
-    productBrandingOptions.some(b => b.extraCost > 0)
+    productBrandingOptions.some(b => b.extraCost > 0) ||
+    embroideryPrices.firstName > 0 || embroideryPrices.lastName > 0
   );
   const hasPickedSurcharge = productSurcharge > 0;
 
@@ -614,100 +721,107 @@ function StoreApp() {
 
     setIsCreatingPayment(true);
 
-    const orderItems: OrderItem[] = cart.map(i => {
-      const pricing = effectivePrice(i);
+    // Only the *selections* travel to the server. Prices, discounts, shipping and
+    // the gift are all re-derived there from the catalog — a total sent from here
+    // would be a total the shopper could edit.
+    const orderLines: CreateOrderLine[] = cart.map(i => {
+      // A Build-A-Box line's own id is synthetic and its price was computed in
+      // the browser — send the recipe instead and let the server cost it.
+      if (i.bundleItems?.length) {
+        return {
+          quantity: i.quantity,
+          bundle: {
+            boxBaseId: i.boxBaseId ?? '',
+            items: i.bundleItems.map(b => ({ productId: b.id, quantity: b.quantity })),
+          },
+        };
+      }
       return {
-      id: i.id,
-      name: i.name,
-      // `price` is the unit price actually charged, so every downstream consumer
-      // (Telegram totals, admin analytics, the xlsx export) stays correct.
-      price: unitPriceOf(i),
-      // The base the charge was built from — discounted, when the line was on sale.
-      basePrice: pricing.final,
-      ...(pricing.isDiscounted && { listPrice: pricing.list }),
-      costPrice: i.costPrice ?? 0,
-      quantity: i.quantity,
-      ...(i.selectedVariations && Object.keys(i.selectedVariations).length > 0 && { selectedVariations: i.selectedVariations }),
-      ...(i.selectedColor && { selectedColor: { name: i.selectedColor.name, hex: i.selectedColor.hex } }),
-      ...(i.selectedLength && { selectedLength: i.selectedLength }),
-      ...(i.selectedBranding && { selectedBranding: i.selectedBranding }),
-      ...(i.brandingText && { brandingText: i.brandingText }),
+        productId: i.id,
+        quantity: i.quantity,
+        ...(i.selectedVariations && Object.keys(i.selectedVariations).length > 0 && { selectedVariations: i.selectedVariations }),
+        ...(i.selectedColor && { selectedColorName: i.selectedColor.name }),
+        ...(i.selectedLength && { selectedLengthLabel: i.selectedLength.label }),
+        ...(i.selectedBranding && { selectedBrandingId: i.selectedBranding.id }),
+        ...(i.brandingText && { brandingText: i.brandingText }),
+        ...(i.embroideryFirstName?.text && { embroideryFirstName: i.embroideryFirstName.text }),
+        ...(i.embroideryLastName?.text && { embroideryLastName: i.embroideryLastName.text }),
       };
     });
 
-    // The threshold gift ships with the order, so it has to appear in `items` for
-    // whoever packs the box — at ₪0, and carrying its cost so profit stays honest.
-    if (totals.gift) {
-      orderItems.push({
-        id: totals.gift.id,
-        name: totals.gift.name,
-        price: 0,
-        basePrice: 0,
-        costPrice: totals.gift.costPrice,
-        quantity: 1,
-        isGift: true,
-      });
+    // A box built before `boxBaseId` was recorded cannot be re-priced server-side.
+    // Those lines predate this checkout flow and only exist in a localStorage cart
+    // that has been sitting open — ask for a rebuild rather than failing opaquely.
+    if (orderLines.some(l => l.bundle && !l.bundle.boxBaseId)) {
+      alert("מארז אישי בסל נוצר בגרסה קודמת של האתר. אנא הסירו אותו ובנו אותו מחדש.");
+      setIsCreatingPayment(false);
+      return;
     }
 
-    const dedicationData = dedication.message.trim()
-      ? { message: dedication.message.trim(), cardType: dedication.cardType }
-      : undefined;
-
-    // ── 1. Save order as pending_payment (Firestore) — do NOT show success UI yet ──
-    let orderDoc;
+    // ── 1. Create the order server-side — do NOT show success UI yet ──
+    // The server prices the cart from the catalog and refuses the order if its
+    // total differs from `expectedTotal`, so the shopper is never sent to a
+    // payment page for a number they have not seen.
+    let order: CreateOrderResponse;
     try {
-      orderDoc = await addDoc(collection(db, "orders"), {
-        customer_name: checkoutData.name,
-        customer_phone: checkoutData.phone,
-        ...(checkoutData.email && { customer_email: checkoutData.email }),
-        delivery_method: deliveryMethod,
-        total_price: finalTotal,
-        items: orderItems,
-        status: 'pending_payment',
-        orderStatus: 'PendingPayment',
-        isPaid: false,
+      const result = await createOrderFn({
+        customerName: checkoutData.name,
+        customerPhone: checkoutData.phone,
+        ...(checkoutData.email && { customerEmail: checkoutData.email }),
+        deliveryMethod,
         ...(deliveryMethod === 'delivery' && { shippingAddress: checkoutData.shippingAddress }),
-        created_at: new Date().toISOString(),
-        // The full money breakdown, so the order records how the total was reached
-        // rather than leaving admin/analytics to re-derive it from stale settings.
-        subtotal: cartTotal,
-        shipping_cost: shippingCost,
-        free_shipping: totals.freeShipping,
-        ...(cardCost > 0 && { card_cost: cardCost }),
-        ...(appliedCoupon && {
-          coupon_code: appliedCoupon.code,
-          coupon_id: appliedCoupon.id,
-          coupon_type: appliedCoupon.type,
-          discount_amount: discountAmount,
+        items: orderLines,
+        ...(appliedCoupon && { couponCode: appliedCoupon.code }),
+        ...(dedication.message.trim() && {
+          dedicationMessage: dedication.message.trim(),
+          dedicationCardType: dedication.cardType,
         }),
-        ...(totals.gift && { gift_item: { id: totals.gift.id, name: totals.gift.name } }),
-        ...(dedicationData && { dedication: dedicationData }),
-        ...(customerNotes.trim() && { customer_notes: customerNotes.trim() }),
+        ...(customerNotes.trim() && { customerNotes: customerNotes.trim() }),
+        expectedTotal: finalTotal,
       });
+      order = result.data;
       // Telegram notification fires automatically via onOrderCreated Cloud Function trigger
     } catch (err) {
-      console.error("[Checkout] Firestore order save failed:", err);
-      alert("שגיאה בשמירת ההזמנה. אנא בדקו את חיבור האינטרנט ונסו שוב.");
+      console.error("[Checkout] createOrder failed:", err);
+      const { message, details } = (err ?? {}) as { message?: string; details?: { reason?: string } };
+
+      // The cart has gone stale — a sale ended, a price was edited, a coupon was
+      // exhausted. Pull the lines back in line with the catalog so the corrected
+      // summary is what the shopper sees; without this the retry would fail the
+      // same way forever, because the cart is a frozen localStorage snapshot.
+      if (details?.reason === 'total_mismatch') {
+        await repriceCart();
+      }
+
+      // The function returns Hebrew copy for everything the shopper can act on
+      // (a stale price, a sold-out option, below the minimum order).
+      alert(message && !/internal|unavailable/i.test(message)
+        ? message
+        : "שגיאה בשמירת ההזמנה. אנא בדקו את חיבור האינטרנט ונסו שוב.");
       setIsCreatingPayment(false);
       return;
     }
 
     // ── 2. POST to Make.com webhook (network) → get payment URL ──
+    // `total_price` here is the server-computed figure, echoed for convenience.
+    // ⚠ The Make.com scenario must read the amount to charge from the Firestore
+    // order document keyed by `orderId` — this endpoint is public, so anything
+    // in the body is attacker-controllable regardless of what the client sends.
     let response: Response;
     try {
       response = await fetch("https://hook.eu1.make.com/77c28f0f26ja6igr5wb6356nd89nfqip", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          orderId: orderDoc.id,
-          total_price: finalTotal,
+          orderId: order.orderId,
+          total_price: order.total,
           customer_name: checkoutData.name.trim(),
           customer_phone: normalizePhone(checkoutData.phone),
         }),
       });
     } catch (err) {
       // fetch only rejects on network-level failures (offline, DNS, blocked CORS preflight)
-      console.error("[Checkout] Webhook request failed (network/CORS). Order ID:", orderDoc.id, err);
+      console.error("[Checkout] Webhook request failed (network/CORS). Order ID:", order.orderId, err);
       alert("שגיאת רשת ביצירת התשלום. אנא בדקו את חיבור האינטרנט ונסו שוב.");
       setIsCreatingPayment(false);
       return;
@@ -742,7 +856,7 @@ function StoreApp() {
     }
 
     // ── 4. Redirect to the payment page — page navigates away here ──
-    console.log("[Checkout] Redirecting to payment URL for order", orderDoc.id, "→", responseData.payment_url);
+    console.log("[Checkout] Redirecting to payment URL for order", order.orderId, "→", responseData.payment_url);
     window.location.href = responseData.payment_url;
   };
 
@@ -1173,6 +1287,53 @@ function StoreApp() {
                   </div>
                 )}
 
+                {/* Embroidery (רקמת שם) — each half is a paid extra the admin
+                    switched on and priced for this product, so it is opt-in:
+                    ticking it reveals the name box and adds the surcharge. */}
+                {(embroideryOffered.firstName || embroideryOffered.lastName) && (
+                  <div>
+                    <label className="block text-sm font-medium text-ink mb-2">רקמת שם:</label>
+                    <div className="space-y-3">
+                      {([
+                        { half: 'firstName', label: 'רקמת שם פרטי', placeholder: 'למשל: נועה', inputId: 'embroidery-first' },
+                        { half: 'lastName', label: 'רקמת שם משפחה', placeholder: 'למשל: כהן', inputId: 'embroidery-last' },
+                      ] as const).filter(({ half }) => embroideryOffered[half]).map(({ half, label, placeholder, inputId }) => (
+                        <div key={half} className="border border-line bg-surface p-4">
+                          <label className="flex items-center gap-3 cursor-pointer">
+                            <input
+                              type="checkbox"
+                              checked={embroidery[half].on}
+                              onChange={(e) => {
+                                const on = e.target.checked;
+                                // Unticking must not leave an orphan name behind.
+                                setEmbroidery(prev => ({ ...prev, [half]: { on, text: on ? prev[half].text : '' } }));
+                              }}
+                              className="w-4 h-4 accent-[#1A1A18]"
+                            />
+                            <span className="text-sm text-ink flex-1">{label}</span>
+                            <span className="text-sm text-muted">
+                              {embroideryPrices[half] > 0 ? `+₪${formatPrice(embroideryPrices[half])}` : 'ללא תוספת תשלום'}
+                            </span>
+                          </label>
+                          {embroidery[half].on && (
+                            <input
+                              id={inputId}
+                              type="text"
+                              maxLength={40}
+                              value={embroidery[half].text}
+                              onChange={(e) => setEmbroidery(prev => ({ ...prev, [half]: { ...prev[half], text: e.target.value } }))}
+                              placeholder={placeholder}
+                              aria-label={label}
+                              className="mt-3 w-full bg-cream border border-line px-4 py-3 text-ink outline-none focus:border-ink transition-colors"
+                            />
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                    <p className="text-muted text-xs mt-2">נרקום בדיוק כפי שיוקלד.</p>
+                  </div>
+                )}
+
                 <div className="flex items-center gap-4 bg-gray-50 p-4 rounded-2xl w-fit">
                   <span className="text-gray-500 font-medium">כמות:</span>
                   <div className="flex items-center gap-3">
@@ -1209,6 +1370,16 @@ function StoreApp() {
                       alert(`נא לבחור: ${missing.join(', ')}`);
                       return;
                     }
+                    // Embroidery is charged for, so a ticked box with no name is
+                    // a charge for nothing — ask rather than silently drop it.
+                    const blankEmbroidery = [
+                      embroideryPicked.firstName && !embroidery.firstName.text.trim() && 'שם פרטי לרקמה',
+                      embroideryPicked.lastName && !embroidery.lastName.text.trim() && 'שם משפחה לרקמה',
+                    ].filter(Boolean);
+                    if (blankEmbroidery.length > 0) {
+                      alert(`נא למלא: ${blankEmbroidery.join(', ')}`);
+                      return;
+                    }
                     addToCart(
                       selectedProduct,
                       productQuantity,
@@ -1228,6 +1399,18 @@ function StoreApp() {
                         // printed name without offering any priced branding option.
                         ...(showBrandingNameField && brandingText.trim() && {
                           brandingText: brandingText.trim(),
+                        }),
+                        ...(embroideryPicked.firstName && {
+                          embroideryFirstName: {
+                            text: embroidery.firstName.text.trim(),
+                            price: embroideryPrices.firstName,
+                          },
+                        }),
+                        ...(embroideryPicked.lastName && {
+                          embroideryLastName: {
+                            text: embroidery.lastName.text.trim(),
+                            price: embroideryPrices.lastName,
+                          },
                         }),
                       },
                     );

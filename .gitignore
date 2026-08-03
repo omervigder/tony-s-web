@@ -15,3 +15,11 @@ serviceAccount.json
 # Per-machine Claude Code permission state. Shared config (.claude/settings.json,
 # .claude/skills/) stays tracked.
 .claude/settings.local.json
+
+# Exported automation blueprints. They carry the Firebase project id, internal
+# webhook endpoints and callback URLs — none of which belong in a public repo.
+*.blueprint*.json
+
+# Saved pages from other stores, kept locally as design reference. Someone
+# else's markup, and megabytes of it — not ours to republish.
+example_pages/

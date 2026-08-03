@@ -24,7 +24,7 @@ import {
 // keeping private copies here is what let the two drift apart in the first place.
 import type {
   OrderItem, Product, Category, BrandingOption, Coupon,
-  ProductColorOption, ProductLengthOption, ProductDiscount, SiteBanner,
+  ProductColorOption, ProductLengthOption, ProductDiscount, ProductEmbroidery, SiteBanner,
   Settings as StoreSettings,
 } from '../types';
 import { COLOR_PALETTE } from '../constants/colors';
@@ -68,6 +68,8 @@ const itemOptions = (item: OrderItem): string => [
   item.selectedLength && `אורך: ${item.selectedLength.label}`,
   item.selectedBranding && `מיתוג: ${item.selectedBranding.label} (+₪${item.selectedBranding.extraCost})`,
   item.brandingText && `שם למיתוג: "${item.brandingText}"`,
+  item.embroideryFirstName && `רקמה — שם פרטי: "${item.embroideryFirstName.text}" (+₪${item.embroideryFirstName.price})`,
+  item.embroideryLastName && `רקמה — שם משפחה: "${item.embroideryLastName.text}" (+₪${item.embroideryLastName.price})`,
 ].filter(Boolean).join(' | ');
 
 const toDate = (v: any): Date => {
@@ -694,6 +696,13 @@ function AnalyticsView({ orders, products, categories }: { orders: Order[]; prod
 }
 
 /* ─────────────────────────────── ProductsView ───────────────────────── */
+
+/** Not offered, priced at nothing — the shape a product starts with. */
+const EMPTY_EMBROIDERY: ProductEmbroidery = {
+  firstName: { enabled: false, price: 0 },
+  lastName: { enabled: false, price: 0 },
+};
+
 const EMPTY_FORM = {
   name: '', description: '', price: 0, costPrice: 0, category_id: '',
   images: [] as string[],
@@ -702,6 +711,7 @@ const EMPTY_FORM = {
   lengthOptions: [] as ProductLengthOption[],
   brandingOptionIds: [] as string[],
   allowBrandingName: false,
+  embroidery: EMPTY_EMBROIDERY,
   isBoxBase: false,
   discount: { type: 'percent', value: 0, isActive: false, label: '' } as ProductDiscount & { label: string },
 };
@@ -760,6 +770,18 @@ function ProductsView({ products, categories, brandingOptions }: { products: Pro
       lengthOptions: p.lengthOptions ?? [],
       brandingOptionIds: p.brandingOptionIds ?? [],
       allowBrandingName: p.allowBrandingName ?? false,
+      // Read half by half: products created before embroidery shipped have no
+      // `embroidery` field at all, and an older doc may carry only one half.
+      embroidery: {
+        firstName: {
+          enabled: p.embroidery?.firstName?.enabled ?? false,
+          price: money(p.embroidery?.firstName?.price),
+        },
+        lastName: {
+          enabled: p.embroidery?.lastName?.enabled ?? false,
+          price: money(p.embroidery?.lastName?.price),
+        },
+      },
       isBoxBase: p.isBoxBase ?? false,
       discount: {
         type: p.discount?.type ?? 'percent',
@@ -829,6 +851,10 @@ function ProductsView({ products, categories, brandingOptions }: { products: Pro
       ),
     }));
 
+  /** Patch one half of the embroidery block — `firstName` or `lastName`. */
+  const updateEmbroidery = (half: keyof ProductEmbroidery, patch: Partial<{ enabled: boolean; price: number }>) =>
+    setForm(p => ({ ...p, embroidery: { ...p.embroidery, [half]: { ...p.embroidery[half], ...patch } } }));
+
   const toggleBranding = (id: string) => setForm(p => ({
     ...p,
     brandingOptionIds: p.brandingOptionIds.includes(id)
@@ -875,6 +901,19 @@ function ProductsView({ products, categories, brandingOptions }: { products: Pro
         lengthOptions: form.lengthOptions.filter(l => l.label.trim()),
         brandingOptionIds: form.brandingOptionIds,
         allowBrandingName: form.allowBrandingName,
+        // Written whole, both halves always present: an edit that turns
+        // embroidery off has to overwrite what is already on the document.
+        // A disabled half is stored at ₪0 so a stale price can never be charged.
+        embroidery: {
+          firstName: {
+            enabled: form.embroidery.firstName.enabled,
+            price: form.embroidery.firstName.enabled ? money(form.embroidery.firstName.price) : 0,
+          },
+          lastName: {
+            enabled: form.embroidery.lastName.enabled,
+            price: form.embroidery.lastName.enabled ? money(form.embroidery.lastName.price) : 0,
+          },
+        },
         isBoxBase: form.isBoxBase,
         // `null` rather than a dropped key: an edit that turns a sale off has to
         // overwrite the discount already on the doc, and Firestore rejects `undefined`.
@@ -1380,6 +1419,42 @@ function ProductsView({ products, categories, brandingOptions }: { products: Pro
                     <span className={`absolute top-0.5 w-5 h-5 rounded-full bg-white shadow transition-transform ${form.allowBrandingName ? 'translate-x-0.5' : 'translate-x-5'}`} />
                   </div>
                 </label>
+              </div>
+
+              {/* Embroidery (רקמת שם) — per-product, and priced per product:
+                  each half is switched on and given its own surcharge here. */}
+              <div className="border-t border-line pt-4">
+                <span className="text-ink text-sm font-bold">רקמת שם</span>
+                <p className="text-gray-400 text-xs mt-0.5 mb-3">
+                  הפעילו כל שדה בנפרד וקבעו את התוספת במחיר עבור המוצר הזה
+                </p>
+                <div className="space-y-2">
+                  {([
+                    { half: 'firstName', label: 'רקמת שם פרטי' },
+                    { half: 'lastName', label: 'רקמת שם משפחה' },
+                  ] as const).map(({ half, label }) => {
+                    const field = form.embroidery[half];
+                    return (
+                      <div key={half} className="flex items-center gap-3 p-3 bg-cream border border-line rounded-xl">
+                        <div
+                          onClick={() => updateEmbroidery(half, { enabled: !field.enabled })}
+                          className={`relative w-11 h-6 rounded-full transition-colors flex-shrink-0 cursor-pointer ${field.enabled ? 'bg-ink' : 'bg-line'}`}>
+                          <span className={`absolute top-0.5 w-5 h-5 rounded-full bg-white shadow transition-transform ${field.enabled ? 'translate-x-0.5' : 'translate-x-5'}`} />
+                        </div>
+                        <span className="text-ink text-sm flex-1">{label}</span>
+                        <input
+                          type="number"
+                          min="0"
+                          placeholder="תוספת ₪"
+                          disabled={!field.enabled}
+                          value={field.price || ''}
+                          onChange={e => updateEmbroidery(half, { price: Number(e.target.value) || 0 })}
+                          className="w-24 bg-white border border-line rounded-lg p-2 text-ink text-xs outline-none focus:border-ink/40 transition-colors disabled:opacity-40"
+                        />
+                      </div>
+                    );
+                  })}
+                </div>
               </div>
             </div>
             <div className="p-5 border-t border-line">

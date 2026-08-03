@@ -21,6 +21,23 @@ export interface ProductLengthOption {
   priceDelta: number;
 }
 
+/** One half of a product's name embroidery — the first name or the last name. */
+export interface EmbroideryFieldOption {
+  enabled: boolean;
+  /** Surcharge in ₪ for embroidering this half. May be 0 (offered free). */
+  price: number;
+}
+
+/** Name embroidery (רקמת שם) offered on a product.
+ *
+ *  Unlike branding, this is *not* a global catalog: every product is embroidered
+ *  differently and the admin prices each one on the product itself, so the two
+ *  halves live on the product document and each carries its own price. */
+export interface ProductEmbroidery {
+  firstName: EmbroideryFieldOption;
+  lastName: EmbroideryFieldOption;
+}
+
 /** Global branding catalog — Firestore collection `branding_options`. */
 export interface BrandingOption {
   id: string;
@@ -37,6 +54,11 @@ export interface SelectedOptions {
   /** The name/text the customer wants printed on a branded item. Only ever set
    *  alongside `selectedBranding`; free text, so it also keys the cart line. */
   brandingText?: string;
+  /** Embroidered first/last name. The ₪ charged is captured on the line so an
+   *  order still reads correctly after the product's embroidery prices change.
+   *  Free text, so both also key the cart line. */
+  embroideryFirstName?: { text: string; price: number };
+  embroideryLastName?: { text: string; price: number };
 }
 
 /** A price reduction on a product. `value` is a percentage (1–99) or a ₪ amount. */
@@ -66,6 +88,8 @@ export interface Product {
   brandingOptionIds?: string[];
   /** Show the customer a free-text box for the name to print on this product. */
   allowBrandingName?: boolean;
+  /** Per-product name embroidery, priced per half. Absent = not offered. */
+  embroidery?: ProductEmbroidery;
   isBoxBase?: boolean;
   created_at?: Date;
 }
@@ -222,6 +246,10 @@ export interface CartItem extends Product, SelectedOptions {
   /** base price + length delta + branding surcharge. Absent on carts persisted before options shipped. */
   unitPrice?: number;
   bundleItems?: { id: string; name: string; price: number; quantity: number }[];
+  /** Build-A-Box only: the catalog product the box was built on. A bundle line's
+   *  own `id` is synthetic (`bundle_<ts>`), so this is what lets the server
+   *  re-price the box from the catalog at checkout. */
+  boxBaseId?: string;
 }
 
 export interface SiteContent {
