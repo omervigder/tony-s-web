@@ -23,7 +23,7 @@ export const money = (v: unknown, fallback = 0): number => {
 /* ────────────────────────────── Cart lines ─────────────────────────────── */
 
 /** Identity of a cart line: the same product with different options is a different line. */
-export type CartLine = Pick<CartItem, 'id' | 'selectedVariations' | 'selectedColor' | 'selectedLength' | 'selectedBranding' | 'brandingText'>;
+export type CartLine = Pick<CartItem, 'id' | 'selectedVariations' | 'selectedColor' | 'selectedLength' | 'selectedBranding' | 'brandingText' | 'embroideryFirstName' | 'embroideryLastName'>;
 
 export const getCartKey = (item: CartLine) =>
   `${item.id}|${JSON.stringify({
@@ -33,6 +33,9 @@ export const getCartKey = (item: CartLine) =>
     b: item.selectedBranding?.id ?? null,
     // Two of the same box branded with different names are two different lines.
     bt: item.brandingText ?? null,
+    // Same reasoning: two towels embroidered with different names are two lines.
+    ef: item.embroideryFirstName?.text ?? null,
+    el: item.embroideryLastName?.text ?? null,
   })}`;
 
 /** Price of one unit, including length and branding surcharges.
@@ -41,7 +44,18 @@ export const unitPriceOf = (item: Pick<CartItem, 'price' | 'unitPrice'>) => mone
 
 /** Surcharges stack on the *discounted* base — a sale price is the price we build from. */
 export const priceWithOptions = (product: Product, opts: SelectedOptions) =>
-  effectivePrice(product).final + (opts.selectedLength?.priceDelta ?? 0) + (opts.selectedBranding?.extraCost ?? 0);
+  round2(
+    effectivePrice(product).final
+    + (opts.selectedLength?.priceDelta ?? 0)
+    + (opts.selectedBranding?.extraCost ?? 0)
+    + (opts.embroideryFirstName?.price ?? 0)
+    + (opts.embroideryLastName?.price ?? 0)
+  );
+
+/** The ₪ a product asks for embroidering one half of a name. 0 when not offered —
+ *  the product document is admin-typed, so `enabled` is checked, not assumed. */
+export const embroideryPrice = (opt: { enabled?: boolean; price?: number } | undefined) =>
+  opt?.enabled === true ? money(opt.price) : 0;
 
 export const cartSubtotal = (cart: CartItem[]) =>
   round2(cart.reduce((sum, item) => sum + unitPriceOf(item) * (Number(item.quantity) || 0), 0));

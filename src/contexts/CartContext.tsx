@@ -4,7 +4,7 @@ import { getFunctions, httpsCallable } from 'firebase/functions';
 import { app, db } from '../firebase';
 import type { CartItem, Coupon, Product, SelectedOptions, Settings } from '../types';
 import {
-  computeTotals, couponRejectionMessage, getCartKey, priceWithOptions, round2, validateCoupon,
+  computeTotals, couponRejectionMessage, embroideryPrice, getCartKey, priceWithOptions, round2, validateCoupon,
   type CartLine, type CartTotals, type CouponRejection,
 } from '../lib/cart';
 import { effectivePrice } from '../lib/pricing';
@@ -250,18 +250,37 @@ export function CartProvider({ children }: { children: React.ReactNode }) {
       const product = fresh.get(item.id);
       if (!product) { changed = true; continue; }  // delisted — drop the line
 
+      // Embroidery is priced on the product itself, so a stale line has to take
+      // the current ₪ — and lose the add-on entirely if the admin withdrew it,
+      // which is exactly what `createOrder` would do with the same line.
+      const firstNamePrice = embroideryPrice(product.embroidery?.firstName);
+      const lastNamePrice = embroideryPrice(product.embroidery?.lastName);
+
       const options: SelectedOptions = {
         ...(item.selectedColor && { selectedColor: item.selectedColor }),
         ...(item.selectedLength && { selectedLength: item.selectedLength }),
         ...(item.selectedBranding && { selectedBranding: item.selectedBranding }),
         ...(item.brandingText && { brandingText: item.brandingText }),
+        ...(item.embroideryFirstName && product.embroidery?.firstName?.enabled && {
+          embroideryFirstName: { text: item.embroideryFirstName.text, price: firstNamePrice },
+        }),
+        ...(item.embroideryLastName && product.embroidery?.lastName?.enabled && {
+          embroideryLastName: { text: item.embroideryLastName.text, price: lastNamePrice },
+        }),
       };
       const unitPrice = priceWithOptions(product, options);
       if (unitPrice !== item.unitPrice) changed = true;
 
       // Refresh the catalog fields too, so the cart shows the current name and
       // image — but keep the shopper's own choices (quantity, options) intact.
-      next.push({ ...product, ...item, ...options, unitPrice });
+      const line: CartItem = { ...product, ...item, ...options, unitPrice };
+      // `options` is authoritative, but spreading it cannot *remove* a key the
+      // stale line already carries — a withdrawn embroidery has to be deleted,
+      // or the shopper keeps an add-on `createOrder` would refuse to price.
+      for (const key of ['embroideryFirstName', 'embroideryLastName'] as const) {
+        if (line[key] && !options[key]) { delete line[key]; changed = true; }
+      }
+      next.push(line);
     }
 
     if (changed) setCart(next);

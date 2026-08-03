@@ -263,6 +263,14 @@ async function sendOrderToTelegram(orderId, order, pickupAddress, BOT_TOKEN, CHA
         line += `\n  ✨ מיתוג: ${esc(i.selectedBranding.label)} (+₪${Number(i.selectedBranding.extraCost || 0).toFixed(2)})`;
       }
       if (i.brandingText) line += `\n  ✍️ שם למיתוג: ${esc(i.brandingText)}`;
+      if (i.embroideryFirstName) {
+        line += `\n  🧵 רקמת שם פרטי: ${esc(i.embroideryFirstName.text)}`
+          + ` (+₪${Number(i.embroideryFirstName.price || 0).toFixed(2)})`;
+      }
+      if (i.embroideryLastName) {
+        line += `\n  🧵 רקמת שם משפחה: ${esc(i.embroideryLastName.text)}`
+          + ` (+₪${Number(i.embroideryLastName.price || 0).toFixed(2)})`;
+      }
       // A built box lists what went into it, so the packer knows what to pack.
       if (Array.isArray(i.bundleItems) && i.bundleItems.length) {
         line += i.bundleItems.map(b => `\n  📦 ${esc(b.name)} x${b.quantity}`).join("");
@@ -891,6 +899,8 @@ exports.grantAdminIfWhitelisted = onCall({ enforceAppCheck: false }, async (requ
 
 const MAX_ORDER_LINES = 50;
 const MAX_LINE_QUANTITY = 100;
+// Matches the `maxLength` on the storefront's embroidery inputs.
+const MAX_EMBROIDERY_LENGTH = 40;
 
 // Mirrors the storefront's checkout validation (src/App.tsx) — the client keeps
 // its copy for instant feedback, this one is the one that actually decides.
@@ -1024,6 +1034,26 @@ async function priceCartLines(rawItems) {
       unitPrice += selectedBranding.extraCost;
     }
 
+    // ── Embroidery — a per-product add-on, priced off the product document ─
+    // No global catalog to check against: the admin enables each half and sets
+    // its ₪ on the product itself, so the product is the whole authority here.
+    const embroidery = {};
+    for (const [field, half, label] of [
+      ["embroideryFirstName", "firstName", "רקמת שם פרטי"],
+      ["embroideryLastName", "lastName", "רקמת שם משפחה"],
+    ]) {
+      if (!raw[field]) continue;
+      const text = String(raw[field]).trim().slice(0, MAX_EMBROIDERY_LENGTH);
+      // An empty name is not an order for embroidery — charge nothing for it.
+      if (!text) continue;
+      const opt = (product.embroidery || {})[half];
+      if (!opt || opt.enabled !== true) {
+        throw new HttpsError("failed-precondition", `${label} אינה זמינה עבור ${product.name}`);
+      }
+      embroidery[field] = { text, price: money(opt.price) };
+      unitPrice += embroidery[field].price;
+    }
+
     // ── Color — no price impact, but it must be a real option ─────────────
     let selectedColor;
     if (raw.selectedColorName) {
@@ -1066,6 +1096,7 @@ async function priceCartLines(rawItems) {
       ...(selectedLength && { selectedLength }),
       ...(selectedBranding && { selectedBranding }),
       ...(brandingText && { brandingText }),
+      ...embroidery,
     };
   });
 }
