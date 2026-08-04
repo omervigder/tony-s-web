@@ -24,7 +24,7 @@ import {
 // keeping private copies here is what let the two drift apart in the first place.
 import type {
   OrderItem, Product, Category, BrandingOption, Coupon,
-  ProductColorOption, ProductLengthOption, ProductDiscount, ProductEmbroidery, SiteBanner,
+  ProductColorOption, ProductColorLabel, ProductLengthOption, ProductDiscount, ProductEmbroidery, SiteBanner,
   Settings as StoreSettings,
 } from '../types';
 import { COLOR_PALETTE } from '../constants/colors';
@@ -708,8 +708,10 @@ const EMPTY_FORM = {
   images: [] as string[],
   variations: [] as { name: string; values: string }[],
   colorOptions: [] as ProductColorOption[],
+  colorLabel: 'צבע' as ProductColorLabel,
   lengthOptions: [] as ProductLengthOption[],
   brandingOptionIds: [] as string[],
+  brandingNameField: false,
   embroidery: EMPTY_EMBROIDERY,
   isBoxBase: false,
   discount: { type: 'percent', value: 0, isActive: false, label: '' } as ProductDiscount & { label: string },
@@ -766,8 +768,10 @@ function ProductsView({ products, categories, brandingOptions }: { products: Pro
       images: p.images ?? [],
       variations: (p.variations || []).map(v => ({ name: v.name, values: v.values.join(', ') })),
       colorOptions: p.colorOptions ?? [],
+      colorLabel: p.colorLabel ?? 'צבע',
       lengthOptions: p.lengthOptions ?? [],
       brandingOptionIds: p.brandingOptionIds ?? [],
+      brandingNameField: p.brandingNameField ?? false,
       // Read half by half: products created before embroidery shipped have no
       // `embroidery` field at all, and an older doc may carry only one half.
       embroidery: {
@@ -896,8 +900,12 @@ function ProductsView({ products, categories, brandingOptions }: { products: Pro
         main_image: form.images[0] || null,
         variations: buildVariations(),
         colorOptions,
+        colorLabel: form.colorLabel,
         lengthOptions: form.lengthOptions.filter(l => l.label.trim()),
         brandingOptionIds: form.brandingOptionIds,
+        // Written even when off — an edit that switches the name field off has to
+        // overwrite what is already on the document.
+        brandingNameField: form.brandingNameField,
         // Written whole, both halves always present: an edit that turns
         // embroidery off has to overwrite what is already on the document.
         // A disabled half is stored at ₪0 so a stale price can never be charged.
@@ -1298,6 +1306,28 @@ function ProductsView({ products, categories, brandingOptions }: { products: Pro
               <div className="border-t border-line pt-4">
                 <span className="text-ink text-sm font-bold">צבעים</span>
                 <p className="text-gray-400 text-xs mt-0.5 mb-3">בחרו את הצבעים שהמוצר מוצע בהם</p>
+
+                {/* Which heading sits above the swatches on the product page */}
+                <div className="mb-3">
+                  <p className="text-gray-500 text-xs mb-1.5">כותרת הצבע בעמוד המוצר:</p>
+                  <div className="flex gap-2">
+                    {(['צבע', 'צבע ריקמה'] as const).map(label => (
+                      <button
+                        key={label}
+                        onClick={() => setForm(p => ({ ...p, colorLabel: label }))}
+                        aria-pressed={form.colorLabel === label}
+                        className={`px-3 py-1.5 rounded-lg text-xs border transition-colors ${
+                          form.colorLabel === label
+                            ? 'bg-ink text-white border-ink'
+                            : 'bg-cream text-ink border-line hover:border-ink/40'
+                        }`}
+                      >
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
                 <div className="flex flex-wrap gap-2 mb-3">
                   {COLOR_PALETTE.map(c => {
                     const on = form.colorOptions.some(x => x.name === c.name);
@@ -1402,6 +1432,23 @@ function ProductsView({ products, categories, brandingOptions }: { products: Pro
                     ))}
                   </div>
                 )}
+
+                {/* The name that goes on the branding. Free of charge — it only
+                    decides whether the product page asks for it at all. */}
+                <div className="flex items-center gap-3 p-3 bg-cream border border-line rounded-xl mt-3">
+                  <div
+                    onClick={() => setForm(p => ({ ...p, brandingNameField: !p.brandingNameField }))}
+                    role="switch"
+                    aria-checked={form.brandingNameField}
+                    aria-label="שדה שם למיתוג"
+                    className={`relative w-11 h-6 rounded-full transition-colors flex-shrink-0 cursor-pointer ${form.brandingNameField ? 'bg-ink' : 'bg-line'}`}>
+                    <span className={`absolute top-0.5 w-5 h-5 rounded-full bg-white shadow transition-transform ${form.brandingNameField ? 'translate-x-0.5' : 'translate-x-5'}`} />
+                  </div>
+                  <div className="flex-1">
+                    <span className="text-ink text-sm">שדה שם למיתוג</span>
+                    <p className="text-gray-400 text-xs mt-0.5">הלקוח יוכל להזין את השם שיופיע על המיתוג (ללא תוספת תשלום)</p>
+                  </div>
+                </div>
               </div>
 
               {/* Embroidery (רקמת שם) — per-product, and priced per product:

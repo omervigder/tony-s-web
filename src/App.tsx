@@ -301,6 +301,9 @@ function StoreApp() {
   const [selectedColor, setSelectedColor] = useState<ProductColorOption | null>(null);
   const [selectedLength, setSelectedLength] = useState<ProductLengthOption | null>(null);
   const [selectedBrandingId, setSelectedBrandingId] = useState<string>('');
+  /** The name to put on the branding — only asked for when the product's
+   *  `brandingNameField` is on. Free of charge, so it never touches the price. */
+  const [brandingText, setBrandingText] = useState('');
   const [embroidery, setEmbroidery] = useState(EMPTY_EMBROIDERY_CHOICE);
   const [customerNotes, setCustomerNotes] = useState('');
 
@@ -509,6 +512,7 @@ function StoreApp() {
     setSelectedColor(null);
     setSelectedLength(null);
     setSelectedBrandingId('');
+    setBrandingText('');
     setEmbroidery(EMPTY_EMBROIDERY_CHOICE);
     setReviews([]);
     setReviewForm({ rating: 5, message: '', customerName: '', photoFile: null, photoPreview: '' });
@@ -627,7 +631,7 @@ function StoreApp() {
   /** One-line summary of everything the shopper picked, for the cart drawer. */
   const cartLineOptions = (item: CartItem) => [
     ...Object.entries(item.selectedVariations ?? {}).map(([k, v]) => `${k}: ${v}`),
-    item.selectedColor && `צבע: ${item.selectedColor.name}`,
+    item.selectedColor && `${item.colorLabel ?? 'צבע'}: ${item.selectedColor.name}`,
     item.selectedLength && `אורך: ${item.selectedLength.label}`,
     item.selectedBranding && `מיתוג: ${item.selectedBranding.label}`,
     item.brandingText && `שם למיתוג: ${item.brandingText}`,
@@ -645,6 +649,11 @@ function StoreApp() {
     ? brandingOptions.filter(b => (selectedProduct.brandingOptionIds ?? []).includes(b.id))
     : [];
   const selectedBranding = productBrandingOptions.find(b => b.id === selectedBrandingId) ?? null;
+  /** Ask for the name only once there is something to put it on: the product
+   *  switched the field on, and either it offers no figures at all or the
+   *  shopper picked one ("ללא דמות" leaves nothing to write the name beside). */
+  const brandingNameOffered = selectedProduct?.brandingNameField === true
+    && (productBrandingOptions.length === 0 || !!selectedBranding);
   /** Name embroidery, per half. The admin enables and prices each one on the
    *  product itself, so a half that is off simply isn't offered. */
   const embroideryOffered = {
@@ -1175,7 +1184,7 @@ function StoreApp() {
                 {selectedProduct.colorOptions && selectedProduct.colorOptions.length > 0 && (
                   <div>
                     <label className="block text-sm font-medium text-ink mb-2">
-                      צבע{selectedColor ? `: ${selectedColor.name}` : ''}
+                      {selectedProduct.colorLabel ?? 'צבע'}{selectedColor ? `: ${selectedColor.name}` : ''}
                     </label>
                     <div className="flex flex-wrap gap-3">
                       {selectedProduct.colorOptions.map(color => (
@@ -1228,24 +1237,41 @@ function StoreApp() {
                   </div>
                 )}
 
-                {/* Branding (מיתוג) — catalog picker. The name itself is collected
-                    by the embroidery fields below, not here. */}
-                {productBrandingOptions.length > 0 && (
+                {/* Branding (מיתוג) — catalog picker, plus the optional name that
+                    goes on it when the product asks for one. */}
+                {(productBrandingOptions.length > 0 || brandingNameOffered) && (
                   <div>
                     <label htmlFor="branding-select" className="block text-sm font-medium text-ink mb-2">מיתוג:</label>
-                    <select
-                      id="branding-select"
-                      value={selectedBrandingId}
-                      onChange={(e) => setSelectedBrandingId(e.target.value)}
-                      className="w-full bg-surface border border-line px-4 py-3 text-ink outline-none focus:border-ink transition-colors"
-                    >
-                      <option value="">— ללא מיתוג —</option>
-                      {productBrandingOptions.map(b => (
-                        <option key={b.id} value={b.id}>
-                          {b.label}{b.extraCost > 0 ? ` (+₪${formatPrice(b.extraCost)})` : ''}
-                        </option>
-                      ))}
-                    </select>
+                    {productBrandingOptions.length > 0 && (
+                      <select
+                        id="branding-select"
+                        value={selectedBrandingId}
+                        onChange={(e) => setSelectedBrandingId(e.target.value)}
+                        className="w-full bg-surface border border-line px-4 py-3 text-ink outline-none focus:border-ink transition-colors"
+                      >
+                        <option value="">— ללא דמות —</option>
+                        {productBrandingOptions.map(b => (
+                          <option key={b.id} value={b.id}>
+                            {b.label}{b.extraCost > 0 ? ` (+₪${formatPrice(b.extraCost)})` : ''}
+                          </option>
+                        ))}
+                      </select>
+                    )}
+                    {brandingNameOffered && (
+                      <div className={productBrandingOptions.length > 0 ? 'mt-3' : ''}>
+                        <input
+                          id="branding-name"
+                          type="text"
+                          maxLength={40}
+                          value={brandingText}
+                          onChange={(e) => setBrandingText(e.target.value)}
+                          placeholder="שם למיתוג (למשל: נועה)"
+                          aria-label="שם למיתוג"
+                          className="w-full bg-surface border border-line px-4 py-3 text-ink outline-none focus:border-ink transition-colors"
+                        />
+                        <p className="text-muted text-xs mt-2">אופציונלי — נכתוב בדיוק כפי שיוקלד.</p>
+                      </div>
+                    )}
                   </div>
                 )}
 
@@ -1326,7 +1352,7 @@ function StoreApp() {
                     const missing = (selectedProduct.variations ?? [])
                       .filter(v => !selectedVariations[v.name])
                       .map(v => v.name);
-                    if (selectedProduct.colorOptions?.length && !selectedColor) missing.push('צבע');
+                    if (selectedProduct.colorOptions?.length && !selectedColor) missing.push(selectedProduct.colorLabel ?? 'צבע');
                     if (selectedProduct.lengthOptions?.length && !selectedLength) missing.push('אורך');
                     if (missing.length > 0) {
                       alert(`נא לבחור: ${missing.join(', ')}`);
@@ -1347,7 +1373,7 @@ function StoreApp() {
                       productQuantity,
                       Object.keys(selectedVariations).length > 0 ? selectedVariations : undefined,
                       {
-                        // Branding stays optional — "ללא מיתוג" is a valid purchase.
+                        // Branding stays optional — "ללא דמות" is a valid purchase.
                         ...(selectedColor && { selectedColor }),
                         ...(selectedLength && { selectedLength }),
                         ...(selectedBranding && {
@@ -1356,6 +1382,11 @@ function StoreApp() {
                             label: selectedBranding.label,
                             extraCost: selectedBranding.extraCost,
                           },
+                        }),
+                        // Only when the field is actually being shown: a name typed
+                        // before the shopper switched back to "ללא דמות" is stale.
+                        ...(brandingNameOffered && brandingText.trim() && {
+                          brandingText: brandingText.trim(),
                         }),
                         ...(embroideryPicked.firstName && {
                           embroideryFirstName: {
