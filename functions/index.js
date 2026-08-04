@@ -1077,8 +1077,12 @@ async function priceCartLines(rawItems) {
       if (entries.length) selectedVariations = Object.fromEntries(entries);
     }
 
-    const brandingText = selectedBranding && raw.brandingText
-      ? String(raw.brandingText).slice(0, 100)
+    // The name on the branding. Free of charge, so it only has to be something
+    // the product actually asks for — either alongside a chosen branding, or on
+    // its own when the product switched the name field on with no figures.
+    const brandingNameAsked = product.brandingNameField === true || !!selectedBranding;
+    const brandingText = brandingNameAsked && raw.brandingText
+      ? String(raw.brandingText).trim().slice(0, 100)
       : undefined;
 
     return {

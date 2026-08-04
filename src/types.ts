@@ -38,6 +38,11 @@ export interface ProductEmbroidery {
   lastName: EmbroideryFieldOption;
 }
 
+/** Heading the storefront puts above a product's color swatches. The wording is
+ *  the data: a product embroidered in a chosen thread reads "צבע ריקמה", while a
+ *  product simply offered in several colors reads "צבע". */
+export type ProductColorLabel = 'צבע' | 'צבע ריקמה';
+
 /** Global branding catalog — Firestore collection `branding_options`. */
 export interface BrandingOption {
   id: string;
@@ -51,8 +56,9 @@ export interface SelectedOptions {
   selectedColor?: ProductColorOption;
   selectedLength?: { label: string; priceDelta: number };
   selectedBranding?: { id: string; label: string; extraCost: number };
-  /** The name/text the customer wants printed on a branded item. Only ever set
-   *  alongside `selectedBranding`; free text, so it also keys the cart line. */
+  /** The name/text the customer wants printed on a branded item. Collected only
+   *  when the product switched `brandingNameField` on; free text, so it also
+   *  keys the cart line. */
   brandingText?: string;
   /** Embroidered first/last name. The ₪ charged is captured on the line so an
    *  order still reads correctly after the product's embroidery prices change.
@@ -84,8 +90,13 @@ export interface Product {
   images: string[];
   variations?: ProductVariation[];
   colorOptions?: ProductColorOption[];
+  /** Heading above the color swatches. Absent = 'צבע'. */
+  colorLabel?: ProductColorLabel;
   lengthOptions?: ProductLengthOption[];
   brandingOptionIds?: string[];
+  /** Ask the shopper for the name to put on the branding (`brandingText`).
+   *  Absent/false = the branding is picked, but no name is collected. */
+  brandingNameField?: boolean;
   /** Per-product name embroidery, priced per half. Absent = not offered. */
   embroidery?: ProductEmbroidery;
   isBoxBase?: boolean;

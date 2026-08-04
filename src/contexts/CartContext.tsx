@@ -260,7 +260,11 @@ export function CartProvider({ children }: { children: React.ReactNode }) {
         ...(item.selectedColor && { selectedColor: item.selectedColor }),
         ...(item.selectedLength && { selectedLength: item.selectedLength }),
         ...(item.selectedBranding && { selectedBranding: item.selectedBranding }),
-        ...(item.brandingText && { brandingText: item.brandingText }),
+        // Same rule `createOrder` applies: a name only survives while the product
+        // still asks for one — on its own, or alongside a chosen branding.
+        ...(item.brandingText && (product.brandingNameField || item.selectedBranding) && {
+          brandingText: item.brandingText,
+        }),
         ...(item.embroideryFirstName && product.embroidery?.firstName?.enabled && {
           embroideryFirstName: { text: item.embroideryFirstName.text, price: firstNamePrice },
         }),
@@ -275,9 +279,9 @@ export function CartProvider({ children }: { children: React.ReactNode }) {
       // image — but keep the shopper's own choices (quantity, options) intact.
       const line: CartItem = { ...product, ...item, ...options, unitPrice };
       // `options` is authoritative, but spreading it cannot *remove* a key the
-      // stale line already carries — a withdrawn embroidery has to be deleted,
-      // or the shopper keeps an add-on `createOrder` would refuse to price.
-      for (const key of ['embroideryFirstName', 'embroideryLastName'] as const) {
+      // stale line already carries — a withdrawn embroidery (or branding name)
+      // has to be deleted, or the shopper keeps an option `createOrder` would drop.
+      for (const key of ['embroideryFirstName', 'embroideryLastName', 'brandingText'] as const) {
         if (line[key] && !options[key]) { delete line[key]; changed = true; }
       }
       next.push(line);
