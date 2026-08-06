@@ -1,5 +1,12 @@
+// The Realtime Database is not used by this project — all data lives in Firestore
+// (see firestore.rules). These rules were '.read'/'.write': 'auth != null' on the
+// root, so any account on this Firebase project had full control of the whole
+// database. Nothing reads or writes here, so it is closed outright. If RTDB is ever
+// adopted, add per-path rules rather than reopening the root.
+//
+// The note has to be a `//` line comment, not a `"//"` key: the rules parser accepts
+// only a `rules` property at the root and rejects the file outright otherwise.
 {
-  "//": "The Realtime Database is not used by this project — all data lives in Firestore (see firestore.rules). These rules were '.read'/'.write': 'auth != null' on the root, so any account on this Firebase project had full control of the whole database. Nothing reads or writes here, so it is closed outright. If RTDB is ever adopted, add per-path rules rather than reopening the root.",
   "rules": {
     ".read": false,
     ".write": false

@@ -38,6 +38,43 @@ export interface ProductEmbroidery {
   lastName: EmbroideryFieldOption;
 }
 
+/** Inventory for one product.
+ *
+ *  Absent on the document = never tracked, always sellable — every product that
+ *  predates this field has to keep selling. `tracked` and `soldOut` are separate
+ *  on purpose: `soldOut` is the admin saying "not right now" (a supplier delay, a
+ *  photo shoot) and survives whatever the counter says, while `tracked` is the
+ *  counter actually running the shop. Read both through `isSoldOut()`. */
+export interface ProductStock {
+  /** Count units for this product. Off = unlimited supply. */
+  tracked: boolean;
+  /** Units on hand. Only consulted while `tracked`; decremented server-side when
+   *  an order is paid, never by the client. */
+  quantity: number;
+  /** Manual override — sold out regardless of `quantity`. */
+  soldOut: boolean;
+}
+
+/** When the shopper picks the gift a product grants.
+ *
+ *  Both modes give the same free product; they differ only in *where* the choice
+ *  is made — on the product page while adding to the cart, or in the checkout
+ *  summary once everything is in the basket. */
+export type ProductGiftMode = 'product' | 'checkout';
+
+/** A free gift that comes with buying a product.
+ *
+ *  The gifts are ordinary catalog products given at ₪0, so they carry their own
+ *  cost price into the order and profit analytics stays honest. A single entry in
+ *  `productIds` is granted automatically; two or more make it the shopper's
+ *  choice, and they must pick one before the order can be placed. */
+export interface ProductGift {
+  enabled: boolean;
+  mode: ProductGiftMode;
+  /** Catalog product ids offered as the gift, in display order. */
+  productIds: string[];
+}
+
 /** Heading the storefront puts above a product's color swatches. The wording is
  *  the data: a product embroidered in a chosen thread reads "צבע ריקמה", while a
  *  product simply offered in several colors reads "צבע". */
@@ -65,6 +102,10 @@ export interface SelectedOptions {
    *  Free text, so both also key the cart line. */
   embroideryFirstName?: { text: string; price: number };
   embroideryLastName?: { text: string; price: number };
+  /** The free gift chosen for this line, when the product grants one. Ships at
+   *  ₪0, so it never moves the line price — but it does key the cart line, so
+   *  the same product taken twice with different gifts stays two lines. */
+  selectedGift?: { id: string; name: string };
 }
 
 /** A price reduction on a product. `value` is a percentage (1–99) or a ₪ amount. */
@@ -99,6 +140,10 @@ export interface Product {
   brandingNameField?: boolean;
   /** Per-product name embroidery, priced per half. Absent = not offered. */
   embroidery?: ProductEmbroidery;
+  /** Inventory. Absent = untracked, always sellable. */
+  stock?: ProductStock;
+  /** A free gift granted by buying this product. Absent = none. */
+  gift?: ProductGift;
   isBoxBase?: boolean;
   created_at?: Date;
 }
@@ -121,8 +166,15 @@ export interface OrderItem extends SelectedOptions {
   quantity: number;
   selectedVariations?: Record<string, string>;
   bundleItems?: { id: string; name: string; price: number; quantity: number }[];
-  /** An automatic threshold gift. Charged at ₪0 — never a line the customer picked. */
+  /** Build-A-Box only: the catalog product the box was built on. The line's own
+   *  id is synthetic, so this is what lets the box be taken off the shelf. */
+  boxBaseId?: string;
+  /** A gift line — the store-wide threshold gift, or one granted by a product.
+   *  Charged at ₪0, and never a line the customer paid for. */
   isGift?: boolean;
+  /** On a product-granted gift line: the name of the product that earned it, so
+   *  whoever packs the box knows which item the freebie belongs to. */
+  giftFor?: string;
 }
 
 export interface Order {
@@ -155,6 +207,9 @@ export interface Order {
   dedication?: { message: string; cardType: 'digital' | 'printed' };
   /** Set server-side once the coupon redemption has been counted — makes counting idempotent. */
   coupon_counted?: boolean;
+  /** Set server-side once the order's items have been taken off the shelf —
+   *  makes the stock decrement idempotent across trigger retries. */
+  stock_counted?: boolean;
   customer_notes?: string;
   /** Archived orders are hidden from the admin list and excluded from analytics. */
   isArchived?: boolean;

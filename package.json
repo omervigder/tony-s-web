@@ -9,7 +9,7 @@
     "preview": "vite preview",
     "clean": "rm -rf dist",
     "lint": "tsc --noEmit",
-    "test": "tsx src/lib/cart.test.ts && tsx src/lib/pricing-parity.test.ts"
+    "test": "tsx src/lib/cart.test.ts && tsx src/lib/pricing-parity.test.ts && tsx src/lib/stock-parity.test.ts"
   },
   "dependencies": {
     "@google/genai": "^1.29.0",

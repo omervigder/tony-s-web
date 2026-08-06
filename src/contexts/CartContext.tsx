@@ -8,6 +8,7 @@ import {
   type CartLine, type CartTotals, type CouponRejection,
 } from '../lib/cart';
 import { effectivePrice } from '../lib/pricing';
+import { resolveGift } from '../lib/stock';
 
 /** Everything that turns a basket into an amount owed lives here: the lines, the
  *  applied coupon, the store-wide rules from `settings/store`, and the delivery
@@ -37,6 +38,9 @@ interface CartContextValue {
   addLine: (line: CartItem) => void;
   removeFromCart: (target: CartLine) => void;
   updateQuantity: (target: CartLine, delta: number) => void;
+  /** Set (or clear) the free gift on a line. Used by the checkout picker, where
+   *  products configured for `mode: 'checkout'` are chosen after the fact. */
+  setLineGift: (target: CartLine, gift: { id: string; name: string } | null) => void;
   clearCart: () => void;
   /** Pull stale line prices back in line with the catalog. Resolves true when
    *  something changed. See the implementation for why checkout needs it. */
@@ -184,6 +188,32 @@ export function CartProvider({ children }: { children: React.ReactNode }) {
     ));
   }, []);
 
+  /** Attach a gift to an existing line.
+   *
+   *  The gift is part of the line's identity, so this changes its key — and a
+   *  line that lands on a key already in the cart is the same line twice, which
+   *  has to merge rather than sit there as a duplicate the shopper cannot tell
+   *  apart. */
+  const setLineGift = useCallback((target: CartLine, gift: { id: string; name: string } | null) => {
+    const key = getCartKey(target);
+    setCart(prev => {
+      const line = prev.find(item => getCartKey(item) === key);
+      if (!line) return prev;
+
+      const updated: CartItem = { ...line };
+      if (gift) updated.selectedGift = gift; else delete updated.selectedGift;
+
+      const newKey = getCartKey(updated);
+      if (newKey === key) return prev;
+
+      const twin = prev.find(item => item !== line && getCartKey(item) === newKey);
+      if (!twin) return prev.map(item => item === line ? updated : item);
+      return prev
+        .filter(item => item !== line)
+        .map(item => item === twin ? { ...twin, quantity: twin.quantity + line.quantity } : item);
+    });
+  }, []);
+
   const clearCart = useCallback(() => {
     setCart([]);
     setAppliedCoupon(null);
@@ -210,16 +240,33 @@ export function CartProvider({ children }: { children: React.ReactNode }) {
     // A Build-A-Box line's own id is synthetic, so it contributes its box base
     // and its contents instead — looking up `bundle_<ts>` would find nothing and
     // drop the box the shopper assembled.
+    //
+    // The gift products a line could be granted are fetched alongside it: a gift
+    // that has since sold out or been deleted is no longer on offer, and the
+    // line has to find that out here rather than at `createOrder`.
     const ids: string[] = Array.from(new Set(current.flatMap(i =>
       i.bundleItems?.length
         ? [i.boxBaseId ?? '', ...i.bundleItems.map(b => b.id)].filter(Boolean)
-        : [i.id]
-    )));
+        : [i.id, ...(i.gift?.productIds ?? [])]
+    ).filter(Boolean)));
     const snaps = await Promise.all(ids.map(id => getDoc(doc(db, 'products', id))));
     const fresh = new Map<string, Product>();
     snaps.forEach(snap => {
       if (snap.exists()) fresh.set(snap.id, { id: snap.id, ...snap.data() } as Product);
     });
+
+    // The ids above came off the *stale* lines, so a product whose gift list the
+    // admin has since changed points at gifts we have not read yet. Fetch those
+    // too, or a newly offered gift would look deleted and be dropped.
+    const missingGiftIds = Array.from(new Set(
+      Array.from(fresh.values()).flatMap(p => p.gift?.productIds ?? [])
+    )).filter(id => id && !fresh.has(id));
+    if (missingGiftIds.length > 0) {
+      const giftSnaps = await Promise.all(missingGiftIds.map(id => getDoc(doc(db, 'products', id))));
+      giftSnaps.forEach(snap => {
+        if (snap.exists()) fresh.set(snap.id, { id: snap.id, ...snap.data() } as Product);
+      });
+    }
 
     let changed = false;
     const next: CartItem[] = [];
@@ -271,19 +318,35 @@ export function CartProvider({ children }: { children: React.ReactNode }) {
         ...(item.embroideryLastName && product.embroidery?.lastName?.enabled && {
           embroideryLastName: { text: item.embroideryLastName.text, price: lastNamePrice },
         }),
+        // The gift the line ends up with, re-derived exactly as `createOrder`
+        // will: a pick the product no longer offers is dropped, and a product
+        // left with a single gift gets it granted without being asked.
+        ...(() => {
+          const gift = resolveGift(product, fresh, item.selectedGift?.id);
+          return gift ? { selectedGift: { id: gift.id, name: gift.name } } : {};
+        })(),
       };
       const unitPrice = priceWithOptions(product, options);
       if (unitPrice !== item.unitPrice) changed = true;
 
       // Refresh the catalog fields too, so the cart shows the current name and
       // image — but keep the shopper's own choices (quantity, options) intact.
-      const line: CartItem = { ...product, ...item, ...options, unitPrice };
+      // `stock` and `gift` are pulled forward explicitly: they decide whether the
+      // line is still sellable at all, so the stale copy must not win.
+      const line: CartItem = {
+        ...product, ...item, ...options, unitPrice,
+        ...(product.stock ? { stock: product.stock } : {}),
+        ...(product.gift ? { gift: product.gift } : {}),
+      };
+      if (!product.stock) delete line.stock;
+      if (!product.gift) delete line.gift;
       // `options` is authoritative, but spreading it cannot *remove* a key the
       // stale line already carries — a withdrawn embroidery (or branding name)
       // has to be deleted, or the shopper keeps an option `createOrder` would drop.
-      for (const key of ['embroideryFirstName', 'embroideryLastName', 'brandingText'] as const) {
+      for (const key of ['embroideryFirstName', 'embroideryLastName', 'brandingText', 'selectedGift'] as const) {
         if (line[key] && !options[key]) { delete line[key]; changed = true; }
       }
+      if (line.selectedGift?.id !== item.selectedGift?.id) changed = true;
       next.push(line);
     }
 
@@ -338,7 +401,7 @@ export function CartProvider({ children }: { children: React.ReactNode }) {
   const cartCount = cart.reduce((sum, item) => sum + (Number(item.quantity) || 0), 0);
 
   const value: CartContextValue = {
-    cart, addToCart, addLine, removeFromCart, updateQuantity, clearCart, repriceCart, cartCount,
+    cart, addToCart, addLine, removeFromCart, updateQuantity, setLineGift, clearCart, repriceCart, cartCount,
     settings,
     deliveryMethod, setDeliveryMethod,
     dedication, setDedication,
