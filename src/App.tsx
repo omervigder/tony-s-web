@@ -235,25 +235,168 @@ const ProductCard: React.FC<{
   );
 };
 
-/** The showcase strip: the admin's chosen products looping past the shopper.
+/** The showcase strip: the admin's chosen products drifting past the shopper,
+ *  and draggable by hand at any moment.
  *
- *  The list is tiled until it comfortably overflows the strip, and that whole
- *  pass is then rendered twice; the track slides exactly one pass-width, which
- *  is what makes the loop seamless. Without the tiling, two or three featured
- *  products would run out mid-loop and leave a gap. */
+ *  It is a real scroll container rather than a CSS transform, which is what buys
+ *  the finger swipe (with the platform's own momentum) and the trackpad for
+ *  free; the drift is a script nudging `scrollLeft` a few pixels a frame, and a
+ *  mouse drag and the wheel are wired on top.
+ *
+ *  The loop is three identical passes of the products with the scroll position
+ *  parked in the middle one. Whenever it drifts out of that middle pass it is
+ *  shifted back by exactly one pass width — invisible, since the passes are
+ *  identical — so there is always a full pass of runway in *both* directions and
+ *  dragging backwards never hits the start. The list is tiled up to a minimum
+ *  count first, or two or three featured products would leave a gap mid-pass. */
+const MARQUEE_PASSES = 3;
+/** Drift speed. One tile is ~176px, so this is a tile every five seconds —
+ *  the pace the CSS animation used to run at. */
+const MARQUEE_PX_PER_SEC = 35;
+/** How long the drift stays out of the way after the shopper stops moving it. */
+const MARQUEE_RESUME_MS = 2000;
+/** Past this, a mouse-down was a drag and not a click on the tile under it. */
+const MARQUEE_DRAG_SLOP = 6;
+
 const FeaturedMarquee = ({ products, onOpen }: {
   products: Product[]; onOpen: (id: string) => void;
 }) => {
-  if (products.length === 0) return null;
+  const viewportRef = useRef<HTMLDivElement>(null);
+  // Set while a mouse drag is under way and read by the tile's click handler:
+  // letting go after a drag must not open whichever tile the cursor landed on.
+  const draggedRef = useRef(false);
 
   // A tile is 176px wide at its narrowest (w-40 + mx-2) and the strip is at most
-  // 980px, so ~6 tiles already fill it. Ten is that with room to spare, which is
-  // what keeps two or three featured products from leaving a gap mid-loop.
+  // 980px, so ~6 tiles already fill it. Ten is that with room to spare.
   const MIN_TILES_PER_PASS = 10;
-  const repeats = Math.max(1, Math.ceil(MIN_TILES_PER_PASS / products.length));
+  const repeats = Math.max(1, Math.ceil(MIN_TILES_PER_PASS / Math.max(products.length, 1)));
   const set = Array.from({ length: repeats }, () => products).flat();
-  // 5s per tile — the pass grows with the repeats, so the pixel speed stays put.
-  const duration = `${set.length * 5}s`;
+
+  useEffect(() => {
+    const vp = viewportRef.current;
+    if (!vp || set.length === 0) return;
+
+    const passWidth = () => vp.scrollWidth / MARQUEE_PASSES;
+
+    /** Pull the position back into the middle pass. A shift of exactly one pass
+     *  width lands on the identical tile, so nothing is seen to move. */
+    const wrap = () => {
+      const w = passWidth();
+      if (w <= 0) return;
+      if (vp.scrollLeft >= 2 * w) vp.scrollLeft -= w;
+      else if (vp.scrollLeft < w) vp.scrollLeft += w;
+    };
+
+    // Start one pass in, so the first backwards drag has somewhere to go.
+    vp.scrollLeft = passWidth();
+    const onResize = () => { vp.scrollLeft = passWidth(); };
+    window.addEventListener('resize', onResize);
+
+    /* ── What stops the drift ── */
+    const reduced = window.matchMedia('(prefers-reduced-motion: reduce)');
+    let held = 0;            // hover, a held pointer, or keyboard focus inside
+    let idleUntil = 0;       // set after a gesture ends, so it does not snap back
+    const hold = () => { held++; };
+    const release = () => { held = Math.max(0, held - 1); idleUntil = performance.now() + MARQUEE_RESUME_MS; };
+    const defer = () => { idleUntil = performance.now() + MARQUEE_RESUME_MS; };
+
+    /* ── The drift ──
+     *  `residue` carries the sub-pixel remainder an engine that only keeps whole
+     *  pixels would throw away, so a speed under 1px/frame still moves. */
+    let residue = 0;
+    let last = performance.now();
+    let raf = requestAnimationFrame(function step(now) {
+      raf = requestAnimationFrame(step);
+      const dt = Math.min(now - last, 100) / 1000;   // a backgrounded tab must not lurch
+      last = now;
+      if (held > 0 || now < idleUntil || reduced.matches) return;
+      const target = vp.scrollLeft + MARQUEE_PX_PER_SEC * dt + residue;
+      vp.scrollLeft = target;
+      residue = target - vp.scrollLeft;
+      wrap();
+    });
+
+    /* ── Mouse drag ──
+     *  Touch is left to the browser's own panning, which brings momentum with
+     *  it; hijacking it here would only make the strip feel worse than the page.
+     *  Each move is applied as a delta from the previous one, so the wrap can
+     *  fire mid-drag without the drag fighting it. */
+    let lastX = 0;
+    const onPointerDown = (e: PointerEvent) => {
+      if (e.pointerType !== 'mouse' || e.button !== 0) return;
+      draggedRef.current = false;
+      lastX = e.clientX;
+      let travelled = 0;
+      hold();
+      vp.classList.add('is-dragging');
+
+      const onMove = (ev: PointerEvent) => {
+        const dx = ev.clientX - lastX;
+        lastX = ev.clientX;
+        travelled += Math.abs(dx);
+        if (travelled > MARQUEE_DRAG_SLOP) draggedRef.current = true;
+        vp.scrollLeft -= dx;
+        wrap();
+      };
+      const onUp = () => {
+        window.removeEventListener('pointermove', onMove);
+        window.removeEventListener('pointerup', onUp);
+        window.removeEventListener('pointercancel', onUp);
+        vp.classList.remove('is-dragging');
+        release();
+      };
+      window.addEventListener('pointermove', onMove);
+      window.addEventListener('pointerup', onUp);
+      window.addEventListener('pointercancel', onUp);
+    };
+
+    /* ── Wheel ──
+     *  A plain mouse only sends deltaY, so that is what has to drive the strip;
+     *  a trackpad's horizontal delta is used as-is when it dominates. Must be a
+     *  non-passive listener — React's own onWheel cannot preventDefault. */
+    const onWheel = (e: WheelEvent) => {
+      const raw = Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY;
+      if (!raw) return;
+      // deltaMode 1 is lines, 2 is pages — normalise both to pixels.
+      const px = raw * (e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? vp.clientWidth : 1);
+      e.preventDefault();
+      vp.scrollLeft += px;
+      wrap();
+      defer();
+    };
+
+    // Momentum from a finger swipe also has to wrap, and it only reports itself
+    // through scroll events.
+    const onScroll = () => { if (held === 0) wrap(); };
+
+    vp.addEventListener('pointerdown', onPointerDown);
+    vp.addEventListener('wheel', onWheel, { passive: false });
+    vp.addEventListener('scroll', onScroll, { passive: true });
+    vp.addEventListener('mouseenter', hold);
+    vp.addEventListener('mouseleave', release);
+    vp.addEventListener('touchstart', hold, { passive: true });
+    vp.addEventListener('touchend', release, { passive: true });
+    vp.addEventListener('touchcancel', release, { passive: true });
+    vp.addEventListener('focusin', hold);
+    vp.addEventListener('focusout', release);
+
+    return () => {
+      cancelAnimationFrame(raf);
+      window.removeEventListener('resize', onResize);
+      vp.removeEventListener('pointerdown', onPointerDown);
+      vp.removeEventListener('wheel', onWheel);
+      vp.removeEventListener('scroll', onScroll);
+      vp.removeEventListener('mouseenter', hold);
+      vp.removeEventListener('mouseleave', release);
+      vp.removeEventListener('touchstart', hold);
+      vp.removeEventListener('touchend', release);
+      vp.removeEventListener('touchcancel', release);
+      vp.removeEventListener('focusin', hold);
+      vp.removeEventListener('focusout', release);
+    };
+  }, [set.length]);
+
+  if (products.length === 0) return null;
 
   const tile = (product: Product, key: string, ariaHidden: boolean) => (
     <button
@@ -262,7 +405,7 @@ const FeaturedMarquee = ({ products, onOpen }: {
       dir="rtl"
       aria-hidden={ariaHidden}
       tabIndex={ariaHidden ? -1 : 0}
-      onClick={() => onOpen(product.id)}
+      onClick={() => { if (!draggedRef.current) onOpen(product.id); }}
       className="group w-40 sm:w-52 flex-shrink-0 mx-2 text-right"
     >
       <div className="aspect-square relative overflow-hidden bg-surface border border-line group-hover:border-line-strong transition-colors">
@@ -273,6 +416,7 @@ const FeaturedMarquee = ({ products, onOpen }: {
             className="w-full h-full object-cover"
             referrerPolicy="no-referrer"
             loading="lazy"
+            draggable={false}
           />
         ) : (
           <div className="w-full h-full flex items-center justify-center text-line-strong">
@@ -287,11 +431,12 @@ const FeaturedMarquee = ({ products, onOpen }: {
   );
 
   return (
-    <div className="marquee-viewport" style={{ ['--marquee-duration' as string]: duration }}>
+    <div ref={viewportRef} className="marquee-viewport">
       <div className="marquee-track py-1">
         {set.map((p, i) => tile(p, `a-${i}-${p.id}`, false))}
-        {/* The second pass exists only to cover the seam — hidden from AT. */}
+        {/* The passes either side only cover the seam — hidden from AT. */}
         {set.map((p, i) => tile(p, `b-${i}-${p.id}`, true))}
+        {set.map((p, i) => tile(p, `c-${i}-${p.id}`, true))}
       </div>
     </div>
   );
