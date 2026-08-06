@@ -2,12 +2,13 @@ import React, { useState, useEffect, useRef } from 'react';
 import AccessibilityWidget from './components/AccessibilityWidget';
 import GiftAssistant from './components/GiftAssistant';
 import CheckoutSuccess from './components/CheckoutSuccess';
-import { ShoppingCart, Package, Plus, Minus, Trash2, Camera, ChevronRight, ChevronLeft, CheckCircle2, X, Menu, Loader2, ChevronDown, Copy, Star, MessageCircle, Gift, Check, Instagram } from 'lucide-react';
+import { ShoppingCart, Package, Plus, Minus, Trash2, Camera, ChevronRight, ChevronLeft, CheckCircle2, X, Menu, Loader2, ChevronDown, Copy, Star, MessageCircle, Gift, Check, Instagram, Search } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Product, Category, CartItem, Coupon, SiteContent, Review, BrandingOption, ProductColorOption, ProductLengthOption, SiteBanner } from './types';
 import { effectivePrice } from './lib/pricing';
 import { embroideryPrice, getCartKey, unitPriceOf } from './lib/cart';
 import { availableStock, giftChoices, giftRequiresChoice, isSoldOut } from './lib/stock';
+import { filterByName, matchesSearch } from './lib/search';
 import { CartProvider, useCart } from './contexts/CartContext';
 import { app, db, storage } from './firebase';
 import { collection, getDocs, doc, getDoc, query, orderBy, where } from "firebase/firestore";
@@ -235,25 +236,209 @@ const ProductCard: React.FC<{
   );
 };
 
-/** The showcase strip: the admin's chosen products looping past the shopper.
+/** The shop's search box, wherever the shopper is choosing between products.
  *
- *  The list is tiled until it comfortably overflows the strip, and that whole
- *  pass is then rendered twice; the track slides exactly one pass-width, which
- *  is what makes the loop seamless. Without the tiling, two or three featured
- *  products would run out mid-loop and leave a gap. */
+ *  Declared at module scope rather than inside `StoreApp`: a component defined
+ *  during render is a new type on every keystroke, and React would remount the
+ *  input and drop focus after each character typed.
+ *
+ *  The magnifier sits on the right — this is an RTL page, and the icon belongs
+ *  at the start of the field, not mirrored to the far end of it. */
+const StoreSearch = ({ value, onChange, placeholder }: {
+  value: string; onChange: (v: string) => void; placeholder: string;
+}) => (
+  <div className="relative">
+    <Search size={18} className="absolute top-1/2 -translate-y-1/2 right-4 text-muted pointer-events-none" />
+    <input
+      type="search"
+      value={value}
+      onChange={e => onChange(e.target.value)}
+      placeholder={placeholder}
+      aria-label={placeholder}
+      className="w-full bg-white border border-line rounded-full py-3 pr-11 pl-4 text-ink outline-none focus:border-ink transition-colors placeholder:text-muted"
+    />
+    {value && (
+      <button
+        type="button"
+        onClick={() => onChange('')}
+        aria-label="ניקוי החיפוש"
+        className="absolute top-1/2 -translate-y-1/2 left-3 p-1 text-muted hover:text-ink transition-colors"
+      >
+        <X size={16} />
+      </button>
+    )}
+  </div>
+);
+
+/** The showcase strip: the admin's chosen products drifting past the shopper,
+ *  and draggable by hand at any moment.
+ *
+ *  It is a real scroll container rather than a CSS transform, which is what buys
+ *  the finger swipe (with the platform's own momentum) and the trackpad for
+ *  free; the drift is a script nudging `scrollLeft` a few pixels a frame, and a
+ *  mouse drag and the wheel are wired on top.
+ *
+ *  The loop is three identical passes of the products with the scroll position
+ *  parked in the middle one. Whenever it drifts out of that middle pass it is
+ *  shifted back by exactly one pass width — invisible, since the passes are
+ *  identical — so there is always a full pass of runway in *both* directions and
+ *  dragging backwards never hits the start. The list is tiled up to a minimum
+ *  count first, or two or three featured products would leave a gap mid-pass. */
+const MARQUEE_PASSES = 3;
+/** Drift speed. One tile is ~176px, so this is a tile every five seconds —
+ *  the pace the CSS animation used to run at. */
+const MARQUEE_PX_PER_SEC = 35;
+/** How long the drift stays out of the way after the shopper stops moving it. */
+const MARQUEE_RESUME_MS = 2000;
+/** Past this, a mouse-down was a drag and not a click on the tile under it. */
+const MARQUEE_DRAG_SLOP = 6;
+
 const FeaturedMarquee = ({ products, onOpen }: {
   products: Product[]; onOpen: (id: string) => void;
 }) => {
-  if (products.length === 0) return null;
+  const viewportRef = useRef<HTMLDivElement>(null);
+  // Set while a mouse drag is under way and read by the tile's click handler:
+  // letting go after a drag must not open whichever tile the cursor landed on.
+  const draggedRef = useRef(false);
 
   // A tile is 176px wide at its narrowest (w-40 + mx-2) and the strip is at most
-  // 980px, so ~6 tiles already fill it. Ten is that with room to spare, which is
-  // what keeps two or three featured products from leaving a gap mid-loop.
+  // 980px, so ~6 tiles already fill it. Ten is that with room to spare.
   const MIN_TILES_PER_PASS = 10;
-  const repeats = Math.max(1, Math.ceil(MIN_TILES_PER_PASS / products.length));
+  const repeats = Math.max(1, Math.ceil(MIN_TILES_PER_PASS / Math.max(products.length, 1)));
   const set = Array.from({ length: repeats }, () => products).flat();
-  // 5s per tile — the pass grows with the repeats, so the pixel speed stays put.
-  const duration = `${set.length * 5}s`;
+
+  useEffect(() => {
+    const vp = viewportRef.current;
+    if (!vp || set.length === 0) return;
+
+    const passWidth = () => vp.scrollWidth / MARQUEE_PASSES;
+
+    /** Pull the position back into the middle pass. A shift of a whole number of
+     *  pass widths lands on the identical tile, so nothing is seen to move.
+     *
+     *  Modulo rather than one step at a time: a resize changes the pass width
+     *  underneath the current offset, which can leave it several passes out. */
+    const wrap = () => {
+      const w = passWidth();
+      if (w <= 0) return;
+      const x = vp.scrollLeft;
+      if (x >= w && x < 2 * w) return;
+      vp.scrollLeft = w + ((x % w) + w) % w;
+    };
+
+    // Start one pass in, so the first backwards drag has somewhere to go.
+    vp.scrollLeft = passWidth();
+    // Only ever re-wraps — a mobile browser fires `resize` when its URL bar
+    // hides, and yanking the strip back to the start for that would be absurd.
+    window.addEventListener('resize', wrap);
+
+    /* ── What stops the drift ── */
+    const reduced = window.matchMedia('(prefers-reduced-motion: reduce)');
+    let held = 0;            // hover, a held pointer, or keyboard focus inside
+    let idleUntil = 0;       // set after a gesture ends, so it does not snap back
+    const hold = () => { held++; };
+    const release = () => { held = Math.max(0, held - 1); idleUntil = performance.now() + MARQUEE_RESUME_MS; };
+    const defer = () => { idleUntil = performance.now() + MARQUEE_RESUME_MS; };
+
+    /* ── The drift ──
+     *  `residue` carries the sub-pixel remainder an engine that only keeps whole
+     *  pixels would throw away, so a speed under 1px/frame still moves. */
+    let residue = 0;
+    let last = performance.now();
+    let raf = requestAnimationFrame(function step(now) {
+      raf = requestAnimationFrame(step);
+      const dt = Math.min(now - last, 100) / 1000;   // a backgrounded tab must not lurch
+      last = now;
+      if (held > 0 || now < idleUntil || reduced.matches) return;
+      const target = vp.scrollLeft + MARQUEE_PX_PER_SEC * dt + residue;
+      vp.scrollLeft = target;
+      residue = target - vp.scrollLeft;
+      wrap();
+    });
+
+    /* ── Mouse drag ──
+     *  Touch is left to the browser's own panning, which brings momentum with
+     *  it; hijacking it here would only make the strip feel worse than the page.
+     *  Each move is applied as a delta from the previous one, so the wrap can
+     *  fire mid-drag without the drag fighting it. */
+    let lastX = 0;
+    const onPointerDown = (e: PointerEvent) => {
+      if (e.pointerType !== 'mouse' || e.button !== 0) return;
+      draggedRef.current = false;
+      lastX = e.clientX;
+      let travelled = 0;
+      hold();
+      vp.classList.add('is-dragging');
+
+      const onMove = (ev: PointerEvent) => {
+        const dx = ev.clientX - lastX;
+        lastX = ev.clientX;
+        travelled += Math.abs(dx);
+        if (travelled > MARQUEE_DRAG_SLOP) draggedRef.current = true;
+        vp.scrollLeft -= dx;
+        wrap();
+      };
+      const onUp = () => {
+        window.removeEventListener('pointermove', onMove);
+        window.removeEventListener('pointerup', onUp);
+        window.removeEventListener('pointercancel', onUp);
+        vp.classList.remove('is-dragging');
+        release();
+      };
+      window.addEventListener('pointermove', onMove);
+      window.addEventListener('pointerup', onUp);
+      window.addEventListener('pointercancel', onUp);
+    };
+
+    /* ── Wheel ──
+     *  A plain mouse only sends deltaY, so that is what has to drive the strip;
+     *  a trackpad's horizontal delta is used as-is when it dominates. Must be a
+     *  non-passive listener — React's own onWheel cannot preventDefault. */
+    const onWheel = (e: WheelEvent) => {
+      const raw = Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY;
+      if (!raw) return;
+      // deltaMode 1 is lines, 2 is pages — normalise both to pixels.
+      const px = raw * (e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? vp.clientWidth : 1);
+      e.preventDefault();
+      vp.scrollLeft += px;
+      wrap();
+      defer();
+    };
+
+    // Every way of moving the strip that this file did not initiate — a finger's
+    // momentum, a sideways trackpad swipe, a focused tile scrolled into view —
+    // announces itself only as a scroll event, and all of them have to wrap.
+    // Safe during a drag too: the drag applies deltas, not absolute positions.
+    const onScroll = wrap;
+
+    vp.addEventListener('pointerdown', onPointerDown);
+    vp.addEventListener('wheel', onWheel, { passive: false });
+    vp.addEventListener('scroll', onScroll, { passive: true });
+    vp.addEventListener('mouseenter', hold);
+    vp.addEventListener('mouseleave', release);
+    vp.addEventListener('touchstart', hold, { passive: true });
+    vp.addEventListener('touchend', release, { passive: true });
+    vp.addEventListener('touchcancel', release, { passive: true });
+    vp.addEventListener('focusin', hold);
+    vp.addEventListener('focusout', release);
+
+    return () => {
+      cancelAnimationFrame(raf);
+      window.removeEventListener('resize', wrap);
+      vp.removeEventListener('pointerdown', onPointerDown);
+      vp.removeEventListener('wheel', onWheel);
+      vp.removeEventListener('scroll', onScroll);
+      vp.removeEventListener('mouseenter', hold);
+      vp.removeEventListener('mouseleave', release);
+      vp.removeEventListener('touchstart', hold);
+      vp.removeEventListener('touchend', release);
+      vp.removeEventListener('touchcancel', release);
+      vp.removeEventListener('focusin', hold);
+      vp.removeEventListener('focusout', release);
+    };
+  }, [set.length]);
+
+  if (products.length === 0) return null;
 
   const tile = (product: Product, key: string, ariaHidden: boolean) => (
     <button
@@ -262,7 +447,7 @@ const FeaturedMarquee = ({ products, onOpen }: {
       dir="rtl"
       aria-hidden={ariaHidden}
       tabIndex={ariaHidden ? -1 : 0}
-      onClick={() => onOpen(product.id)}
+      onClick={() => { if (!draggedRef.current) onOpen(product.id); }}
       className="group w-40 sm:w-52 flex-shrink-0 mx-2 text-right"
     >
       <div className="aspect-square relative overflow-hidden bg-surface border border-line group-hover:border-line-strong transition-colors">
@@ -273,6 +458,7 @@ const FeaturedMarquee = ({ products, onOpen }: {
             className="w-full h-full object-cover"
             referrerPolicy="no-referrer"
             loading="lazy"
+            draggable={false}
           />
         ) : (
           <div className="w-full h-full flex items-center justify-center text-line-strong">
@@ -287,11 +473,12 @@ const FeaturedMarquee = ({ products, onOpen }: {
   );
 
   return (
-    <div className="marquee-viewport" style={{ ['--marquee-duration' as string]: duration }}>
+    <div ref={viewportRef} className="marquee-viewport">
       <div className="marquee-track py-1">
         {set.map((p, i) => tile(p, `a-${i}-${p.id}`, false))}
-        {/* The second pass exists only to cover the seam — hidden from AT. */}
+        {/* The passes either side only cover the seam — hidden from AT. */}
         {set.map((p, i) => tile(p, `b-${i}-${p.id}`, true))}
+        {set.map((p, i) => tile(p, `c-${i}-${p.id}`, true))}
       </div>
     </div>
   );
@@ -311,6 +498,10 @@ function StoreApp() {
   const [products, setProducts] = useState<Product[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
   const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
+  /** What the shopper typed into the catalog's search box. */
+  const [catalogSearch, setCatalogSearch] = useState('');
+  /** …and into the box builder's, which searches a different list. */
+  const [boxSearch, setBoxSearch] = useState('');
   const [isCartOpen, setIsCartOpen] = useState(false);
   const [isMenuOpen, setIsMenuOpen] = useState(false);
   const [isLoadingProduct, setIsLoadingProduct] = useState(false);
@@ -380,6 +571,23 @@ function StoreApp() {
     setToast(message);
     setTimeout(() => setToast(null), 3000);
   };
+
+  /** The "you have a gift coming" note, along the bottom of the screen.
+   *
+   *  Separate from `toast` on purpose: it is the one message that is good news
+   *  rather than a confirmation, it carries the gift's own picture, and it sits
+   *  at the bottom so the cart drawer sliding in over the right of the screen
+   *  does not bury it. */
+  const [giftToast, setGiftToast] = useState<{ name: string; imageUrl?: string; forName: string } | null>(null);
+  const giftToastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const showGiftToast = (gift: Product, forName: string) => {
+    if (giftToastTimer.current) clearTimeout(giftToastTimer.current);
+    setGiftToast({ name: gift.name, imageUrl: gift.main_image, forName });
+    giftToastTimer.current = setTimeout(() => setGiftToast(null), 5000);
+  };
+
+  useEffect(() => () => { if (giftToastTimer.current) clearTimeout(giftToastTimer.current); }, []);
 
   useEffect(() => {
     fetchData();
@@ -975,9 +1183,15 @@ function StoreApp() {
     window.location.href = responseData.payment_url;
   };
 
-  const filteredProducts = selectedCategory
+  // The catalog, narrowed by the category chips and then by whatever was typed
+  // into the search box. Both together: a shopper who filtered to "נרות" and
+  // then searched expects to be searching inside נרות.
+  const inCategory: Product[] = selectedCategory
     ? products.filter(p => p.category_id === selectedCategory)
     : products;
+  const filteredProducts = filterByName(inCategory, catalogSearch);
+  /** The home page's own grid, shown only when there is no showcase strip. */
+  const homeMatches: Product[] = filterByName(products, catalogSearch);
 
   // ── The home-page showcase ────────────────────────────────────────────────
   // The admin picks which products advertise the store; the rest live behind
@@ -1020,6 +1234,44 @@ function StoreApp() {
             className="fixed top-6 left-1/2 -translate-x-1/2 z-[200] bg-green-500 text-white px-6 py-3 rounded-2xl shadow-xl font-bold text-sm"
           >
             {toast}
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Gift note — sits above the WhatsApp bubble and the accessibility button,
+          both of which live in the bottom corners. */}
+      <AnimatePresence>
+        {giftToast && (
+          <motion.div
+            initial={{ opacity: 0, y: 30 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: 30 }}
+            role="status"
+            className="fixed bottom-6 left-1/2 -translate-x-1/2 z-[200] w-[calc(100%-3rem)] max-w-sm"
+          >
+            <div className="flex items-center gap-3 bg-white border border-green-200 rounded-2xl shadow-xl p-3">
+              {giftToast.imageUrl ? (
+                <img src={giftToast.imageUrl} alt="" className="w-12 h-12 object-cover rounded-xl flex-shrink-0"
+                  referrerPolicy="no-referrer" />
+              ) : (
+                <div className="w-12 h-12 rounded-xl bg-cream flex items-center justify-center flex-shrink-0">
+                  <Gift size={20} className="text-green-700" />
+                </div>
+              )}
+              <div className="flex-grow min-w-0">
+                <p className="text-sm font-bold text-ink truncate">🎁 {giftToast.name}</p>
+                <p className="text-xs text-green-700">
+                  מתנה עבור {giftToast.forName} — נוספה לסל בחינם
+                </p>
+              </div>
+              <button
+                onClick={() => setGiftToast(null)}
+                aria-label="סגירת ההודעה"
+                className="p-1.5 text-line-strong hover:text-ink transition-colors flex-shrink-0"
+              >
+                <X size={16} />
+              </button>
+            </div>
           </motion.div>
         )}
       </AnimatePresence>
@@ -1176,7 +1428,15 @@ function StoreApp() {
                     : <h3 className="text-2xl font-bold text-gray-800">{siteContent.collectionsTitle}</h3>}
                   <div className="flex-1 h-px bg-gradient-to-r from-[#1A1A18]/30 to-transparent" />
                 </div>
-                {productGrid(products)}
+                {/* Without a showcase this grid *is* the catalog, so it gets the
+                    catalog's search box — and shares its term, since the two are
+                    the same list of products either way. */}
+                <StoreSearch value={catalogSearch} onChange={setCatalogSearch} placeholder="חיפוש מוצר לפי שם..." />
+                {homeMatches.length === 0 ? (
+                  <p className="text-muted text-center py-12">
+                    לא נמצא מוצר בשם "{catalogSearch.trim()}"
+                  </p>
+                ) : productGrid(homeMatches)}
               </>
             )}
           </div>
@@ -1194,6 +1454,8 @@ function StoreApp() {
               </h2>
               <div className="flex-1 h-px bg-gradient-to-r from-[#1A1A18]/30 to-transparent" />
             </div>
+
+            <StoreSearch value={catalogSearch} onChange={setCatalogSearch} placeholder="חיפוש מוצר לפי שם..." />
 
             {/* Category filter — the drawer does this too, but a shopper who
                 landed on /catalog directly shouldn't have to go find it. */}
@@ -1213,7 +1475,20 @@ function StoreApp() {
             )}
 
             {filteredProducts.length === 0
-              ? <p className="text-muted text-center py-12">אין מוצרים בקטגוריה הזו.</p>
+              ? (
+                <div className="text-center py-12 space-y-3">
+                  <p className="text-muted">
+                    {catalogSearch.trim()
+                      ? `לא נמצא מוצר בשם "${catalogSearch.trim()}"`
+                      : 'אין מוצרים בקטגוריה הזו.'}
+                  </p>
+                  {catalogSearch.trim() && (
+                    <button onClick={() => setCatalogSearch('')} className="text-sm text-ink underline underline-offset-2">
+                      ניקוי החיפוש
+                    </button>
+                  )}
+                </div>
+              )
               : productGrid(filteredProducts)}
           </div>
         )}
@@ -1606,6 +1881,9 @@ function StoreApp() {
                         }),
                       },
                     );
+                    // Only a product the admin actually gave a gift can reach
+                    // this — `productGift` is null everywhere else.
+                    if (productGift) showGiftToast(productGift, selectedProduct.name);
                     setIsCartOpen(true);
                   }}
                   disabled={productSoldOut}
@@ -1859,7 +2137,7 @@ function StoreApp() {
                             key={g.id}
                             type="button"
                             aria-pressed={item.selectedGift?.id === g.id}
-                            onClick={() => setLineGift(item, { id: g.id, name: g.name })}
+                            onClick={() => { setLineGift(item, { id: g.id, name: g.name }); showGiftToast(g, item.name); }}
                             className={`bg-white border p-2 text-right transition-all rounded-xl ${
                               item.selectedGift?.id === g.id
                                 ? 'border-ink ring-1 ring-ink'
@@ -2191,8 +2469,27 @@ function StoreApp() {
                   <span className="w-7 h-7 rounded-full bg-ink text-white text-sm flex items-center justify-center font-bold">2</span>
                   הוסף מוצרים למארז
                 </h3>
+
+                <StoreSearch value={boxSearch} onChange={setBoxSearch} placeholder="חיפוש מוצר לפי שם..." />
+
+                {/* Anything already in the box stays on screen however the
+                    search is narrowed — otherwise its own quantity controls
+                    disappear while it is still in the box. */}
+                {(() => {
+                  const boxPool = products.filter(p =>
+                    !p.isBoxBase && !isSoldOut(p)
+                    && (bundleItems.some(bi => bi.product.id === p.id) || matchesSearch(p.name, boxSearch))
+                  );
+                  if (boxPool.length === 0) {
+                    return (
+                      <p className="text-muted text-sm text-center py-6">
+                        לא נמצא מוצר בשם "{boxSearch.trim()}"
+                      </p>
+                    );
+                  }
+                  return (
                 <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
-                  {products.filter(p => !p.isBoxBase && !isSoldOut(p)).map(product => {
+                  {boxPool.map(product => {
                     const inBundle = bundleItems.find(bi => bi.product.id === product.id);
                     return (
                       <div key={product.id} className={`rounded-2xl border-2 overflow-hidden transition-all ${inBundle ? 'border-ink shadow-md' : 'border-gray-100'}`}>
@@ -2226,6 +2523,8 @@ function StoreApp() {
                     );
                   })}
                 </div>
+                  );
+                })()}
               </div>
             )}
 
@@ -2489,7 +2788,8 @@ function StoreApp() {
                   </div>
                 ) : (
                   cart.map(item => (
-                    <div key={getCartKey(item)} className="flex gap-4 items-center">
+                    <React.Fragment key={getCartKey(item)}>
+                    <div className="flex gap-4 items-center">
                       <div className="w-20 h-20 bg-cream overflow-hidden flex-shrink-0">
                         {(item.selectedColor?.imageUrl || item.main_image) && (
                           <img src={item.selectedColor?.imageUrl || item.main_image} className="w-full h-full object-cover" referrerPolicy="no-referrer" />
@@ -2497,8 +2797,10 @@ function StoreApp() {
                       </div>
                       <div className="flex-grow">
                         <h4 className="font-medium text-ink">{item.name}</h4>
-                        {cartLineOptions(item) && (
-                          <p className="text-xs text-muted mt-0.5">{cartLineOptions(item)}</p>
+                        {/* The gift is a row of its own below — naming it here too
+                            reads as two gifts. */}
+                        {cartLineOptions(item, { includeGift: false }) && (
+                          <p className="text-xs text-muted mt-0.5">{cartLineOptions(item, { includeGift: false })}</p>
                         )}
                         {/* A line can sell out while it sits in the basket, and
                             checkout will refuse it — say so here, not there. */}
@@ -2532,6 +2834,34 @@ function StoreApp() {
                         <Trash2 size={20} />
                       </button>
                     </div>
+
+                    {/* The gift the line earned, sitting in the basket at ₪0.
+                        It has no controls of its own: it exists because the line
+                        above it does, and it leaves with it. `createOrder` adds
+                        the very same ₪0 entry to the order server-side. */}
+                    {item.selectedGift && (
+                      <div className="flex gap-4 items-center pr-6 -mt-3">
+                        <div className="w-14 h-14 bg-cream overflow-hidden flex-shrink-0 rounded-lg border border-green-200">
+                          {productById.get(item.selectedGift.id)?.main_image ? (
+                            <img src={productById.get(item.selectedGift.id)!.main_image} alt=""
+                              className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+                          ) : (
+                            <div className="w-full h-full flex items-center justify-center text-green-700">
+                              <Gift size={18} />
+                            </div>
+                          )}
+                        </div>
+                        <div className="flex-grow min-w-0">
+                          <h4 className="font-medium text-ink text-sm truncate">
+                            🎁 {item.selectedGift.name}
+                            {item.quantity > 1 && <span className="text-gray-400 font-normal"> × {item.quantity}</span>}
+                          </h4>
+                          <p className="text-xs text-green-700">מתנה עבור {item.name}</p>
+                        </div>
+                        <span className="text-sm font-semibold text-green-700 whitespace-nowrap">₪0 · חינם</span>
+                      </div>
+                    )}
+                    </React.Fragment>
                   ))
                 )}
               </div>

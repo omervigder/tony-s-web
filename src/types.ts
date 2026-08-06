@@ -213,6 +213,20 @@ export interface Order {
   customer_notes?: string;
   /** Archived orders are hidden from the admin list and excluded from analytics. */
   isArchived?: boolean;
+
+  /* ── Written by the payment callback once Grow confirms the transaction ── */
+  paid_at?: string;
+  /** Grow's אסמכתא — the receipt number the customer sees. */
+  payment_confirmation?: string;
+  /** What was actually charged. Compared against `total_price` at callback time. */
+  payment_sum?: number;
+  payment_card_suffix?: string;
+  payment_card_brand?: string;
+  /** Set when the sum charged did not match what was owed — the order stays unpaid. */
+  payment_mismatch?: boolean;
+
+  /** Free-text note the shop owner keeps on the order. Never shown to the customer. */
+  adminNote?: string;
 }
 
 /** A promotional image the admin uploads — shown on the homepage or as an arrival popup. */
