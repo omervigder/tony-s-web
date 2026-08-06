@@ -2,12 +2,13 @@ import React, { useState, useEffect, useRef } from 'react';
 import AccessibilityWidget from './components/AccessibilityWidget';
 import GiftAssistant from './components/GiftAssistant';
 import CheckoutSuccess from './components/CheckoutSuccess';
-import { ShoppingCart, Package, Plus, Minus, Trash2, Camera, ChevronRight, ChevronLeft, CheckCircle2, X, Menu, Loader2, ChevronDown, Copy, Star, MessageCircle, Gift, Check, Instagram } from 'lucide-react';
+import { ShoppingCart, Package, Plus, Minus, Trash2, Camera, ChevronRight, ChevronLeft, CheckCircle2, X, Menu, Loader2, ChevronDown, Copy, Star, MessageCircle, Gift, Check, Instagram, Search } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Product, Category, CartItem, Coupon, SiteContent, Review, BrandingOption, ProductColorOption, ProductLengthOption, SiteBanner } from './types';
 import { effectivePrice } from './lib/pricing';
 import { embroideryPrice, getCartKey, unitPriceOf } from './lib/cart';
 import { availableStock, giftChoices, giftRequiresChoice, isSoldOut } from './lib/stock';
+import { filterByName, matchesSearch } from './lib/search';
 import { CartProvider, useCart } from './contexts/CartContext';
 import { app, db, storage } from './firebase';
 import { collection, getDocs, doc, getDoc, query, orderBy, where } from "firebase/firestore";
@@ -235,6 +236,40 @@ const ProductCard: React.FC<{
   );
 };
 
+/** The shop's search box, wherever the shopper is choosing between products.
+ *
+ *  Declared at module scope rather than inside `StoreApp`: a component defined
+ *  during render is a new type on every keystroke, and React would remount the
+ *  input and drop focus after each character typed.
+ *
+ *  The magnifier sits on the right — this is an RTL page, and the icon belongs
+ *  at the start of the field, not mirrored to the far end of it. */
+const StoreSearch = ({ value, onChange, placeholder }: {
+  value: string; onChange: (v: string) => void; placeholder: string;
+}) => (
+  <div className="relative">
+    <Search size={18} className="absolute top-1/2 -translate-y-1/2 right-4 text-muted pointer-events-none" />
+    <input
+      type="search"
+      value={value}
+      onChange={e => onChange(e.target.value)}
+      placeholder={placeholder}
+      aria-label={placeholder}
+      className="w-full bg-white border border-line rounded-full py-3 pr-11 pl-4 text-ink outline-none focus:border-ink transition-colors placeholder:text-muted"
+    />
+    {value && (
+      <button
+        type="button"
+        onClick={() => onChange('')}
+        aria-label="ניקוי החיפוש"
+        className="absolute top-1/2 -translate-y-1/2 left-3 p-1 text-muted hover:text-ink transition-colors"
+      >
+        <X size={16} />
+      </button>
+    )}
+  </div>
+);
+
 /** The showcase strip: the admin's chosen products drifting past the shopper,
  *  and draggable by hand at any moment.
  *
@@ -278,19 +313,24 @@ const FeaturedMarquee = ({ products, onOpen }: {
 
     const passWidth = () => vp.scrollWidth / MARQUEE_PASSES;
 
-    /** Pull the position back into the middle pass. A shift of exactly one pass
-     *  width lands on the identical tile, so nothing is seen to move. */
+    /** Pull the position back into the middle pass. A shift of a whole number of
+     *  pass widths lands on the identical tile, so nothing is seen to move.
+     *
+     *  Modulo rather than one step at a time: a resize changes the pass width
+     *  underneath the current offset, which can leave it several passes out. */
     const wrap = () => {
       const w = passWidth();
       if (w <= 0) return;
-      if (vp.scrollLeft >= 2 * w) vp.scrollLeft -= w;
-      else if (vp.scrollLeft < w) vp.scrollLeft += w;
+      const x = vp.scrollLeft;
+      if (x >= w && x < 2 * w) return;
+      vp.scrollLeft = w + ((x % w) + w) % w;
     };
 
     // Start one pass in, so the first backwards drag has somewhere to go.
     vp.scrollLeft = passWidth();
-    const onResize = () => { vp.scrollLeft = passWidth(); };
-    window.addEventListener('resize', onResize);
+    // Only ever re-wraps — a mobile browser fires `resize` when its URL bar
+    // hides, and yanking the strip back to the start for that would be absurd.
+    window.addEventListener('resize', wrap);
 
     /* ── What stops the drift ── */
     const reduced = window.matchMedia('(prefers-reduced-motion: reduce)');
@@ -365,9 +405,11 @@ const FeaturedMarquee = ({ products, onOpen }: {
       defer();
     };
 
-    // Momentum from a finger swipe also has to wrap, and it only reports itself
-    // through scroll events.
-    const onScroll = () => { if (held === 0) wrap(); };
+    // Every way of moving the strip that this file did not initiate — a finger's
+    // momentum, a sideways trackpad swipe, a focused tile scrolled into view —
+    // announces itself only as a scroll event, and all of them have to wrap.
+    // Safe during a drag too: the drag applies deltas, not absolute positions.
+    const onScroll = wrap;
 
     vp.addEventListener('pointerdown', onPointerDown);
     vp.addEventListener('wheel', onWheel, { passive: false });
@@ -382,7 +424,7 @@ const FeaturedMarquee = ({ products, onOpen }: {
 
     return () => {
       cancelAnimationFrame(raf);
-      window.removeEventListener('resize', onResize);
+      window.removeEventListener('resize', wrap);
       vp.removeEventListener('pointerdown', onPointerDown);
       vp.removeEventListener('wheel', onWheel);
       vp.removeEventListener('scroll', onScroll);
@@ -456,6 +498,10 @@ function StoreApp() {
   const [products, setProducts] = useState<Product[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
   const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
+  /** What the shopper typed into the catalog's search box. */
+  const [catalogSearch, setCatalogSearch] = useState('');
+  /** …and into the box builder's, which searches a different list. */
+  const [boxSearch, setBoxSearch] = useState('');
   const [isCartOpen, setIsCartOpen] = useState(false);
   const [isMenuOpen, setIsMenuOpen] = useState(false);
   const [isLoadingProduct, setIsLoadingProduct] = useState(false);
@@ -1137,9 +1183,15 @@ function StoreApp() {
     window.location.href = responseData.payment_url;
   };
 
-  const filteredProducts = selectedCategory
+  // The catalog, narrowed by the category chips and then by whatever was typed
+  // into the search box. Both together: a shopper who filtered to "נרות" and
+  // then searched expects to be searching inside נרות.
+  const inCategory: Product[] = selectedCategory
     ? products.filter(p => p.category_id === selectedCategory)
     : products;
+  const filteredProducts = filterByName(inCategory, catalogSearch);
+  /** The home page's own grid, shown only when there is no showcase strip. */
+  const homeMatches: Product[] = filterByName(products, catalogSearch);
 
   // ── The home-page showcase ────────────────────────────────────────────────
   // The admin picks which products advertise the store; the rest live behind
@@ -1376,7 +1428,15 @@ function StoreApp() {
                     : <h3 className="text-2xl font-bold text-gray-800">{siteContent.collectionsTitle}</h3>}
                   <div className="flex-1 h-px bg-gradient-to-r from-[#1A1A18]/30 to-transparent" />
                 </div>
-                {productGrid(products)}
+                {/* Without a showcase this grid *is* the catalog, so it gets the
+                    catalog's search box — and shares its term, since the two are
+                    the same list of products either way. */}
+                <StoreSearch value={catalogSearch} onChange={setCatalogSearch} placeholder="חיפוש מוצר לפי שם..." />
+                {homeMatches.length === 0 ? (
+                  <p className="text-muted text-center py-12">
+                    לא נמצא מוצר בשם "{catalogSearch.trim()}"
+                  </p>
+                ) : productGrid(homeMatches)}
               </>
             )}
           </div>
@@ -1394,6 +1454,8 @@ function StoreApp() {
               </h2>
               <div className="flex-1 h-px bg-gradient-to-r from-[#1A1A18]/30 to-transparent" />
             </div>
+
+            <StoreSearch value={catalogSearch} onChange={setCatalogSearch} placeholder="חיפוש מוצר לפי שם..." />
 
             {/* Category filter — the drawer does this too, but a shopper who
                 landed on /catalog directly shouldn't have to go find it. */}
@@ -1413,7 +1475,20 @@ function StoreApp() {
             )}
 
             {filteredProducts.length === 0
-              ? <p className="text-muted text-center py-12">אין מוצרים בקטגוריה הזו.</p>
+              ? (
+                <div className="text-center py-12 space-y-3">
+                  <p className="text-muted">
+                    {catalogSearch.trim()
+                      ? `לא נמצא מוצר בשם "${catalogSearch.trim()}"`
+                      : 'אין מוצרים בקטגוריה הזו.'}
+                  </p>
+                  {catalogSearch.trim() && (
+                    <button onClick={() => setCatalogSearch('')} className="text-sm text-ink underline underline-offset-2">
+                      ניקוי החיפוש
+                    </button>
+                  )}
+                </div>
+              )
               : productGrid(filteredProducts)}
           </div>
         )}
@@ -2394,8 +2469,27 @@ function StoreApp() {
                   <span className="w-7 h-7 rounded-full bg-ink text-white text-sm flex items-center justify-center font-bold">2</span>
                   הוסף מוצרים למארז
                 </h3>
+
+                <StoreSearch value={boxSearch} onChange={setBoxSearch} placeholder="חיפוש מוצר לפי שם..." />
+
+                {/* Anything already in the box stays on screen however the
+                    search is narrowed — otherwise its own quantity controls
+                    disappear while it is still in the box. */}
+                {(() => {
+                  const boxPool = products.filter(p =>
+                    !p.isBoxBase && !isSoldOut(p)
+                    && (bundleItems.some(bi => bi.product.id === p.id) || matchesSearch(p.name, boxSearch))
+                  );
+                  if (boxPool.length === 0) {
+                    return (
+                      <p className="text-muted text-sm text-center py-6">
+                        לא נמצא מוצר בשם "{boxSearch.trim()}"
+                      </p>
+                    );
+                  }
+                  return (
                 <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
-                  {products.filter(p => !p.isBoxBase && !isSoldOut(p)).map(product => {
+                  {boxPool.map(product => {
                     const inBundle = bundleItems.find(bi => bi.product.id === product.id);
                     return (
                       <div key={product.id} className={`rounded-2xl border-2 overflow-hidden transition-all ${inBundle ? 'border-ink shadow-md' : 'border-gray-100'}`}>
@@ -2429,6 +2523,8 @@ function StoreApp() {
                     );
                   })}
                 </div>
+                  );
+                })()}
               </div>
             )}
 
