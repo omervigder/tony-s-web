@@ -4,7 +4,7 @@ import ProtectedRoute from '../components/ProtectedRoute';
 import { db, storage } from '../firebase';
 import {
   collection, query, orderBy, onSnapshot,
-  doc, updateDoc, addDoc, deleteDoc, setDoc, getDoc
+  doc, updateDoc, addDoc, deleteDoc, setDoc, getDoc, writeBatch
 } from 'firebase/firestore';
 import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 import {
@@ -1920,11 +1920,234 @@ function FeaturedPicker({ products, ids, onChange }: {
   );
 }
 
+/* ─────────────────────────── BulkGiftAssigner ───────────────────────── */
+
+/** Attach the same gift to many products at once.
+ *
+ *  The gift lives on the product document (see `ProductGift`), so this is not a
+ *  store setting — it is a bulk edit of the products themselves, written with a
+ *  batch. It sits in Settings because that is where a shop-wide "everything in
+ *  this category comes with a candle" decision is actually made; the per-product
+ *  form remains the place to fine-tune one item.
+ *
+ *  Deliberately overwrite-in-full rather than merge: "these products now come
+ *  with this gift" is the whole point, and a merge would leave some of them
+ *  quietly carrying an older gift list the admin thought they had replaced. The
+ *  confirm step says how many documents are about to change. */
+function BulkGiftAssigner({ products, categories }: { products: Product[]; categories: Category[] }) {
+  const [targetIds, setTargetIds] = useState<string[]>([]);
+  const [giftIds, setGiftIds] = useState<string[]>([]);
+  const [mode, setMode] = useState<ProductGiftMode>('product');
+  const [targetSearch, setTargetSearch] = useState('');
+  const [giftSearch, setGiftSearch] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState('');
+
+  const byId = new Map(products.map(p => [p.id, p]));
+  const catName = (id: string) => categories.find(c => c.id === id)?.name || 'ללא קטגוריה';
+
+  const match = (p: Product, term: string) =>
+    !term.trim() || p.name.toLowerCase().includes(term.trim().toLowerCase());
+
+  const targetPool = products.filter(p => match(p, targetSearch));
+  // A product cannot gift itself — one sale would take two units off the same
+  // shelf — so anything picked as a gift drops out of the target list, and
+  // vice versa. Filtering both ways keeps the two selections coherent.
+  const giftPool = products.filter(p => match(p, giftSearch) && !targetIds.includes(p.id));
+
+  const toggle = (list: string[], setList: (v: string[]) => void, id: string) =>
+    setList(list.includes(id) ? list.filter(x => x !== id) : [...list, id]);
+
+  const toggleTarget = (id: string) => {
+    if (giftIds.includes(id)) return;  // it is a gift; it cannot also receive one
+    toggle(targetIds, setTargetIds, id);
+  };
+
+  /** Select (or clear) every product in one category — the reason this screen
+   *  exists, since "all the towels" is how the decision is actually phrased. */
+  const toggleCategory = (categoryId: string) => {
+    const ids = products
+      .filter(p => p.category_id === categoryId && !giftIds.includes(p.id))
+      .map(p => p.id);
+    if (ids.length === 0) return;
+    const allChosen = ids.every(id => targetIds.includes(id));
+    setTargetIds(allChosen
+      ? targetIds.filter(id => !ids.includes(id))
+      : [...targetIds, ...ids.filter(id => !targetIds.includes(id))]);
+  };
+
+  /** Write `gift` onto every selected product. `gift: null` clears it.
+   *
+   *  Chunked at 400 — a Firestore batch takes 500 writes, and running past it
+   *  fails the whole batch rather than the one document over the line. */
+  const apply = async (gift: { enabled: boolean; mode: ProductGiftMode; productIds: string[] } | null) => {
+    const ids = targetIds.filter(id => byId.has(id));
+    if (ids.length === 0) return;
+
+    setBusy(true);
+    setResult('');
+    try {
+      const payload = gift ?? { enabled: false, mode, productIds: [] };
+      for (let i = 0; i < ids.length; i += 400) {
+        const batch = writeBatch(db);
+        for (const id of ids.slice(i, i + 400)) {
+          batch.update(doc(db, 'products', id), { gift: payload });
+        }
+        await batch.commit();
+      }
+      setResult(gift
+        ? `המתנה שויכה ל-${ids.length} מוצרים ✓`
+        : `המתנה הוסרה מ-${ids.length} מוצרים ✓`);
+      setTargetIds([]);
+    } catch (err) {
+      console.error('[BulkGift] apply failed:', err);
+      setResult('העדכון נכשל. נסו שוב.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleAssign = () => {
+    if (targetIds.length === 0) return alert('נא לבחור מוצרים שיקבלו את המתנה');
+    if (giftIds.length === 0) return alert('נא לבחור לפחות מוצר אחד שיינתן במתנה');
+    const names = giftIds.map(id => byId.get(id)?.name).filter(Boolean).join(', ');
+    const choice = giftIds.length > 1 ? `הלקוח יבחר אחת מתוך: ${names}` : `המתנה: ${names}`;
+    if (!confirm(
+      `לשייך מתנה ל-${targetIds.length} מוצרים?\n\n${choice}\n\n` +
+      `הבחירה ${mode === 'product' ? 'תתבצע בעמוד המוצר' : 'תתבצע בעמוד התשלום'}.\n` +
+      `הגדרת מתנה קיימת במוצרים אלו תוחלף.`
+    )) return;
+    apply({ enabled: true, mode, productIds: giftIds });
+  };
+
+  const handleClear = () => {
+    if (targetIds.length === 0) return alert('נא לבחור מוצרים');
+    if (!confirm(`להסיר את המתנה מ-${targetIds.length} מוצרים?`)) return;
+    apply(null);
+  };
+
+  /** One row in either picker. */
+  const row = (p: Product, checked: boolean, onToggle: () => void, disabled = false) => (
+    <label key={p.id}
+      className={`flex items-center gap-2 p-2 rounded-lg border transition-colors ${
+        disabled
+          ? 'bg-cream border-line opacity-40 cursor-not-allowed'
+          : 'bg-white border-line cursor-pointer hover:border-ink/40'
+      }`}>
+      <input type="checkbox" checked={checked} disabled={disabled} onChange={onToggle} className="accent-[#1A1A18]" />
+      <div className="w-8 h-8 rounded-md bg-cream border border-line overflow-hidden flex-shrink-0">
+        {p.main_image && <img src={p.main_image} className="w-full h-full object-cover" referrerPolicy="no-referrer" />}
+      </div>
+      <span className="text-ink text-xs flex-1 line-clamp-1">{p.name}</span>
+      {isSoldOut(p) && <span className="text-red-500 text-[10px] flex-shrink-0">אזל</span>}
+      <span className="text-gray-400 text-[10px] flex-shrink-0">{catName(p.category_id)}</span>
+    </label>
+  );
+
+  return (
+    <SettingCard icon={Gift} title="שיוך מתנה למספר מוצרים"
+      hint="בחרו קבוצת מוצרים ואת המתנה שתצורף לכולם. שימושי כשכל קטגוריה מקבלת את אותה מתנה — לכוונון מוצר בודד השתמשו בטופס המוצר.">
+
+      {/* 1 — who gets the gift */}
+      <div>
+        <label className="block text-sm text-gray-400 mb-2">
+          1. אילו מוצרים יקבלו מתנה? ({targetIds.length} נבחרו)
+        </label>
+        <div className="flex flex-wrap gap-1.5 mb-2">
+          {categories.map(c => {
+            const ids = products.filter(p => p.category_id === c.id && !giftIds.includes(p.id)).map(p => p.id);
+            if (ids.length === 0) return null;
+            const all = ids.every(id => targetIds.includes(id));
+            return (
+              <button key={c.id} type="button" onClick={() => toggleCategory(c.id)}
+                className={`text-xs px-2.5 py-1 rounded-lg font-medium transition-all ${
+                  all ? 'bg-ink text-white' : 'bg-cream border border-line text-gray-500 hover:text-ink'
+                }`}>
+                {c.name} ({ids.length})
+              </button>
+            );
+          })}
+          {targetIds.length > 0 && (
+            <button type="button" onClick={() => setTargetIds([])}
+              className="text-xs px-2.5 py-1 rounded-lg font-medium text-red-500 hover:bg-red-500/10 transition-colors">
+              נקה בחירה
+            </button>
+          )}
+        </div>
+        <input type="search" className={SETTINGS_FIELD_CLS} placeholder="חיפוש מוצר..."
+          value={targetSearch} onChange={e => setTargetSearch(e.target.value)} />
+        <div className="mt-2 max-h-52 overflow-y-auto space-y-1.5 border border-line rounded-xl p-2 bg-cream">
+          {targetPool.length === 0
+            ? <p className="text-gray-400 text-xs text-center py-2">אין מוצרים תואמים.</p>
+            : targetPool.map(p => row(
+                p,
+                targetIds.includes(p.id),
+                () => toggleTarget(p.id),
+                giftIds.includes(p.id),
+              ))}
+        </div>
+      </div>
+
+      {/* 2 — what they get */}
+      <div>
+        <label className="block text-sm text-gray-400 mb-2">
+          2. מה תהיה המתנה? ({giftIds.length} נבחרו)
+        </label>
+        <input type="search" className={SETTINGS_FIELD_CLS} placeholder="חיפוש מוצר..."
+          value={giftSearch} onChange={e => setGiftSearch(e.target.value)} />
+        <div className="mt-2 max-h-52 overflow-y-auto space-y-1.5 border border-line rounded-xl p-2 bg-cream">
+          {giftPool.length === 0
+            ? <p className="text-gray-400 text-xs text-center py-2">אין מוצרים תואמים.</p>
+            : giftPool.map(p => row(p, giftIds.includes(p.id), () => toggle(giftIds, setGiftIds, p.id)))}
+        </div>
+        {giftIds.length > 1 && (
+          <p className="text-gray-400 text-xs mt-2">
+            נבחרו {giftIds.length} מתנות — הלקוח יתבקש לבחור אחת מהן.
+          </p>
+        )}
+      </div>
+
+      {/* 3 — where the customer picks */}
+      <div>
+        <label className="block text-sm text-gray-400 mb-2">3. מתי הלקוח בוחר את המתנה?</label>
+        <div className="flex gap-2">
+          {([['product', 'בעמוד המוצר'], ['checkout', 'בעמוד התשלום']] as const).map(([m, label]) => (
+            <button key={m} type="button" onClick={() => setMode(m)} aria-pressed={mode === m}
+              className={`flex-1 py-2 rounded-lg text-xs font-bold transition-all ${
+                mode === m ? 'bg-ink text-white' : 'bg-cream border border-line text-gray-500 hover:text-ink'
+              }`}>
+              {label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {result && <p className="text-sm text-ink">{result}</p>}
+
+      <div className="flex gap-2">
+        <button onClick={handleAssign} disabled={busy}
+          className="flex-1 py-2.5 rounded-xl font-bold text-white text-sm flex items-center justify-center gap-2 disabled:opacity-60 transition-opacity"
+          style={{ background: `${INK}` }}>
+          {busy ? <Loader2 size={14} className="animate-spin" /> : <Gift size={14} />}
+          שייך מתנה
+        </button>
+        <button onClick={handleClear} disabled={busy}
+          className="px-4 py-2.5 rounded-xl font-bold text-sm border border-line text-red-500 hover:bg-red-500/10 disabled:opacity-60 transition-colors">
+          הסר מתנה
+        </button>
+      </div>
+      <p className="text-gray-400 text-xs">
+        השינוי נכתב ישירות על המוצרים ואינו תלוי בכפתור "שמור הגדרות".
+      </p>
+    </SettingCard>
+  );
+}
+
 /** Every global rule the storefront runs on: fees, the free-shipping and gift
  *  thresholds, the minimum order, and the announcement strip. */
 function SettingsView({
-  settings: init, products, announcement: initAnnouncement,
-}: { settings: StoreSettings; products: Product[]; announcement: string }) {
+  settings: init, products, categories, announcement: initAnnouncement,
+}: { settings: StoreSettings; products: Product[]; categories: Category[]; announcement: string }) {
   const [s, setS] = useState<StoreSettings>(init);
   const [announcement, setAnnouncement] = useState(initAnnouncement);
   const [saving, setSaving] = useState(false);
@@ -2005,6 +2228,8 @@ function SettingsView({
           </>
         )}
       </SettingCard>
+
+      <BulkGiftAssigner products={products} categories={categories} />
 
       <SettingCard icon={Sparkles} title="מוצרים נבחרים לדף הבית"
         hint="בחרו אילו מוצרים יוצגו בדף הבית כדוגמה ויתגלגלו בפס הנע. שאר המוצרים יישארו זמינים דרך הקטלוג המלא.">
@@ -2738,7 +2963,7 @@ function AdminDashboard() {
           {activeTab === 'coupons' && <CouponsView coupons={coupons} />}
           {activeTab === 'design' && <DesignView banners={banners} />}
           {activeTab === 'customers' && <CustomersView customers={customers} />}
-          {activeTab === 'settings' && <SettingsView settings={settings} products={products} announcement={announcement} />}
+          {activeTab === 'settings' && <SettingsView settings={settings} products={products} categories={categories} announcement={announcement} />}
         </main>
       </div>
 

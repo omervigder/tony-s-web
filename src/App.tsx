@@ -301,7 +301,7 @@ function StoreApp() {
   const [view, setView] = useState<'user' | 'catalog' | 'checkout' | 'success' | 'product' | 'build-box'>('user');
 
   const {
-    cart, addToCart, addLine, removeFromCart, updateQuantity, setLineGift, clearCart, repriceCart,
+    cart, cartCount, addToCart, addLine, removeFromCart, updateQuantity, setLineGift, clearCart, repriceCart,
     settings,
     deliveryMethod, setDeliveryMethod, dedication, setDedication,
     appliedCoupon, couponInput, setCouponInput, couponError, clearCouponError,
@@ -655,8 +655,11 @@ function StoreApp() {
     return `https://wa.me/${phone}?text=${encodeURIComponent(msg)}`;
   };
 
-  /** One-line summary of everything the shopper picked, for the cart drawer. */
-  const cartLineOptions = (item: CartItem) => [
+  /** One-line summary of everything the shopper picked, for the cart drawer.
+   *
+   *  `includeGift` is off wherever the gift gets a row of its own — the checkout
+   *  list prints it as a free line, and repeating it here reads as two gifts. */
+  const cartLineOptions = (item: CartItem, { includeGift = true } = {}) => [
     ...Object.entries(item.selectedVariations ?? {}).map(([k, v]) => `${k}: ${v}`),
     item.selectedColor && `${item.colorLabel ?? 'צבע'}: ${item.selectedColor.name}`,
     item.selectedLength && `אורך: ${item.selectedLength.label}`,
@@ -664,7 +667,7 @@ function StoreApp() {
     item.brandingText && `שם למיתוג: ${item.brandingText}`,
     item.embroideryFirstName && `רקמת שם פרטי: ${item.embroideryFirstName.text}`,
     item.embroideryLastName && `רקמת שם משפחה: ${item.embroideryLastName.text}`,
-    item.selectedGift && `🎁 מתנה: ${item.selectedGift.name}`,
+    includeGift && item.selectedGift && `🎁 מתנה: ${item.selectedGift.name}`,
   ].filter(Boolean).join(' | ');
 
   // Every ₪ below comes out of the cart context's single `computeTotals()` pass —
@@ -1738,12 +1741,19 @@ function StoreApp() {
         )}
 
         {view === 'checkout' && (
-          <div className="max-w-md mx-auto space-y-8">
+          <div className="max-w-5xl mx-auto space-y-6">
             <button onClick={() => navigateTo('user')} className="flex items-center gap-2 text-gray-500 hover:text-gray-800">
               <ChevronRight size={20} /> חזרה לחנות
             </button>
             <h2 className="text-2xl font-bold">פרטי הזמנה</h2>
-            <div className="surface-card p-8 space-y-6">
+
+            {/* Two columns from `lg` up: the form to fill in, and the order
+                standing beside it. Below that the grid collapses and the summary
+                falls under the form, which is the right order on a phone — the
+                pay button belongs at the end of the scroll, not above the fields
+                it depends on. */}
+            <div className="grid gap-6 items-start lg:grid-cols-[minmax(0,1fr)_360px]">
+            <div className="surface-card p-6 sm:p-8 space-y-6">
               <div className="space-y-4">
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">שם מלא</label>
@@ -1945,7 +1955,13 @@ function StoreApp() {
                   {couponError && <p className="text-red-500 text-sm">{couponError}</p>}
                 </div>
               )}
+            </div>
 
+            {/* ── The order, alongside ────────────────────────────────────
+                Sticky on a wide screen so the basket and the total stay in
+                view while the form is filled in — the shopper can see what
+                they are paying for at the moment they are asked to pay. */}
+            <aside className="surface-card p-6 space-y-5 lg:sticky lg:top-6">
               {/* Live threshold nudges — the numbers come from settings/store, so
                   what the shopper is promised is what checkout actually charges. */}
               {(totals.amountToFreeShipping !== null || totals.amountToGift !== null || totals.gift) && (
@@ -1970,7 +1986,88 @@ function StoreApp() {
                 </div>
               )}
 
-              <div className="border-t pt-6 space-y-2">
+              {/* What is actually being bought.
+                  The page went straight from the customer's details to a
+                  "סיכום מוצרים" figure, so the last thing the shopper saw their
+                  basket itemised was the cart drawer — they were asked to pay
+                  without the list in front of them. Every ₪ here is the same
+                  `unitPriceOf` the total is built from, so the lines and the
+                  sum can never tell different stories. */}
+              {cart.length > 0 && (
+                <div className="space-y-3">
+                  <h3 className="font-bold text-gray-800 flex items-center gap-2">
+                    <ShoppingCart size={18} /> המוצרים בהזמנה
+                    <span className="text-sm font-normal text-gray-400">({cartCount})</span>
+                  </h3>
+                  {/* Capped and scrollable: a ten-line basket must not push the
+                      total off the screen, which is the one thing this column
+                      exists to keep in view. */}
+                  <div className="space-y-3 max-h-80 overflow-y-auto -mx-1 px-1">
+                    {cart.map(item => {
+                      const options = cartLineOptions(item, { includeGift: false });
+                      return (
+                        <div key={getCartKey(item)} className="flex gap-3 items-start">
+                          <div className="w-14 h-14 bg-cream overflow-hidden flex-shrink-0 rounded-lg border border-line">
+                            {(item.selectedColor?.imageUrl || item.main_image) ? (
+                              <img
+                                src={item.selectedColor?.imageUrl || item.main_image}
+                                alt=""
+                                className="w-full h-full object-cover"
+                                referrerPolicy="no-referrer"
+                                loading="lazy"
+                              />
+                            ) : (
+                              <div className="w-full h-full flex items-center justify-center text-line-strong">
+                                <Package size={20} />
+                              </div>
+                            )}
+                          </div>
+                          <div className="flex-grow min-w-0">
+                            <div className="flex justify-between gap-3">
+                              <p className="text-sm font-medium text-ink">
+                                {item.name}
+                                {item.quantity > 1 && <span className="text-gray-400 font-normal"> × {item.quantity}</span>}
+                              </p>
+                              <p className="text-sm font-semibold text-ink whitespace-nowrap">
+                                ₪{formatPrice(unitPriceOf(item) * item.quantity)}
+                              </p>
+                            </div>
+                            {options && <p className="text-xs text-muted mt-0.5">{options}</p>}
+                            {/* Only worth spelling out when the line total is not
+                                simply the unit price staring back at them. */}
+                            {item.quantity > 1 && (
+                              <p className="text-xs text-gray-400 mt-0.5">₪{formatPrice(unitPriceOf(item))} ליחידה</p>
+                            )}
+                            {/* A box the shopper assembled — its contents are the
+                                reason it costs what it costs. */}
+                            {item.bundleItems?.length ? (
+                              <ul className="text-xs text-muted mt-1 space-y-0.5">
+                                {item.bundleItems.map((b, i) => (
+                                  <li key={`${b.id}-${i}`}>• {b.name} × {b.quantity}</li>
+                                ))}
+                              </ul>
+                            ) : null}
+                            {item.selectedGift && (
+                              <p className="text-xs font-medium text-green-700 mt-1">
+                                🎁 {item.selectedGift.name}
+                                {item.quantity > 1 && ` × ${item.quantity}`} — חינם
+                              </p>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                  <button
+                    onClick={() => { navigateTo('user'); setIsCartOpen(true); }}
+                    className="text-sm text-muted hover:text-ink underline transition-colors"
+                  >
+                    עריכת הסל
+                  </button>
+                </div>
+              )}
+
+              <div className="border-t pt-4 space-y-2 text-sm">
                 <div className="flex justify-between text-gray-500">
                   <span>סיכום מוצרים:</span>
                   <span>₪{formatPrice(cartTotal)}</span>
@@ -2027,6 +2124,7 @@ function StoreApp() {
                   ? <span className="flex items-center justify-center gap-2"><Loader2 size={20} className="animate-spin" />מכין תשלום...</span>
                   : 'אישור הזמנה ותשלום'}
               </button>
+            </aside>
             </div>
           </div>
         )}
