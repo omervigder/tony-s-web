@@ -526,6 +526,23 @@ function StoreApp() {
     setTimeout(() => setToast(null), 3000);
   };
 
+  /** The "you have a gift coming" note, along the bottom of the screen.
+   *
+   *  Separate from `toast` on purpose: it is the one message that is good news
+   *  rather than a confirmation, it carries the gift's own picture, and it sits
+   *  at the bottom so the cart drawer sliding in over the right of the screen
+   *  does not bury it. */
+  const [giftToast, setGiftToast] = useState<{ name: string; imageUrl?: string; forName: string } | null>(null);
+  const giftToastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const showGiftToast = (gift: Product, forName: string) => {
+    if (giftToastTimer.current) clearTimeout(giftToastTimer.current);
+    setGiftToast({ name: gift.name, imageUrl: gift.main_image, forName });
+    giftToastTimer.current = setTimeout(() => setGiftToast(null), 5000);
+  };
+
+  useEffect(() => () => { if (giftToastTimer.current) clearTimeout(giftToastTimer.current); }, []);
+
   useEffect(() => {
     fetchData();
     // Show WhatsApp bubble after 15 seconds
@@ -1169,6 +1186,44 @@ function StoreApp() {
         )}
       </AnimatePresence>
 
+      {/* Gift note — sits above the WhatsApp bubble and the accessibility button,
+          both of which live in the bottom corners. */}
+      <AnimatePresence>
+        {giftToast && (
+          <motion.div
+            initial={{ opacity: 0, y: 30 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: 30 }}
+            role="status"
+            className="fixed bottom-6 left-1/2 -translate-x-1/2 z-[200] w-[calc(100%-3rem)] max-w-sm"
+          >
+            <div className="flex items-center gap-3 bg-white border border-green-200 rounded-2xl shadow-xl p-3">
+              {giftToast.imageUrl ? (
+                <img src={giftToast.imageUrl} alt="" className="w-12 h-12 object-cover rounded-xl flex-shrink-0"
+                  referrerPolicy="no-referrer" />
+              ) : (
+                <div className="w-12 h-12 rounded-xl bg-cream flex items-center justify-center flex-shrink-0">
+                  <Gift size={20} className="text-green-700" />
+                </div>
+              )}
+              <div className="flex-grow min-w-0">
+                <p className="text-sm font-bold text-ink truncate">🎁 {giftToast.name}</p>
+                <p className="text-xs text-green-700">
+                  מתנה עבור {giftToast.forName} — נוספה לסל בחינם
+                </p>
+              </div>
+              <button
+                onClick={() => setGiftToast(null)}
+                aria-label="סגירת ההודעה"
+                className="p-1.5 text-line-strong hover:text-ink transition-colors flex-shrink-0"
+              >
+                <X size={16} />
+              </button>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
       {/* Announcement Bar — the one solid-ink surface on the page */}
       {(isContentLoading || siteContent.announcementBar) && (
         <div className="bg-ink text-cream text-center py-2 px-4 text-sm font-medium">
@@ -1751,6 +1806,9 @@ function StoreApp() {
                         }),
                       },
                     );
+                    // Only a product the admin actually gave a gift can reach
+                    // this — `productGift` is null everywhere else.
+                    if (productGift) showGiftToast(productGift, selectedProduct.name);
                     setIsCartOpen(true);
                   }}
                   disabled={productSoldOut}
@@ -2004,7 +2062,7 @@ function StoreApp() {
                             key={g.id}
                             type="button"
                             aria-pressed={item.selectedGift?.id === g.id}
-                            onClick={() => setLineGift(item, { id: g.id, name: g.name })}
+                            onClick={() => { setLineGift(item, { id: g.id, name: g.name }); showGiftToast(g, item.name); }}
                             className={`bg-white border p-2 text-right transition-all rounded-xl ${
                               item.selectedGift?.id === g.id
                                 ? 'border-ink ring-1 ring-ink'
@@ -2634,7 +2692,8 @@ function StoreApp() {
                   </div>
                 ) : (
                   cart.map(item => (
-                    <div key={getCartKey(item)} className="flex gap-4 items-center">
+                    <React.Fragment key={getCartKey(item)}>
+                    <div className="flex gap-4 items-center">
                       <div className="w-20 h-20 bg-cream overflow-hidden flex-shrink-0">
                         {(item.selectedColor?.imageUrl || item.main_image) && (
                           <img src={item.selectedColor?.imageUrl || item.main_image} className="w-full h-full object-cover" referrerPolicy="no-referrer" />
@@ -2642,8 +2701,10 @@ function StoreApp() {
                       </div>
                       <div className="flex-grow">
                         <h4 className="font-medium text-ink">{item.name}</h4>
-                        {cartLineOptions(item) && (
-                          <p className="text-xs text-muted mt-0.5">{cartLineOptions(item)}</p>
+                        {/* The gift is a row of its own below — naming it here too
+                            reads as two gifts. */}
+                        {cartLineOptions(item, { includeGift: false }) && (
+                          <p className="text-xs text-muted mt-0.5">{cartLineOptions(item, { includeGift: false })}</p>
                         )}
                         {/* A line can sell out while it sits in the basket, and
                             checkout will refuse it — say so here, not there. */}
@@ -2677,6 +2738,34 @@ function StoreApp() {
                         <Trash2 size={20} />
                       </button>
                     </div>
+
+                    {/* The gift the line earned, sitting in the basket at ₪0.
+                        It has no controls of its own: it exists because the line
+                        above it does, and it leaves with it. `createOrder` adds
+                        the very same ₪0 entry to the order server-side. */}
+                    {item.selectedGift && (
+                      <div className="flex gap-4 items-center pr-6 -mt-3">
+                        <div className="w-14 h-14 bg-cream overflow-hidden flex-shrink-0 rounded-lg border border-green-200">
+                          {productById.get(item.selectedGift.id)?.main_image ? (
+                            <img src={productById.get(item.selectedGift.id)!.main_image} alt=""
+                              className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+                          ) : (
+                            <div className="w-full h-full flex items-center justify-center text-green-700">
+                              <Gift size={18} />
+                            </div>
+                          )}
+                        </div>
+                        <div className="flex-grow min-w-0">
+                          <h4 className="font-medium text-ink text-sm truncate">
+                            🎁 {item.selectedGift.name}
+                            {item.quantity > 1 && <span className="text-gray-400 font-normal"> × {item.quantity}</span>}
+                          </h4>
+                          <p className="text-xs text-green-700">מתנה עבור {item.name}</p>
+                        </div>
+                        <span className="text-sm font-semibold text-green-700 whitespace-nowrap">₪0 · חינם</span>
+                      </div>
+                    )}
+                    </React.Fragment>
                   ))
                 )}
               </div>
