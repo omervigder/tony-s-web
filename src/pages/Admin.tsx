@@ -15,7 +15,7 @@ import {
 import {
   ShoppingBag, BarChart3, Package, Settings as SettingsIcon,
   Menu, X, Plus, Trash2, Pencil, Camera, Loader2,
-  MessageCircle, DollarSign, CheckCircle2, Download, ChevronDown, ChevronUp, Users, Sparkles,
+  MessageCircle, DollarSign, CheckCircle2, Download, ChevronDown, ChevronUp, ChevronLeft, Users, Sparkles,
   Archive, ArchiveRestore, Image as ImageIcon, Tag, Copy, Gift, Truck
 } from 'lucide-react';
 
@@ -23,7 +23,7 @@ import {
 // Product/OrderItem/Category and the option types are shared with the storefront —
 // keeping private copies here is what let the two drift apart in the first place.
 import type {
-  OrderItem, Product, Category, BrandingOption, Coupon,
+  OrderItem, Order as StoreOrder, Product, Category, BrandingOption, Coupon,
   ProductColorOption, ProductColorLabel, ProductLengthOption, ProductDiscount, ProductEmbroidery, SiteBanner,
   ProductStock, ProductGiftMode, Settings as StoreSettings,
 } from '../types';
@@ -32,13 +32,15 @@ import { effectivePrice } from '../lib/pricing';
 import { money, validateCoupon } from '../lib/cart';
 import { availableStock, isSoldOut } from '../lib/stock';
 
-interface Order {
-  id: string; customer_name: string; customer_phone: string;
-  delivery_method: 'pickup' | 'delivery'; total_price: number;
-  items: OrderItem[] | string; status: string; created_at: string;
-  adminNote?: string;
-  isArchived?: boolean;
-}
+/** The storefront's order, as it actually comes back out of Firestore here.
+ *
+ *  Two departures from `StoreOrder`, both about reading old documents rather
+ *  than writing new ones: early orders stored `items` as a JSON string (see
+ *  `parseItems`), and orders written before a field existed simply don't carry
+ *  it — so everything the server adds later is optional to the reader. */
+type Order = Partial<Omit<StoreOrder, 'id' | 'items'>>
+  & Pick<StoreOrder, 'id' | 'customer_name' | 'customer_phone' | 'delivery_method' | 'total_price' | 'status' | 'created_at'>
+  & { items: OrderItem[] | string };
 interface Customer {
   id: string; name: string; phone: string; email?: string;
   totalOrders: number; totalSpend: number;
@@ -62,19 +64,24 @@ const parseItems = (items: OrderItem[] | string): OrderItem[] => {
   return Array.isArray(items) ? items : [];
 };
 
-/** Everything the customer chose for a line — the fulfiller needs all of it. */
-const itemOptions = (item: OrderItem): string => [
-  ...Object.entries(item.selectedVariations ?? {}).map(([k, v]) => `${k}: ${v}`),
-  item.selectedColor && `צבע: ${item.selectedColor.name}`,
-  item.selectedLength && `אורך: ${item.selectedLength.label}`,
-  item.selectedBranding && `מיתוג: ${item.selectedBranding.label} (+₪${item.selectedBranding.extraCost})`,
-  item.brandingText && `שם למיתוג: "${item.brandingText}"`,
-  item.embroideryFirstName && `רקמה — שם פרטי: "${item.embroideryFirstName.text}" (+₪${item.embroideryFirstName.price})`,
-  item.embroideryLastName && `רקמה — שם משפחה: "${item.embroideryLastName.text}" (+₪${item.embroideryLastName.price})`,
-  item.selectedGift && `🎁 מתנה: ${item.selectedGift.name}`,
+/** Everything the customer chose for a line — the fulfiller needs all of it.
+ *  Kept as label/value pairs so the card can crush them onto one line while the
+ *  detail view lays them out as a labelled list, without the two drifting. */
+const itemOptionRows = (item: OrderItem): { label: string; value: string }[] => [
+  ...Object.entries(item.selectedVariations ?? {}).map(([k, v]) => ({ label: k, value: v })),
+  ...(item.selectedColor ? [{ label: 'צבע', value: item.selectedColor.name }] : []),
+  ...(item.selectedLength ? [{ label: 'אורך', value: item.selectedLength.label }] : []),
+  ...(item.selectedBranding ? [{ label: 'מיתוג', value: `${item.selectedBranding.label} (+₪${item.selectedBranding.extraCost})` }] : []),
+  ...(item.brandingText ? [{ label: 'שם למיתוג', value: `"${item.brandingText}"` }] : []),
+  ...(item.embroideryFirstName ? [{ label: 'רקמה — שם פרטי', value: `"${item.embroideryFirstName.text}" (+₪${item.embroideryFirstName.price})` }] : []),
+  ...(item.embroideryLastName ? [{ label: 'רקמה — שם משפחה', value: `"${item.embroideryLastName.text}" (+₪${item.embroideryLastName.price})` }] : []),
+  ...(item.selectedGift ? [{ label: '🎁 מתנה', value: item.selectedGift.name }] : []),
   // On the gift's own ₪0 line — which product's purchase earned it.
-  item.giftFor && `🎁 מתנה עבור: ${item.giftFor}`,
-].filter(Boolean).join(' | ');
+  ...(item.giftFor ? [{ label: '🎁 מתנה עבור', value: item.giftFor }] : []),
+];
+
+const itemOptions = (item: OrderItem): string =>
+  itemOptionRows(item).map(r => `${r.label}: ${r.value}`).join(' | ');
 
 const toDate = (v: any): Date => {
   if (!v) return new Date(0);
@@ -113,8 +120,268 @@ function AdminPriceCell({ product }: { product: Product }) {
   );
 }
 
+/* ──────────────────────────── OrderDetailsModal ─────────────────────── */
+/** Every field on one order, grouped and titled.
+ *
+ *  The order cards are deliberately terse — they are a queue to work through,
+ *  three to a row. Everything the card leaves out (address, notes, dedication,
+ *  the coupon, what the card was actually charged) lives here, so packing an
+ *  order never means opening Firestore. */
+
+const ORDER_STATUS_HE: Record<string, string> = {
+  Pending: 'ממתין',
+  PendingPayment: 'ממתין לתשלום',
+  Processing: 'בטיפול',
+  Shipped: 'נשלח',
+  Completed: 'הושלם',
+  Cancelled: 'בוטל',
+};
+
+const nis = (v: number) => `₪${(Math.round(v * 100) / 100).toLocaleString('he-IL')}`;
+
+const fullDate = (v: any) => toDate(v).toLocaleString('he-IL', {
+  day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit',
+});
+
+function DetailSection({ title, icon: Icon, children }: { title: string; icon: any; children: React.ReactNode }) {
+  return (
+    <section className="border border-line rounded-xl overflow-hidden">
+      <h4 className="flex items-center gap-2 text-xs font-bold text-ink bg-cream px-4 py-2.5 border-b border-line">
+        <Icon size={14} /> {title}
+      </h4>
+      <div className="p-4 space-y-2">{children}</div>
+    </section>
+  );
+}
+
+/** One labelled field. Renders nothing when there is no value — an order without
+ *  a coupon should not show an empty "קופון" row. */
+function DetailRow({ label, value, strong }: { label: string; value: React.ReactNode; strong?: boolean }) {
+  if (value === null || value === undefined || value === '') return null;
+  return (
+    <div className="flex justify-between items-start gap-4 text-sm">
+      <span className="text-gray-500 flex-shrink-0">{label}</span>
+      <span className={`text-left ${strong ? 'font-bold text-ink' : 'text-body'}`}>{value}</span>
+    </div>
+  );
+}
+
+/** The whole order as pasteable text — for a WhatsApp message to the courier or
+ *  a note next to the packing bench. */
+const orderAsText = (order: Order, items: OrderItem[]): string => [
+  `הזמנה #${order.id.slice(0, 6)} · ${fullDate(order.created_at)}`,
+  `לקוח: ${order.customer_name} · ${order.customer_phone}`,
+  order.customer_email && `אימייל: ${order.customer_email}`,
+  order.delivery_method === 'delivery' ? `משלוח: ${order.shippingAddress || '—'}` : 'איסוף עצמי',
+  '',
+  ...items.map(item => {
+    const opts = itemOptions(item);
+    return `• ${item.name} ×${item.quantity} — ${item.isGift ? 'מתנה' : nis(item.price * item.quantity)}`
+      + (opts ? `\n   ${opts}` : '');
+  }),
+  '',
+  order.dedication?.message && `הקדשה (${order.dedication.cardType === 'printed' ? 'כרטיס מודפס' : 'דיגיטלי'}): ${order.dedication.message}`,
+  order.customer_notes && `הערות לקוח: ${order.customer_notes}`,
+  `סה"כ: ${nis(order.total_price)}`,
+].filter(Boolean).join('\n');
+
+function OrderDetailsModal({ order, onClose }: { order: Order; onClose: () => void }) {
+  const items = parseItems(order.items);
+  const phone = order.customer_phone.replace(/^0/, '972');
+  const cfg = STATUS_CFG[order.status] || { cls: 'bg-gray-500/20 text-gray-400 border-gray-500/40' };
+  const [copied, setCopied] = useState(false);
+
+  // Esc closes, and the page behind must not scroll away under the dialog.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
+    window.addEventListener('keydown', onKey);
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => { window.removeEventListener('keydown', onKey); document.body.style.overflow = prev; };
+  }, [onClose]);
+
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(orderAsText(order, items));
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch { /* clipboard blocked — the details are on screen anyway */ }
+  };
+
+  // What the goods came to, for orders written before `subtotal` was stored.
+  const goodsTotal = order.subtotal ?? items.reduce((s, i) => s + i.price * i.quantity, 0);
+
+  return (
+    <div
+      className="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-end md:items-center justify-center p-0 md:p-4"
+      onClick={onClose}
+    >
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-label={`פרטי הזמנה של ${order.customer_name}`}
+        dir="rtl"
+        onClick={e => e.stopPropagation()}
+        className="bg-white border border-line rounded-t-2xl md:rounded-2xl w-full max-w-2xl max-h-[92vh] md:max-h-[90vh] overflow-y-auto"
+      >
+        <div className="p-5 border-b border-line flex justify-between items-start gap-3 sticky top-0 bg-white z-10">
+          <div>
+            <h3 className="font-bold text-ink text-lg">{order.customer_name}</h3>
+            <p className="text-gray-500 text-xs mt-0.5">
+              הזמנה #{order.id.slice(0, 6)} · {fullDate(order.created_at)}
+            </p>
+          </div>
+          <div className="flex items-center gap-2 flex-shrink-0">
+            <span className={`text-xs font-bold px-3 py-1 rounded-full border whitespace-nowrap ${cfg.cls}`}>
+              {order.status}
+            </span>
+            <button onClick={onClose} aria-label="סגור"
+              className="p-1.5 text-gray-500 hover:text-ink rounded-lg hover:bg-cream transition-colors">
+              <X size={18} />
+            </button>
+          </div>
+        </div>
+
+        <div className="p-5 space-y-4">
+          <DetailSection title="פרטי לקוח" icon={Users}>
+            <DetailRow label="שם" value={order.customer_name} />
+            <DetailRow label="טלפון" value={
+              <a href={`tel:${order.customer_phone}`} className="text-ink underline underline-offset-2" dir="ltr">
+                {order.customer_phone}
+              </a>
+            } />
+            <DetailRow label="אימייל" value={
+              order.customer_email
+                ? <a href={`mailto:${order.customer_email}`} className="text-ink underline underline-offset-2" dir="ltr">{order.customer_email}</a>
+                : null
+            } />
+            <DetailRow label="אופן מסירה" value={order.delivery_method === 'delivery' ? '🚚 משלוח' : '🏪 איסוף עצמי'} />
+            <DetailRow label="כתובת למשלוח" value={order.shippingAddress} />
+            <DetailRow label="הערות הלקוח" value={order.customer_notes} />
+            <a href={`https://wa.me/${phone}`} target="_blank" rel="noopener noreferrer"
+              className="inline-flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg bg-green-500/15 text-green-600 border border-green-500/30 hover:bg-green-500/25 transition-colors mt-1">
+              <MessageCircle size={12} /> שלח ווצאפ
+            </a>
+          </DetailSection>
+
+          <DetailSection title={`פריטים (${items.length})`} icon={Package}>
+            {items.length === 0 && <p className="text-sm text-gray-400">אין פריטים בהזמנה</p>}
+            {items.map((item, i) => {
+              const rows = itemOptionRows(item);
+              return (
+                <div key={i} className="border border-line rounded-lg p-3 bg-cream/40">
+                  <div className="flex justify-between items-start gap-3">
+                    <p className="text-sm font-bold text-ink">
+                      {item.name}
+                      <span className="text-gray-500 font-normal"> ×{item.quantity}</span>
+                      {item.isGift && <span className="mr-2 text-[10px] px-1.5 py-0.5 rounded-md bg-yellow-500/15 text-yellow-700 border border-yellow-500/30">מתנה</span>}
+                    </p>
+                    <p className="text-sm text-ink whitespace-nowrap">
+                      {item.isGift ? '₪0' : nis(item.price * item.quantity)}
+                      {!item.isGift && item.quantity > 1 && (
+                        <span className="text-gray-400 text-xs"> ({nis(item.price)} ליח׳)</span>
+                      )}
+                    </p>
+                  </div>
+
+                  {rows.length > 0 && (
+                    <dl className="mt-2 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-xs">
+                      {rows.map((r, j) => (
+                        <React.Fragment key={j}>
+                          <dt className="text-gray-500">{r.label}</dt>
+                          <dd className="text-body">{r.value}</dd>
+                        </React.Fragment>
+                      ))}
+                    </dl>
+                  )}
+
+                  {item.bundleItems && item.bundleItems.length > 0 && (
+                    <div className="mt-2 pt-2 border-t border-line">
+                      <p className="text-xs text-gray-500 mb-1">תכולת המארז</p>
+                      <ul className="space-y-0.5">
+                        {item.bundleItems.map((b, j) => (
+                          <li key={j} className="text-xs text-body flex justify-between gap-3">
+                            <span>• {b.name} ×{b.quantity}</span>
+                            <span className="text-gray-400">{nis(b.price * b.quantity)}</span>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </DetailSection>
+
+          {order.dedication?.message && (
+            <DetailSection title="הקדשה" icon={Sparkles}>
+              <p className="text-sm text-body whitespace-pre-wrap bg-cream/40 border border-line rounded-lg p-3">
+                {order.dedication.message}
+              </p>
+              <DetailRow label="סוג כרטיס" value={order.dedication.cardType === 'printed' ? 'מודפס' : 'דיגיטלי'} />
+            </DetailSection>
+          )}
+
+          <DetailSection title="חשבון" icon={DollarSign}>
+            <DetailRow label="סכום מוצרים" value={nis(goodsTotal)} />
+            <DetailRow label={`הנחה${order.coupon_code ? ` · קופון ${order.coupon_code}` : ''}`}
+              value={order.discount_amount ? `−${nis(order.discount_amount)}` : null} />
+            <DetailRow label="משלוח" value={
+              order.delivery_method !== 'delivery' ? null
+                : order.free_shipping ? 'חינם'
+                  : order.shipping_cost != null ? nis(order.shipping_cost) : null
+            } />
+            <DetailRow label="כרטיס ברכה" value={order.card_cost ? nis(order.card_cost) : null} />
+            <DetailRow label="🎁 מתנה" value={order.gift_item?.name} />
+            <div className="border-t border-line pt-2 mt-1">
+              <DetailRow label='סה"כ לתשלום' value={nis(order.total_price)} strong />
+            </div>
+          </DetailSection>
+
+          <DetailSection title="תשלום וסטטוס" icon={CheckCircle2}>
+            <DetailRow label="שולם" value={order.isPaid ? '✅ כן' : '❌ לא'} />
+            <DetailRow label="סטטוס הזמנה" value={order.orderStatus ? ORDER_STATUS_HE[order.orderStatus] ?? order.orderStatus : null} />
+            <DetailRow label="תאריך תשלום" value={order.paid_at ? fullDate(order.paid_at) : null} />
+            <DetailRow label="אסמכתא" value={order.payment_confirmation} />
+            <DetailRow label="סכום שחויב" value={order.payment_sum != null ? nis(order.payment_sum) : null} />
+            <DetailRow label="כרטיס" value={
+              order.payment_card_suffix
+                ? `${order.payment_card_brand || ''} ****${order.payment_card_suffix}`.trim()
+                : null
+            } />
+            {order.payment_mismatch && (
+              <p className="text-xs text-red-500 border border-red-500/30 bg-red-500/10 rounded-lg p-2.5">
+                ⚠️ הסכום שחויב אינו תואם לסכום ההזמנה — ההזמנה לא סומנה כשולמה.
+              </p>
+            )}
+            <DetailRow label="מזהה הזמנה" value={<span dir="ltr" className="font-mono text-xs">{order.id}</span>} />
+          </DetailSection>
+
+          {order.adminNote && (
+            <DetailSection title="הערת מנהל" icon={Pencil}>
+              <p className="text-sm text-body whitespace-pre-wrap">{order.adminNote}</p>
+            </DetailSection>
+          )}
+
+          <div className="flex gap-2">
+            <button onClick={copy}
+              className="flex-1 flex items-center justify-center gap-1.5 py-2.5 rounded-xl text-xs font-bold bg-cream border border-line text-body hover:border-ink/40 transition-colors">
+              <Copy size={12} /> {copied ? '✓ הועתק' : 'העתק את ההזמנה כטקסט'}
+            </button>
+            <button onClick={onClose}
+              className="px-5 py-2.5 rounded-xl text-xs font-bold text-white transition-opacity hover:opacity-90"
+              style={{ background: INK }}>
+              סגור
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /* ─────────────────────────────── OrderCard ──────────────────────────── */
-function OrderCard({ order }: { key?: string; order: Order }) {
+function OrderCard({ order, onOpen }: { key?: string; order: Order; onOpen: () => void }) {
   const items = parseItems(order.items);
   const cfg = STATUS_CFG[order.status] || { cls: 'bg-gray-500/20 text-gray-400 border-gray-500/40' };
   const phone = order.customer_phone.replace(/^0/, '972');
@@ -148,29 +415,42 @@ function OrderCard({ order }: { key?: string; order: Order }) {
 
   return (
     <div className="bg-white border border-line rounded-2xl p-5 space-y-4 flex flex-col">
-      <div className="flex justify-between items-start gap-2">
-        <div>
-          <h3 className="font-bold text-ink">{order.customer_name}</h3>
-          <p className="text-gray-500 text-xs mt-0.5">{dateStr} · #{order.id.slice(0, 6)}</p>
-        </div>
-        <span className={`text-xs font-bold px-3 py-1 rounded-full border whitespace-nowrap flex-shrink-0 ${cfg.cls}`}>
-          {order.status}
-        </span>
-      </div>
-
-      <div className="space-y-1.5 flex-1">
-        {items.map((item, i) => (
-          <div key={i} className="text-sm">
-            <div className="flex justify-between">
-              <span className="text-body">{item.name} <span className="text-gray-500">×{item.quantity}</span></span>
-              <span className="text-gray-400">₪{(item.price * item.quantity)}</span>
-            </div>
-            {itemOptions(item) && (
-              <p className="text-gray-500 text-xs mt-0.5 mr-2">{itemOptions(item)}</p>
-            )}
+      {/* The summary opens the full order. It holds no controls of its own, so a
+          plain button keeps it keyboard-reachable without swallowing the status
+          select and the note field below. */}
+      <button
+        type="button"
+        onClick={onOpen}
+        title="לחץ לפרטי ההזמנה המלאים"
+        className="text-right flex-1 flex flex-col gap-4 -m-2 p-2 rounded-xl hover:bg-cream/60 transition-colors group"
+      >
+        <div className="flex justify-between items-start gap-2 w-full">
+          <div>
+            <h3 className="font-bold text-ink flex items-center gap-1.5">
+              {order.customer_name}
+              <ChevronLeft size={14} className="text-gray-400 group-hover:text-ink transition-colors" />
+            </h3>
+            <p className="text-gray-500 text-xs mt-0.5">{dateStr} · #{order.id.slice(0, 6)}</p>
           </div>
-        ))}
-      </div>
+          <span className={`text-xs font-bold px-3 py-1 rounded-full border whitespace-nowrap flex-shrink-0 ${cfg.cls}`}>
+            {order.status}
+          </span>
+        </div>
+
+        <div className="space-y-1.5 flex-1 w-full">
+          {items.map((item, i) => (
+            <div key={i} className="text-sm">
+              <div className="flex justify-between">
+                <span className="text-body">{item.name} <span className="text-gray-500">×{item.quantity}</span></span>
+                <span className="text-gray-400">₪{(item.price * item.quantity)}</span>
+              </div>
+              {itemOptions(item) && (
+                <p className="text-gray-500 text-xs mt-0.5 mr-2">{itemOptions(item)}</p>
+              )}
+            </div>
+          ))}
+        </div>
+      </button>
 
       <div className="flex justify-between items-center border-t border-line pt-3">
         <div className="flex gap-2 flex-wrap">
@@ -224,7 +504,7 @@ function OrderCard({ order }: { key?: string; order: Order }) {
 /* ──────────────────────────── ArchivedOrderCard ─────────────────────── */
 /** An archived order: restorable, or permanently deletable behind a typed confirm.
  *  A plain confirm() is too easy to fire by accident on a real customer's order. */
-function ArchivedOrderCard({ order }: { key?: string; order: Order }) {
+function ArchivedOrderCard({ order, onOpen }: { key?: string; order: Order; onOpen: () => void }) {
   const [confirming, setConfirming] = useState(false);
   const [typed, setTyped] = useState('');
   const [busy, setBusy] = useState(false);
@@ -245,19 +525,29 @@ function ArchivedOrderCard({ order }: { key?: string; order: Order }) {
 
   return (
     <div className="bg-white border border-line rounded-2xl p-5 space-y-3 opacity-90">
-      <div className="flex justify-between items-start gap-2">
-        <div>
-          <h3 className="font-bold text-ink">{order.customer_name}</h3>
-          <p className="text-gray-500 text-xs mt-0.5">{dateStr} · #{order.id.slice(0, 6)}</p>
+      <button
+        type="button"
+        onClick={onOpen}
+        title="לחץ לפרטי ההזמנה המלאים"
+        className="text-right w-full space-y-3 -m-2 p-2 rounded-xl hover:bg-cream/60 transition-colors group"
+      >
+        <div className="flex justify-between items-start gap-2">
+          <div>
+            <h3 className="font-bold text-ink flex items-center gap-1.5">
+              {order.customer_name}
+              <ChevronLeft size={14} className="text-gray-400 group-hover:text-ink transition-colors" />
+            </h3>
+            <p className="text-gray-500 text-xs mt-0.5">{dateStr} · #{order.id.slice(0, 6)}</p>
+          </div>
+          <span className="text-xs font-bold px-3 py-1 rounded-full border whitespace-nowrap flex-shrink-0 bg-gray-500/15 text-gray-400 border-gray-500/30">
+            בארכיון · {order.status}
+          </span>
         </div>
-        <span className="text-xs font-bold px-3 py-1 rounded-full border whitespace-nowrap flex-shrink-0 bg-gray-500/15 text-gray-400 border-gray-500/30">
-          בארכיון · {order.status}
-        </span>
-      </div>
 
-      <p className="text-gray-500 text-sm">
-        {items.length} פריטים · ₪{order.total_price}
-      </p>
+        <p className="text-gray-500 text-sm">
+          {items.length} פריטים · ₪{order.total_price}
+        </p>
+      </button>
 
       {confirming ? (
         <div className="space-y-2 border-t border-line pt-3">
@@ -303,6 +593,10 @@ function ArchivedOrderCard({ order }: { key?: string; order: Order }) {
 /* ─────────────────────────────── OrdersView ─────────────────────────── */
 function OrdersView({ orders }: { orders: Order[] }) {
   const [filter, setFilter] = useState('all');
+  // Held by id, not by value: the list is a live Firestore subscription, so an
+  // open dialog keeps showing the status and note as they are edited underneath.
+  const [detailId, setDetailId] = useState<string | null>(null);
+  const detail = orders.find(o => o.id === detailId) ?? null;
 
   const active = orders.filter(o => !o.isArchived);
   const archived = orders.filter(o => o.isArchived);
@@ -350,10 +644,12 @@ function OrdersView({ orders }: { orders: Order[] }) {
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
           {isArchiveView
-            ? filtered.map(order => <ArchivedOrderCard key={order.id} order={order} />)
-            : filtered.map(order => <OrderCard key={order.id} order={order} />)}
+            ? filtered.map(order => <ArchivedOrderCard key={order.id} order={order} onOpen={() => setDetailId(order.id)} />)
+            : filtered.map(order => <OrderCard key={order.id} order={order} onOpen={() => setDetailId(order.id)} />)}
         </div>
       )}
+
+      {detail && <OrderDetailsModal order={detail} onClose={() => setDetailId(null)} />}
     </div>
   );
 }
