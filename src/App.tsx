@@ -7,6 +7,7 @@ import { motion, AnimatePresence } from 'motion/react';
 import { Product, Category, CartItem, Coupon, SiteContent, Review, BrandingOption, ProductColorOption, ProductLengthOption, SiteBanner } from './types';
 import { effectivePrice } from './lib/pricing';
 import { embroideryPrice, getCartKey, unitPriceOf } from './lib/cart';
+import { availableStock, giftChoices, giftRequiresChoice, isSoldOut } from './lib/stock';
 import { CartProvider, useCart } from './contexts/CartContext';
 import { app, db, storage } from './firebase';
 import { collection, getDocs, doc, getDoc, query, orderBy, where } from "firebase/firestore";
@@ -33,6 +34,9 @@ interface CreateOrderLine {
    *  each half from the product document. */
   embroideryFirstName?: string;
   embroideryLastName?: string;
+  /** The free gift the shopper picked. Only the id travels — the server checks
+   *  it against the gifts the product actually offers and gives it at ₪0. */
+  selectedGiftId?: string;
   /** A box the shopper assembled — the server re-prices it from the box base
    *  and the contents, so the browser's `bundle_<ts>` line never sets a price. */
   bundle?: {
@@ -163,54 +167,73 @@ const EMPTY_EMBROIDERY_CHOICE = {
   lastName: { on: false, text: '' },
 };
 
-/** True when the product has options the shopper must choose before it can be added. */
+/** True when the product has options the shopper must choose before it can be added.
+ *
+ *  A gift counts only when there is a choice to make *and* the product asks for
+ *  it on its own page — a single gift is granted without being asked, and a
+ *  `checkout`-mode gift is picked later in the basket. The gift products
+ *  themselves are not resolved here (the tile has no catalog), so this errs
+ *  towards sending the shopper to the product page, which can resolve them. */
 const needsOptions = (p: Product) => !!(
   p.variations?.length || p.colorOptions?.length || p.lengthOptions?.length || p.brandingOptionIds?.length
+  || (p.gift?.enabled && p.gift.mode === 'product' && (p.gift.productIds?.length ?? 0) > 1)
+);
+
+/** The sold-out veil over a tile's image. */
+const SoldOutBadge = () => (
+  <div className="absolute inset-0 bg-cream/70 flex items-center justify-center">
+    <span className="bg-ink text-cream text-sm font-bold px-4 py-2">אזל מהמלאי</span>
+  </div>
 );
 
 /** The catalog tile — shared by the home showcase and the full catalog so the
  *  two can never drift into looking like different stores. */
 const ProductCard: React.FC<{
   product: Product; onOpen: (id: string) => void; onAdd: (p: Product) => void;
-}> = ({ product, onOpen, onAdd }) => (
-  <motion.div
-    layout
-    initial={{ opacity: 0, y: 20 }}
-    animate={{ opacity: 1, y: 0 }}
-    className="surface-card overflow-hidden flex flex-col cursor-pointer"
-    onClick={() => onOpen(product.id)}
-  >
-    <div className="aspect-square relative overflow-hidden bg-cream">
-      {product.main_image ? (
-        <img src={product.main_image} alt={product.alt_text || product.name} className="w-full h-full object-cover" referrerPolicy="no-referrer" />
-      ) : (
-        <div className="w-full h-full flex items-center justify-center text-line-strong">
-          <Package size={48} />
-        </div>
-      )}
-    </div>
-    <div className="p-6 flex flex-col flex-grow">
-      <h3 className="text-lg text-ink mb-2">{product.name}</h3>
-      <p className="text-muted text-sm mb-4 line-clamp-2">{product.description}</p>
-      <div className="flex justify-between items-center gap-3 mt-auto">
-        <PriceTag product={product} />
-        <button
-          onClick={(e) => {
-            e.stopPropagation();
-            // A configurable product can't be added blind — send the shopper
-            // to the product page to pick its options first.
-            if (needsOptions(product)) { onOpen(product.id); return; }
-            onAdd(product);
-          }}
-          className="btn-primary flex items-center gap-2"
-        >
-          <Plus size={18} />
-          {needsOptions(product) ? 'בחירת אפשרויות' : 'הוספה לסל'}
-        </button>
+}> = ({ product, onOpen, onAdd }) => {
+  const soldOut = isSoldOut(product);
+  return (
+    <motion.div
+      layout
+      initial={{ opacity: 0, y: 20 }}
+      animate={{ opacity: 1, y: 0 }}
+      className="surface-card overflow-hidden flex flex-col cursor-pointer"
+      onClick={() => onOpen(product.id)}
+    >
+      <div className="aspect-square relative overflow-hidden bg-cream">
+        {product.main_image ? (
+          <img src={product.main_image} alt={product.alt_text || product.name} className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+        ) : (
+          <div className="w-full h-full flex items-center justify-center text-line-strong">
+            <Package size={48} />
+          </div>
+        )}
+        {soldOut && <SoldOutBadge />}
       </div>
-    </div>
-  </motion.div>
-);
+      <div className="p-6 flex flex-col flex-grow">
+        <h3 className="text-lg text-ink mb-2">{product.name}</h3>
+        <p className="text-muted text-sm mb-4 line-clamp-2">{product.description}</p>
+        <div className="flex justify-between items-center gap-3 mt-auto">
+          <PriceTag product={product} />
+          <button
+            disabled={soldOut}
+            onClick={(e) => {
+              e.stopPropagation();
+              // A configurable product can't be added blind — send the shopper
+              // to the product page to pick its options first.
+              if (needsOptions(product)) { onOpen(product.id); return; }
+              onAdd(product);
+            }}
+            className="btn-primary flex items-center gap-2 disabled:opacity-40 disabled:cursor-not-allowed"
+          >
+            {!soldOut && <Plus size={18} />}
+            {soldOut ? 'אזל מהמלאי' : needsOptions(product) ? 'בחירת אפשרויות' : 'הוספה לסל'}
+          </button>
+        </div>
+      </div>
+    </motion.div>
+  );
+};
 
 /** The showcase strip: the admin's chosen products looping past the shopper.
  *
@@ -242,7 +265,7 @@ const FeaturedMarquee = ({ products, onOpen }: {
       onClick={() => onOpen(product.id)}
       className="group w-40 sm:w-52 flex-shrink-0 mx-2 text-right"
     >
-      <div className="aspect-square overflow-hidden bg-surface border border-line group-hover:border-line-strong transition-colors">
+      <div className="aspect-square relative overflow-hidden bg-surface border border-line group-hover:border-line-strong transition-colors">
         {product.main_image ? (
           <img
             src={product.main_image}
@@ -256,6 +279,7 @@ const FeaturedMarquee = ({ products, onOpen }: {
             <Package size={36} />
           </div>
         )}
+        {isSoldOut(product) && <SoldOutBadge />}
       </div>
       <p className="mt-2 text-sm text-ink truncate">{product.name}</p>
       <PriceTag product={product} />
@@ -277,7 +301,7 @@ function StoreApp() {
   const [view, setView] = useState<'user' | 'catalog' | 'checkout' | 'success' | 'product' | 'build-box'>('user');
 
   const {
-    cart, addToCart, addLine, removeFromCart, updateQuantity, clearCart, repriceCart,
+    cart, addToCart, addLine, removeFromCart, updateQuantity, setLineGift, clearCart, repriceCart,
     settings,
     deliveryMethod, setDeliveryMethod, dedication, setDedication,
     appliedCoupon, couponInput, setCouponInput, couponError, clearCouponError,
@@ -305,6 +329,8 @@ function StoreApp() {
    *  `brandingNameField` is on. Free of charge, so it never touches the price. */
   const [brandingText, setBrandingText] = useState('');
   const [embroidery, setEmbroidery] = useState(EMPTY_EMBROIDERY_CHOICE);
+  /** The free gift picked on the product page, for products that ask there. */
+  const [selectedGiftId, setSelectedGiftId] = useState('');
   const [customerNotes, setCustomerNotes] = useState('');
 
   // Reviews
@@ -514,6 +540,7 @@ function StoreApp() {
     setSelectedBrandingId('');
     setBrandingText('');
     setEmbroidery(EMPTY_EMBROIDERY_CHOICE);
+    setSelectedGiftId('');
     setReviews([]);
     setReviewForm({ rating: 5, message: '', customerName: '', photoFile: null, photoPreview: '' });
     navigateTo('product', id);
@@ -637,11 +664,57 @@ function StoreApp() {
     item.brandingText && `שם למיתוג: ${item.brandingText}`,
     item.embroideryFirstName && `רקמת שם פרטי: ${item.embroideryFirstName.text}`,
     item.embroideryLastName && `רקמת שם משפחה: ${item.embroideryLastName.text}`,
+    item.selectedGift && `🎁 מתנה: ${item.selectedGift.name}`,
   ].filter(Boolean).join(' | ');
 
   // Every ₪ below comes out of the cart context's single `computeTotals()` pass —
   // coupon discount, free-shipping waiver, threshold gift and greeting card included.
   const { subtotal: cartTotal, discountAmount, shippingCost, cardCost, total: finalTotal } = totals;
+
+  // ── Gifts owed to the basket ───────────────────────────────────────────────
+  // The catalog is the authority on what a line is offered, not the line's own
+  // snapshot — the admin may have changed the gifts since it was added.
+  const productById = React.useMemo(() => new Map(products.map(p => [p.id, p])), [products]);
+
+  /** Every cart line that still has a gift to be chosen, with its options.
+   *
+   *  Both modes land here: a `checkout` gift is picked in the basket by design,
+   *  and a `product` gift ends up here too if it was never resolved — an older
+   *  line, or one whose chosen gift has since sold out. `createOrder` refuses an
+   *  order with an unanswered gift, so this is what lets the shopper answer. */
+  const giftsToChoose = cart.flatMap(item => {
+    if (item.bundleItems?.length) return [];
+    const product = productById.get(item.id) ?? item;
+    const choices = giftChoices(product, products);
+    if (choices.length === 0) return [];
+    const chosen = choices.find(g => g.id === item.selectedGift?.id) ?? null;
+    // One option is granted, not asked — it needs no picker, only attaching.
+    if (chosen || !giftRequiresChoice(choices)) return [];
+    return [{ item, choices }];
+  });
+
+  /** A single gift the shopper never had to pick still has to reach the line, or
+   *  the checkout would send an order with no gift on it. Attaching it here
+   *  keeps the basket showing exactly what the order will contain. */
+  useEffect(() => {
+    // Before the catalog has loaded, every gift would resolve to "not on offer"
+    // — which would strip legitimate gifts off the basket on every page load.
+    if (products.length === 0) return;
+    for (const item of cart) {
+      if (item.bundleItems?.length) continue;
+      const product = productById.get(item.id) ?? item;
+      const choices = giftChoices(product, products);
+      const chosen = choices.find(g => g.id === item.selectedGift?.id) ?? null;
+      if (chosen) continue;
+      if (choices.length === 1) {
+        setLineGift(item, { id: choices[0].id, name: choices[0].name });
+      } else if (item.selectedGift) {
+        // The gift it carried is no longer on offer — drop it rather than
+        // promise something `createOrder` would refuse to give.
+        setLineGift(item, null);
+      }
+    }
+  }, [cart, productById, products, setLineGift]);
 
   // ── Product page: live option pricing ──────────────────────────────────
   // The branding options this product opted into, resolved against the global catalog.
@@ -673,6 +746,23 @@ function StoreApp() {
   const embroiderySurcharge =
     (embroideryPicked.firstName ? embroideryPrices.firstName : 0) +
     (embroideryPicked.lastName ? embroideryPrices.lastName : 0);
+
+  /** The free gifts this product grants, resolved against the catalog. Gifts that
+   *  have sold out are already filtered out — a promise we cannot keep is not
+   *  put on the page at all. */
+  const productGiftChoices = selectedProduct ? giftChoices(selectedProduct, products) : [];
+  /** Asked for here, or left to the checkout page. */
+  const giftAskedOnProduct = productGiftChoices.length > 0
+    && selectedProduct?.gift?.mode !== 'checkout';
+  const giftMustChoose = giftAskedOnProduct && giftRequiresChoice(productGiftChoices);
+  /** What the line will actually be given: the pick, or the only one on offer. */
+  const productGift = giftAskedOnProduct
+    ? (productGiftChoices.find(g => g.id === selectedGiftId)
+       ?? (productGiftChoices.length === 1 ? productGiftChoices[0] : null))
+    : null;
+
+  const productSoldOut = selectedProduct ? isSoldOut(selectedProduct) : false;
+  const productStockLeft = availableStock(selectedProduct);
 
   const productSurcharge =
     (selectedLength?.priceDelta ?? 0) + (selectedBranding?.extraCost ?? 0) + embroiderySurcharge;
@@ -717,6 +807,20 @@ function StoreApp() {
       return;
     }
     if (deliveryMethod === 'delivery' && !checkoutData.shippingAddress.trim()) return alert("נא להזין כתובת למשלוח");
+    // The server refuses an order with a gift nobody chose, so ask here rather
+    // than let the shopper hit a failure they cannot read as their own choice.
+    if (giftsToChoose.length > 0) {
+      document.getElementById('checkout-gifts')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      return alert(`נא לבחור מתנה עבור: ${giftsToChoose.map(g => g.item.name).join(', ')}`);
+    }
+    // A line whose product has sold out since it was added cannot be ordered —
+    // `createOrder` says so too, but naming the item here is the kinder failure.
+    const unavailable = cart
+      .filter(i => !i.bundleItems?.length && isSoldOut(productById.get(i.id) ?? i))
+      .map(i => i.name);
+    if (unavailable.length > 0) {
+      return alert(`אזלו מהמלאי ואינם זמינים להזמנה: ${unavailable.join(', ')}. הסירו אותם מהסל כדי להמשיך.`);
+    }
     if (!totals.meetsMinimum) return alert(`סכום ההזמנה המינימלי הוא ₪${formatPrice(totals.minOrderAmount)}`);
     // Guard against a NaN/negative total (rules require total_price >= 0), e.g. malformed delivery_cost setting.
     if (!Number.isFinite(finalTotal) || finalTotal < 0) return alert("שגיאה בחישוב הסכום. רעננו את הדף ונסו שוב.");
@@ -748,6 +852,7 @@ function StoreApp() {
         ...(i.brandingText && { brandingText: i.brandingText }),
         ...(i.embroideryFirstName?.text && { embroideryFirstName: i.embroideryFirstName.text }),
         ...(i.embroideryLastName?.text && { embroideryLastName: i.embroideryLastName.text }),
+        ...(i.selectedGift && { selectedGiftId: i.selectedGift.id }),
       };
     });
 
@@ -791,7 +896,12 @@ function StoreApp() {
       // exhausted. Pull the lines back in line with the catalog so the corrected
       // summary is what the shopper sees; without this the retry would fail the
       // same way forever, because the cart is a frozen localStorage snapshot.
-      if (details?.reason === 'total_mismatch') {
+      // Same reasoning for a shelf that has emptied or a gift that is no longer
+      // on offer: repricing pulls the live stock and gift options onto the
+      // lines, so the basket the shopper retries from is the current one.
+      if (details?.reason === 'total_mismatch'
+          || details?.reason === 'out_of_stock'
+          || details?.reason === 'gift_required') {
         await repriceCart();
       }
 
@@ -1322,6 +1432,71 @@ function StoreApp() {
                   </div>
                 )}
 
+                {/* Gift (מתנה) — a free catalog product that comes with this one.
+                    A single gift is simply announced; two or more make it the
+                    shopper's choice, and one must be picked before adding. */}
+                {giftAskedOnProduct && (
+                  <div>
+                    <label className="block text-sm font-medium text-ink mb-2 flex items-center gap-1.5">
+                      <Gift size={16} />
+                      {giftMustChoose ? 'בחרו את המתנה שלכם:' : 'מתנה שמצורפת לרכישה:'}
+                    </label>
+                    {giftMustChoose ? (
+                      <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+                        {productGiftChoices.map(g => (
+                          <button
+                            key={g.id}
+                            type="button"
+                            aria-pressed={selectedGiftId === g.id}
+                            onClick={() => setSelectedGiftId(g.id)}
+                            className={`border p-3 text-right transition-all ${
+                              selectedGiftId === g.id
+                                ? 'border-ink bg-surface ring-1 ring-ink'
+                                : 'border-line bg-surface hover:border-ink'
+                            }`}
+                          >
+                            <div className="aspect-square overflow-hidden bg-cream mb-2">
+                              {g.main_image ? (
+                                <img src={g.main_image} alt="" className="w-full h-full object-cover" referrerPolicy="no-referrer" loading="lazy" />
+                              ) : (
+                                <div className="w-full h-full flex items-center justify-center text-line-strong"><Gift size={28} /></div>
+                              )}
+                            </div>
+                            <p className="text-sm text-ink line-clamp-2">{g.name}</p>
+                            <p className="text-xs text-muted mt-0.5">חינם 🎁</p>
+                          </button>
+                        ))}
+                      </div>
+                    ) : (
+                      <div className="flex items-center gap-3 border border-line bg-surface p-3">
+                        <div className="w-12 h-12 overflow-hidden bg-cream flex-shrink-0">
+                          {productGift?.main_image ? (
+                            <img src={productGift.main_image} alt="" className="w-full h-full object-cover" referrerPolicy="no-referrer" loading="lazy" />
+                          ) : (
+                            <div className="w-full h-full flex items-center justify-center text-line-strong"><Gift size={22} /></div>
+                          )}
+                        </div>
+                        <div>
+                          <p className="text-sm text-ink">🎁 {productGift?.name}</p>
+                          <p className="text-xs text-muted mt-0.5">מצורף חינם לרכישה</p>
+                        </div>
+                      </div>
+                    )}
+                    <p className="text-muted text-xs mt-2">מתנה לכל יחידה שתרכשו.</p>
+                  </div>
+                )}
+
+                {/* Stock — the shopper is told what is left only once it is
+                    scarce enough to matter, and told plainly when it is gone. */}
+                {productSoldOut ? (
+                  <div className="border border-line bg-surface px-4 py-3">
+                    <p className="text-sm font-medium text-ink">אזל מהמלאי</p>
+                    <p className="text-xs text-muted mt-0.5">המוצר אינו זמין להזמנה כרגע. נשמח לעדכן — כתבו לנו בוואטסאפ.</p>
+                  </div>
+                ) : productStockLeft !== null && productStockLeft <= 5 && (
+                  <p className="text-sm text-ink">נותרו {productStockLeft} יחידות בלבד ✨</p>
+                )}
+
                 <div className="flex items-center gap-4 bg-gray-50 p-4 rounded-2xl w-fit">
                   <span className="text-gray-500 font-medium">כמות:</span>
                   <div className="flex items-center gap-3">
@@ -1368,6 +1543,27 @@ function StoreApp() {
                       alert(`נא למלא: ${blankEmbroidery.join(', ')}`);
                       return;
                     }
+                    // Two gifts on offer is a question, not a default — picking
+                    // one for them is how a shopper receives the wrong thing.
+                    if (giftMustChoose && !productGift) {
+                      alert('נא לבחור מתנה');
+                      return;
+                    }
+                    // The shelf is the last word here; `createOrder` checks it
+                    // again against the live catalog when the order is placed.
+                    if (productStockLeft !== null) {
+                      const inCart = cart
+                        .filter(i => i.id === selectedProduct.id)
+                        .reduce((sum, i) => sum + i.quantity, 0);
+                      if (inCart + productQuantity > productStockLeft) {
+                        alert(
+                          inCart > 0
+                            ? `נותרו ${productStockLeft} יחידות בלבד, וכבר יש ${inCart} בסל`
+                            : `נותרו ${productStockLeft} יחידות בלבד`
+                        );
+                        return;
+                      }
+                    }
                     addToCart(
                       selectedProduct,
                       productQuantity,
@@ -1400,14 +1596,20 @@ function StoreApp() {
                             price: embroideryPrices.lastName,
                           },
                         }),
+                        // Only when the product asks here — a `checkout`-mode
+                        // gift is chosen in the basket, not on this page.
+                        ...(productGift && {
+                          selectedGift: { id: productGift.id, name: productGift.name },
+                        }),
                       },
                     );
                     setIsCartOpen(true);
                   }}
-                  className="w-full btn-primary text-xl py-5 flex items-center justify-center gap-3"
+                  disabled={productSoldOut}
+                  className="w-full btn-primary text-xl py-5 flex items-center justify-center gap-3 disabled:opacity-40 disabled:cursor-not-allowed"
                 >
-                  <ShoppingCart size={24} />
-                  הוספה לסל הקניות
+                  {!productSoldOut && <ShoppingCart size={24} />}
+                  {productSoldOut ? 'אזל מהמלאי' : 'הוספה לסל הקניות'}
                 </button>
               </div>
             </div>
@@ -1622,6 +1824,54 @@ function StoreApp() {
                 )}
               </div>
 
+              {/* Gifts still to be chosen.
+                  Products configured to ask at checkout land here by design;
+                  so does anything left unresolved (an older basket, or a gift
+                  that sold out after it was picked). `createOrder` refuses an
+                  order with an unanswered gift, so this is the way through. */}
+              {giftsToChoose.length > 0 && (
+                <div id="checkout-gifts" className="border-t pt-4 space-y-4" style={{ background: '#EDE9E3', borderRadius: 16, padding: 20, marginTop: 8 }}>
+                  <div>
+                    <h3 className="font-bold text-gray-800 flex items-center gap-2">
+                      <Gift size={18} /> בחרו את המתנה שלכם
+                    </h3>
+                    <p className="text-xs text-gray-500 mt-1">מתנה חינם שמצורפת לרכישה — יש לבחור אחת</p>
+                  </div>
+                  {giftsToChoose.map(({ item, choices }) => (
+                    <div key={getCartKey(item)} className="space-y-2">
+                      <p className="text-sm font-medium text-gray-700">
+                        עבור {item.name}
+                        {item.quantity > 1 && <span className="text-gray-400 font-normal"> (×{item.quantity})</span>}
+                      </p>
+                      <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+                        {choices.map(g => (
+                          <button
+                            key={g.id}
+                            type="button"
+                            aria-pressed={item.selectedGift?.id === g.id}
+                            onClick={() => setLineGift(item, { id: g.id, name: g.name })}
+                            className={`bg-white border p-2 text-right transition-all rounded-xl ${
+                              item.selectedGift?.id === g.id
+                                ? 'border-ink ring-1 ring-ink'
+                                : 'border-gray-200 hover:border-ink'
+                            }`}
+                          >
+                            <div className="aspect-square overflow-hidden bg-cream mb-2 rounded-lg">
+                              {g.main_image ? (
+                                <img src={g.main_image} alt="" className="w-full h-full object-cover" referrerPolicy="no-referrer" loading="lazy" />
+                              ) : (
+                                <div className="w-full h-full flex items-center justify-center text-line-strong"><Gift size={24} /></div>
+                              )}
+                            </div>
+                            <p className="text-xs text-ink line-clamp-2">{g.name}</p>
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+
               {/* Dedication Section */}
               <div className="border-t pt-4 space-y-3" style={{ background: '#EDE9E3', borderRadius: 16, padding: 20, marginTop: 8 }}>
                 <h3 className="font-bold text-gray-800 flex items-center gap-2">
@@ -1799,7 +2049,9 @@ function StoreApp() {
                 בחר סגנון מארז
               </h3>
               {(() => {
-                const boxBases = products.filter(p => p.isBoxBase);
+                // A box that has sold out cannot be built on — `createOrder`
+                // prices the bundle from its base and would refuse it.
+                const boxBases = products.filter(p => p.isBoxBase && !isSoldOut(p));
                 if (boxBases.length === 0) {
                   return <p className="text-gray-400 text-sm">אין בסיסי מארז זמינים כרגע. סמן מוצרים כ"בסיס מארז" בניהול.</p>;
                 }
@@ -1842,7 +2094,7 @@ function StoreApp() {
                   הוסף מוצרים למארז
                 </h3>
                 <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
-                  {products.filter(p => !p.isBoxBase).map(product => {
+                  {products.filter(p => !p.isBoxBase && !isSoldOut(p)).map(product => {
                     const inBundle = bundleItems.find(bi => bi.product.id === product.id);
                     return (
                       <div key={product.id} className={`rounded-2xl border-2 overflow-hidden transition-all ${inBundle ? 'border-ink shadow-md' : 'border-gray-100'}`}>
@@ -2149,6 +2401,11 @@ function StoreApp() {
                         <h4 className="font-medium text-ink">{item.name}</h4>
                         {cartLineOptions(item) && (
                           <p className="text-xs text-muted mt-0.5">{cartLineOptions(item)}</p>
+                        )}
+                        {/* A line can sell out while it sits in the basket, and
+                            checkout will refuse it — say so here, not there. */}
+                        {!item.bundleItems?.length && isSoldOut(productById.get(item.id) ?? item) && (
+                          <p className="text-xs font-medium text-red-500 mt-0.5">אזל מהמלאי — יש להסיר מהסל</p>
                         )}
                         <p className="text-ink font-semibold">₪{formatPrice(unitPriceOf(item))}</p>
                         <div className="flex items-center gap-3 mt-2">

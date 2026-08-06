@@ -23,7 +23,7 @@ export const money = (v: unknown, fallback = 0): number => {
 /* ────────────────────────────── Cart lines ─────────────────────────────── */
 
 /** Identity of a cart line: the same product with different options is a different line. */
-export type CartLine = Pick<CartItem, 'id' | 'selectedVariations' | 'selectedColor' | 'selectedLength' | 'selectedBranding' | 'brandingText' | 'embroideryFirstName' | 'embroideryLastName'>;
+export type CartLine = Pick<CartItem, 'id' | 'selectedVariations' | 'selectedColor' | 'selectedLength' | 'selectedBranding' | 'brandingText' | 'embroideryFirstName' | 'embroideryLastName' | 'selectedGift'>;
 
 export const getCartKey = (item: CartLine) =>
   `${item.id}|${JSON.stringify({
@@ -36,6 +36,9 @@ export const getCartKey = (item: CartLine) =>
     // Same reasoning: two towels embroidered with different names are two lines.
     ef: item.embroideryFirstName?.text ?? null,
     el: item.embroideryLastName?.text ?? null,
+    // The gift costs nothing, but it ships — so two of the same product taken
+    // with different gifts are two lines, not one line of quantity two.
+    g: item.selectedGift?.id ?? null,
   })}`;
 
 /** Price of one unit, including length and branding surcharges.

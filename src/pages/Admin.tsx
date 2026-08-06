@@ -25,11 +25,12 @@ import {
 import type {
   OrderItem, Product, Category, BrandingOption, Coupon,
   ProductColorOption, ProductColorLabel, ProductLengthOption, ProductDiscount, ProductEmbroidery, SiteBanner,
-  Settings as StoreSettings,
+  ProductStock, ProductGiftMode, Settings as StoreSettings,
 } from '../types';
 import { COLOR_PALETTE } from '../constants/colors';
 import { effectivePrice } from '../lib/pricing';
 import { money, validateCoupon } from '../lib/cart';
+import { availableStock, isSoldOut } from '../lib/stock';
 
 interface Order {
   id: string; customer_name: string; customer_phone: string;
@@ -70,6 +71,9 @@ const itemOptions = (item: OrderItem): string => [
   item.brandingText && `שם למיתוג: "${item.brandingText}"`,
   item.embroideryFirstName && `רקמה — שם פרטי: "${item.embroideryFirstName.text}" (+₪${item.embroideryFirstName.price})`,
   item.embroideryLastName && `רקמה — שם משפחה: "${item.embroideryLastName.text}" (+₪${item.embroideryLastName.price})`,
+  item.selectedGift && `🎁 מתנה: ${item.selectedGift.name}`,
+  // On the gift's own ₪0 line — which product's purchase earned it.
+  item.giftFor && `🎁 מתנה עבור: ${item.giftFor}`,
 ].filter(Boolean).join(' | ');
 
 const toDate = (v: any): Date => {
@@ -703,6 +707,10 @@ const EMPTY_EMBROIDERY: ProductEmbroidery = {
   lastName: { enabled: false, price: 0 },
 };
 
+/** Untracked and on sale — the shape a product starts with, and what every
+ *  product created before inventory shipped behaves as. */
+const EMPTY_STOCK: ProductStock = { tracked: false, quantity: 0, soldOut: false };
+
 const EMPTY_FORM = {
   name: '', description: '', price: 0, costPrice: 0, category_id: '',
   images: [] as string[],
@@ -713,6 +721,8 @@ const EMPTY_FORM = {
   brandingOptionIds: [] as string[],
   brandingNameField: false,
   embroidery: EMPTY_EMBROIDERY,
+  stock: EMPTY_STOCK,
+  gift: { enabled: false, mode: 'product' as ProductGiftMode, productIds: [] as string[] },
   isBoxBase: false,
   discount: { type: 'percent', value: 0, isActive: false, label: '' } as ProductDiscount & { label: string },
 };
@@ -783,6 +793,20 @@ function ProductsView({ products, categories, brandingOptions }: { products: Pro
           enabled: p.embroidery?.lastName?.enabled ?? false,
           price: money(p.embroidery?.lastName?.price),
         },
+      },
+      // Read field by field: products created before inventory shipped carry no
+      // `stock` at all, and an older doc may carry only part of it.
+      stock: {
+        tracked: p.stock?.tracked ?? false,
+        quantity: money(p.stock?.quantity),
+        soldOut: p.stock?.soldOut ?? false,
+      },
+      gift: {
+        enabled: p.gift?.enabled ?? false,
+        mode: (p.gift?.mode === 'checkout' ? 'checkout' : 'product') as ProductGiftMode,
+        // A gift pointing at a product that has since been deleted is dropped
+        // here, so the admin sees the list the storefront will actually offer.
+        productIds: (p.gift?.productIds ?? []).filter(id => products.some(x => x.id === id)),
       },
       isBoxBase: p.isBoxBase ?? false,
       discount: {
@@ -864,6 +888,21 @@ function ProductsView({ products, categories, brandingOptions }: { products: Pro
       : [...p.brandingOptionIds, id],
   }));
 
+  const updateStock = (patch: Partial<ProductStock>) =>
+    setForm(p => ({ ...p, stock: { ...p.stock, ...patch } }));
+
+  /** Add or remove a product from the gift list. Order is preserved — it is the
+   *  order the shopper sees the choices in. */
+  const toggleGiftProduct = (id: string) => setForm(p => ({
+    ...p,
+    gift: {
+      ...p.gift,
+      productIds: p.gift.productIds.includes(id)
+        ? p.gift.productIds.filter(g => g !== id)
+        : [...p.gift.productIds, id],
+    },
+  }));
+
   const buildVariations = () =>
     form.variations
       .filter(v => v.name.trim())
@@ -877,6 +916,9 @@ function ProductsView({ products, categories, brandingOptions }: { products: Pro
 
   const handleSave = async () => {
     if (!form.name || !form.price || !form.category_id) return alert('נא למלא שם, מחיר וקטגוריה');
+    if (form.gift.enabled && form.gift.productIds.length === 0) {
+      return alert('נא לבחור לפחות מוצר אחד כמתנה (או לכבות את המתנה)');
+    }
     if (form.discount.isActive) {
       if (!(form.discount.value > 0)) return alert('נא להזין ערך הנחה גדול מ-0 (או לכבות את המבצע)');
       if (!formPreview.isDiscounted) return alert('ההנחה אינה מקטינה את המחיר. בדוק את הערך שהזנת.');
@@ -919,6 +961,21 @@ function ProductsView({ products, categories, brandingOptions }: { products: Pro
             price: form.embroidery.lastName.enabled ? money(form.embroidery.lastName.price) : 0,
           },
         },
+        // Written whole, every time: an edit that switches tracking off has to
+        // overwrite what is already on the document. An untracked product is
+        // stored at 0 so a stale count can never be sold against later.
+        stock: {
+          tracked: form.stock.tracked,
+          quantity: form.stock.tracked ? Math.max(0, Math.floor(money(form.stock.quantity))) : 0,
+          soldOut: form.stock.soldOut,
+        },
+        // Same reasoning — and a gift switched off keeps its chosen products, so
+        // switching it back on does not mean picking them all again.
+        gift: {
+          enabled: form.gift.enabled,
+          mode: form.gift.mode,
+          productIds: form.gift.productIds,
+        },
         isBoxBase: form.isBoxBase,
         // `null` rather than a dropped key: an edit that turns a sale off has to
         // overwrite the discount already on the doc, and Firestore rejects `undefined`.
@@ -950,6 +1007,21 @@ function ProductsView({ products, categories, brandingOptions }: { products: Pro
   };
 
   const catName = (id: string) => categories.find(c => c.id === id)?.name || '-';
+
+  /** The stock cell — "אזל" when it cannot be sold, the count when it is being
+   *  counted, and a dash when the product has unlimited supply. */
+  const StockCell = ({ product }: { product: Product }) => {
+    const left = availableStock(product);
+    if (isSoldOut(product)) {
+      return <span className="text-xs px-2 py-0.5 rounded-md font-medium bg-red-500/15 text-red-500">אזל</span>;
+    }
+    if (left === null) return <span className="text-gray-400 text-xs">∞</span>;
+    return (
+      <span className={`text-xs px-2 py-0.5 rounded-md font-medium ${left <= 5 ? 'bg-amber-500/15 text-amber-600' : 'bg-line text-gray-500'}`}>
+        {left}
+      </span>
+    );
+  };
 
   // Group products by category
   const grouped = categories.map(cat => ({
@@ -1032,7 +1104,7 @@ function ProductsView({ products, categories, brandingOptions }: { products: Pro
                 <table className="w-full text-right">
                   <thead>
                     <tr className="border-b border-line">
-                      {['מוצר', 'מחיר', 'וריאציות', 'פעולות'].map(h => (
+                      {['מוצר', 'מחיר', 'מלאי', 'וריאציות', 'פעולות'].map(h => (
                         <th key={h} className="p-4 text-gray-500 font-medium text-sm">{h}</th>
                       ))}
                     </tr>
@@ -1049,12 +1121,18 @@ function ProductsView({ products, categories, brandingOptions }: { products: Pro
                               <div className="flex items-center gap-1.5">
                                 <p className="text-ink font-medium text-sm">{p.name}</p>
                                 {p.isBoxBase && <span className="text-xs px-1.5 py-0.5 rounded-md font-medium" style={{ background: '#1A1A1820', color: '#1A1A18' }}>מארז</span>}
+                                {p.gift?.enabled && (p.gift.productIds?.length ?? 0) > 0 && (
+                                  <span title="מוצר עם מתנה" className="text-xs px-1.5 py-0.5 rounded-md font-medium bg-green-500/15 text-green-600 flex items-center gap-0.5">
+                                    <Gift size={10} /> {p.gift.productIds.length}
+                                  </span>
+                                )}
                               </div>
                               <p className="text-gray-500 text-xs line-clamp-1 max-w-[180px]">{p.description}</p>
                             </div>
                           </div>
                         </td>
                         <td className="p-4 font-bold text-sm whitespace-nowrap"><AdminPriceCell product={p} /></td>
+                        <td className="p-4 whitespace-nowrap"><StockCell product={p} /></td>
                         <td className="p-4 text-gray-500 text-xs">
                           {p.variations && p.variations.length > 0
                             ? p.variations.map(v => v.name).join(', ')
@@ -1096,7 +1174,7 @@ function ProductsView({ products, categories, brandingOptions }: { products: Pro
               <div className="border-t border-line overflow-x-auto">
                 <table className="w-full text-right">
                   <thead><tr className="border-b border-line">
-                    {['מוצר', 'קטגוריה', 'מחיר', 'פעולות'].map(h => (
+                    {['מוצר', 'קטגוריה', 'מחיר', 'מלאי', 'פעולות'].map(h => (
                       <th key={h} className="p-4 text-gray-500 font-medium text-sm">{h}</th>
                     ))}
                   </tr></thead>
@@ -1113,6 +1191,7 @@ function ProductsView({ products, categories, brandingOptions }: { products: Pro
                         </td>
                         <td className="p-4 text-gray-400 text-sm">{catName(p.category_id)}</td>
                         <td className="p-4 font-bold text-sm whitespace-nowrap"><AdminPriceCell product={p} /></td>
+                        <td className="p-4 whitespace-nowrap"><StockCell product={p} /></td>
                         <td className="p-4">
                           <div className="flex gap-2">
                             <button onClick={() => openEdit(p)} className="p-2 rounded-lg bg-blue-500/15 text-blue-400 hover:bg-blue-500/25 transition-colors"><Pencil size={14} /></button>
@@ -1485,6 +1564,140 @@ function ProductsView({ products, categories, brandingOptions }: { products: Pro
                     );
                   })}
                 </div>
+              </div>
+
+              {/* Stock (מלאי) — the counter, plus the manual switch that beats it */}
+              <div className="border-t border-line pt-4">
+                <span className="text-ink text-sm font-bold">מלאי</span>
+                <p className="text-gray-400 text-xs mt-0.5 mb-3">
+                  הכמות יורדת אוטומטית עם כל הזמנה ששולמה. כשהיא מגיעה ל-0 המוצר מסומן כאזל.
+                </p>
+
+                <div className="flex items-center gap-3 p-3 bg-cream border border-line rounded-xl">
+                  <div
+                    onClick={() => updateStock({ tracked: !form.stock.tracked })}
+                    role="switch"
+                    aria-checked={form.stock.tracked}
+                    aria-label="מעקב מלאי"
+                    className={`relative w-11 h-6 rounded-full transition-colors flex-shrink-0 cursor-pointer ${form.stock.tracked ? 'bg-ink' : 'bg-line'}`}>
+                    <span className={`absolute top-0.5 w-5 h-5 rounded-full bg-white shadow transition-transform ${form.stock.tracked ? 'translate-x-0.5' : 'translate-x-5'}`} />
+                  </div>
+                  <div className="flex-1">
+                    <span className="text-ink text-sm">מעקב מלאי</span>
+                    <p className="text-gray-400 text-xs mt-0.5">כבוי = מלאי בלתי מוגבל</p>
+                  </div>
+                  <input
+                    type="number"
+                    min="0"
+                    step="1"
+                    placeholder="כמות"
+                    disabled={!form.stock.tracked}
+                    value={form.stock.tracked ? (form.stock.quantity || '') : ''}
+                    onChange={e => updateStock({ quantity: Math.max(0, Math.floor(Number(e.target.value) || 0)) })}
+                    className="w-24 bg-white border border-line rounded-lg p-2 text-ink text-xs outline-none focus:border-ink/40 transition-colors disabled:opacity-40"
+                  />
+                </div>
+
+                {form.stock.tracked && form.stock.quantity <= 0 && !form.stock.soldOut && (
+                  <p className="text-xs text-amber-600 mt-2">הכמות היא 0 — המוצר יוצג כ"אזל מהמלאי" בחנות.</p>
+                )}
+
+                <div className="flex items-center gap-3 p-3 bg-cream border border-line rounded-xl mt-2">
+                  <div
+                    onClick={() => updateStock({ soldOut: !form.stock.soldOut })}
+                    role="switch"
+                    aria-checked={form.stock.soldOut}
+                    aria-label="אזל מהמלאי"
+                    className={`relative w-11 h-6 rounded-full transition-colors flex-shrink-0 cursor-pointer ${form.stock.soldOut ? 'bg-ink' : 'bg-line'}`}>
+                    <span className={`absolute top-0.5 w-5 h-5 rounded-full bg-white shadow transition-transform ${form.stock.soldOut ? 'translate-x-0.5' : 'translate-x-5'}`} />
+                  </div>
+                  <div className="flex-1">
+                    <span className="text-ink text-sm">סמן כאזל מהמלאי</span>
+                    <p className="text-gray-400 text-xs mt-0.5">מוציא את המוצר ממכירה גם אם יש כמות במלאי</p>
+                  </div>
+                </div>
+              </div>
+
+              {/* Gift (מתנה) — free catalog products granted by buying this one */}
+              <div className="border-t border-line pt-4">
+                <span className="text-ink text-sm font-bold">מתנה עם המוצר</span>
+                <p className="text-gray-400 text-xs mt-0.5 mb-3">
+                  מוצר שיצורף חינם לכל יחידה. אם תבחרו יותר ממתנה אחת — הלקוח יבחר אחת מהן.
+                </p>
+
+                <div className="flex items-center gap-3 p-3 bg-cream border border-line rounded-xl">
+                  <div
+                    onClick={() => setForm(p => ({ ...p, gift: { ...p.gift, enabled: !p.gift.enabled } }))}
+                    role="switch"
+                    aria-checked={form.gift.enabled}
+                    aria-label="מתנה עם המוצר"
+                    className={`relative w-11 h-6 rounded-full transition-colors flex-shrink-0 cursor-pointer ${form.gift.enabled ? 'bg-ink' : 'bg-line'}`}>
+                    <span className={`absolute top-0.5 w-5 h-5 rounded-full bg-white shadow transition-transform ${form.gift.enabled ? 'translate-x-0.5' : 'translate-x-5'}`} />
+                  </div>
+                  <div className="flex-1">
+                    <span className="text-ink text-sm flex items-center gap-1.5"><Gift size={14} /> הפעל מתנה</span>
+                    <p className="text-gray-400 text-xs mt-0.5">המתנה נשלחת ב-₪0 ומופיעה בהזמנה כפריט נפרד</p>
+                  </div>
+                </div>
+
+                {form.gift.enabled && (
+                  <div className="mt-3 space-y-3">
+                    <div>
+                      <p className="text-gray-500 text-xs mb-2">מתי הלקוח בוחר את המתנה?</p>
+                      <div className="flex gap-2">
+                        {([
+                          ['product', 'בעמוד המוצר'],
+                          ['checkout', 'בעמוד התשלום'],
+                        ] as const).map(([mode, label]) => (
+                          <button key={mode}
+                            onClick={() => setForm(p => ({ ...p, gift: { ...p.gift, mode } }))}
+                            aria-pressed={form.gift.mode === mode}
+                            className={`flex-1 py-2 rounded-lg text-xs font-bold transition-all ${form.gift.mode === mode ? 'bg-ink text-white' : 'bg-cream border border-line text-gray-500 hover:text-ink'}`}>
+                            {label}
+                          </button>
+                        ))}
+                      </div>
+                      <p className="text-gray-400 text-xs mt-2">
+                        {form.gift.mode === 'product'
+                          ? 'המתנה מוצגת ונבחרת בעמוד המוצר, לפני ההוספה לסל.'
+                          : 'המתנה נבחרת בעמוד התשלום, אחרי שהסל מלא.'}
+                      </p>
+                    </div>
+
+                    <div>
+                      <p className="text-gray-500 text-xs mb-2">
+                        אילו מוצרים אפשר לקבל במתנה? ({form.gift.productIds.length} נבחרו)
+                      </p>
+                      {/* The product being edited cannot gift itself — that would
+                          take a second unit off the same shelf on every sale. */}
+                      <div className="max-h-56 overflow-y-auto space-y-1.5 border border-line rounded-xl p-2 bg-cream">
+                        {products.filter(p => p.id !== editing?.id).length === 0 ? (
+                          <p className="text-gray-400 text-xs text-center py-2">אין מוצרים אחרים בקטלוג.</p>
+                        ) : products.filter(p => p.id !== editing?.id).map(p => (
+                          <label key={p.id} className="flex items-center gap-2 p-2 bg-white rounded-lg border border-line cursor-pointer hover:border-ink/40 transition-colors">
+                            <input
+                              type="checkbox"
+                              checked={form.gift.productIds.includes(p.id)}
+                              onChange={() => toggleGiftProduct(p.id)}
+                              className="accent-[#1A1A18]"
+                            />
+                            <div className="w-8 h-8 rounded-md bg-cream border border-line overflow-hidden flex-shrink-0">
+                              {p.main_image && <img src={p.main_image} className="w-full h-full object-cover" referrerPolicy="no-referrer" />}
+                            </div>
+                            <span className="text-ink text-xs flex-1 line-clamp-1">{p.name}</span>
+                            {isSoldOut(p) && <span className="text-red-500 text-[10px] flex-shrink-0">אזל</span>}
+                            <span className="text-gray-500 text-xs flex-shrink-0">₪{p.price}</span>
+                          </label>
+                        ))}
+                      </div>
+                      {form.gift.productIds.length > 1 && (
+                        <p className="text-gray-400 text-xs mt-2">
+                          נבחרו {form.gift.productIds.length} מתנות — הלקוח יתבקש לבחור אחת מהן.
+                        </p>
+                      )}
+                    </div>
+                  </div>
+                )}
               </div>
             </div>
             <div className="p-5 border-t border-line">

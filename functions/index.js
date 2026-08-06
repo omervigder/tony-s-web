@@ -15,6 +15,13 @@ const {
   computeTotals,
   validateCoupon,
 } = require("./pricing");
+const {
+  availableStock,
+  isSoldOut,
+  stockMessage,
+  giftChoices,
+  resolveGift,
+} = require("./stock");
 
 admin.initializeApp();
 // Data lives in the named database "default" (not the standard "(default)")
@@ -222,6 +229,63 @@ async function recordCouponUsage(orderId, order) {
   logger.info(`recordCouponUsage: counted ${code} for order ${orderId}`);
 }
 
+// ── Helper: take a paid order's items off the shelf ──────────────────────────
+// Runs when an order is actually paid, not when it is created — an abandoned
+// checkout must not consume stock that someone else could have bought.
+// `stock_counted` on the order makes it idempotent, so the retries and
+// re-triggers Firestore functions are subject to can never double-count. Clients
+// cannot write to `products`, so this (Admin SDK, rules bypassed) is the only
+// place `stock.quantity` ever moves on its own.
+//
+// Only *tracked* products are touched: an untracked one has no counter to move,
+// and creating one here would silently switch inventory on for the whole shop.
+async function recordStockUsage(orderId, order) {
+  if (order.stock_counted === true) return;
+
+  // What each product owes the shelf. A gift line carries a real product id and
+  // physically ships, so it counts the same as a paid one; a Build-A-Box line's
+  // own id is synthetic, so it contributes its base and its contents instead.
+  const wanted = new Map();
+  const take = (id, qty) => {
+    const n = Math.floor(Number(qty));
+    if (!id || !Number.isFinite(n) || n < 1) return;
+    wanted.set(id, (wanted.get(id) || 0) + n);
+  };
+  for (const item of Array.isArray(order.items) ? order.items : []) {
+    const qty = Math.floor(Number(item.quantity)) || 0;
+    if (Array.isArray(item.bundleItems) && item.bundleItems.length > 0) {
+      take(item.boxBaseId, qty);
+      for (const b of item.bundleItems) take(b.id, (Math.floor(Number(b.quantity)) || 0) * qty);
+      continue;
+    }
+    take(item.id, qty);
+  }
+
+  const orderRef = db.collection("orders").doc(orderId);
+  if (wanted.size === 0) {
+    await orderRef.update({ stock_counted: true });
+    return;
+  }
+
+  const ids = [...wanted.keys()];
+  await db.runTransaction(async (tx) => {
+    // Every read first — a Firestore transaction allows no read after a write.
+    const fresh = await tx.get(orderRef);
+    if (!fresh.exists || fresh.data().stock_counted === true) return;
+    const snaps = await tx.getAll(...ids.map(id => db.collection("products").doc(id)));
+
+    for (const snap of snaps) {
+      // A product deleted since the order was placed has no counter left to move.
+      if (!snap.exists) continue;
+      const stock = snap.data().stock;
+      if (!stock || stock.tracked !== true) continue;
+      tx.update(snap.ref, { "stock.quantity": FieldValue.increment(-wanted.get(snap.id)) });
+    }
+    tx.update(orderRef, { stock_counted: true });
+  });
+  logger.info(`recordStockUsage: counted ${wanted.size} product(s) for order ${orderId}`);
+}
+
 /** Neutralise the legacy-Markdown control characters Telegram parses.
  *
  *  Every value interpolated into an order notification goes through this. Most
@@ -251,7 +315,9 @@ async function sendOrderToTelegram(orderId, order, pickupAddress, BOT_TOKEN, CHA
     .map(i => {
       // i.price is the unit price actually charged (base + length/branding surcharges).
       let line = i.isGift
-        ? `🎁 ${esc(i.name)} x${i.quantity} — מתנה`
+        // `giftFor` names the product that earned it, so a box with several
+        // gifts in it can still be packed against the right item.
+        ? `🎁 ${esc(i.name)} x${i.quantity} — מתנה${i.giftFor ? ` (עבור ${esc(i.giftFor)})` : ""}`
         : `• ${esc(i.name)} x${i.quantity} — ₪${(i.price * i.quantity).toFixed(2)}`;
       if (i.selectedVariations && Object.keys(i.selectedVariations).length > 0) {
         const vars = Object.entries(i.selectedVariations).map(([k, v]) => `${esc(k)}: ${esc(v)}`).join(", ");
@@ -386,6 +452,12 @@ exports.onOrderCreated = onDocumentCreated(
     }
 
     try {
+      await recordStockUsage(orderId, order);
+    } catch (err) {
+      logger.warn(`Could not record stock usage for order ${orderId}:`, err);
+    }
+
+    try {
       await sendOrderToTelegram(orderId, order, pickupAddress, BOT_TOKEN, CHAT_ID, totalOrders);
       logger.info(`Telegram notification sent for order ${orderId}`);
     } catch (err) {
@@ -437,6 +509,12 @@ exports.onOrderPaid = onDocumentUpdated(
       await recordCouponUsage(orderId, after);
     } catch (e) {
       logger.warn(`onOrderPaid: recordCouponUsage failed for ${orderId}:`, e);
+    }
+
+    try {
+      await recordStockUsage(orderId, after);
+    } catch (e) {
+      logger.warn(`onOrderPaid: recordStockUsage failed for ${orderId}:`, e);
     }
 
     try {
@@ -950,8 +1028,51 @@ async function priceCartLines(rawItems) {
     if (snap.exists) products.set(snap.id, { id: snap.id, ...snap.data() });
   }
 
+  // The gifts those products grant are catalog products too, and they ship — so
+  // they have to be read before anything can be given away, both to name them
+  // and to check they are still in stock.
+  const giftIds = [...new Set(
+    [...products.values()].flatMap(p => (p.gift && Array.isArray(p.gift.productIds)) ? p.gift.productIds : [])
+  )].filter(id => id && !products.has(id));
+  if (giftIds.length > 0) {
+    const giftSnaps = await db.getAll(...giftIds.map(id => db.collection("products").doc(id)));
+    for (const snap of giftSnaps) {
+      if (snap.exists) products.set(snap.id, { id: snap.id, ...snap.data() });
+    }
+  }
+
   const brandingById = new Map();
   brandingSnap.forEach(d => brandingById.set(d.id, { id: d.id, ...d.data() }));
+
+  // ── Stock ────────────────────────────────────────────────────────────────
+  // Checked across the whole cart, not line by line: three separate lines of the
+  // same towel in different colors are still three towels off one shelf, and
+  // validating each in isolation would happily sell stock we do not have.
+  // Gifts draw on the same shelf, so they are counted here too (below).
+  const remaining = new Map();
+  const takeStock = (product, qty, { required }) => {
+    const left = availableStock(product);
+    if (left === null && !isSoldOut(product)) return true;  // untracked and on sale
+    if (isSoldOut(product)) {
+      if (required) {
+        throw new HttpsError("failed-precondition", stockMessage(product.name, 0), {
+          reason: "out_of_stock", productId: product.id,
+        });
+      }
+      return false;
+    }
+    const have = remaining.has(product.id) ? remaining.get(product.id) : left;
+    if (have < qty) {
+      if (required) {
+        throw new HttpsError("failed-precondition", stockMessage(product.name, have), {
+          reason: "out_of_stock", productId: product.id, available: have,
+        });
+      }
+      return false;
+    }
+    remaining.set(product.id, have - qty);
+    return true;
+  };
 
   return rawItems.map((raw) => {
     const quantity = Math.floor(Number(raw.quantity));
@@ -972,6 +1093,9 @@ async function priceCartLines(rawItems) {
         throw new HttpsError("invalid-argument", "תוכן המארז אינו תקין");
       }
 
+      // The box itself comes off the shelf once per box ordered.
+      takeStock(boxBase, quantity, { required: true });
+
       let bundlePrice = effectivePrice(boxBase).final;
       const bundleItems = contents.map((entry) => {
         const p = products.get(String(entry.productId));
@@ -982,6 +1106,8 @@ async function priceCartLines(rawItems) {
         if (!Number.isFinite(qty) || qty < 1 || qty > MAX_LINE_QUANTITY) {
           throw new HttpsError("invalid-argument", `כמות לא תקינה עבור ${p.name}`);
         }
+        // Each filling is consumed once per unit of it, per box.
+        takeStock(p, qty * quantity, { required: true });
         const unit = effectivePrice(p).final;
         bundlePrice += unit * qty;
         return { id: p.id, name: p.name, price: unit, quantity: qty };
@@ -999,6 +1125,9 @@ async function priceCartLines(rawItems) {
         costPrice: money(boxBase.costPrice),
         quantity,
         unitPrice: price,
+        // Recorded on the stored line so the box itself can be taken off the
+        // shelf when the order is paid — the line's own id is synthetic.
+        boxBaseId: boxBase.id,
         bundleItems,
       };
     }
@@ -1007,6 +1136,8 @@ async function priceCartLines(rawItems) {
     if (!product) {
       throw new HttpsError("failed-precondition", `מוצר לא קיים בקטלוג (${raw.productId})`);
     }
+
+    takeStock(product, quantity, { required: true });
 
     const pricing = effectivePrice(product);
     let unitPrice = pricing.final;
@@ -1085,6 +1216,33 @@ async function priceCartLines(rawItems) {
       ? String(raw.brandingText).trim().slice(0, 100)
       : undefined;
 
+    // ── Gift — a free catalog product this purchase grants ────────────────
+    // The pick must be one the product actually offers, or an arbitrary catalog
+    // id would walk out of the shop at ₪0. Gifts that have sold out are not on
+    // offer at all, so a promise we cannot keep quietly stops being made rather
+    // than blocking a sale the customer is paying for.
+    let selectedGift;
+    const offered = giftChoices(product, products);
+    if (offered.length > 0) {
+      const chosenId = raw.selectedGiftId ? String(raw.selectedGiftId) : "";
+      const gift = resolveGift(product, products, chosenId);
+      if (!gift) {
+        // Several gifts on offer and nothing valid chosen — this is the shopper's
+        // choice to make, and guessing one for them is not ours.
+        throw new HttpsError(
+          "failed-precondition",
+          `נא לבחור מתנה עבור ${product.name}`,
+          { reason: "gift_required", productId: product.id },
+        );
+      }
+      // One gift per unit — the product page promises the gift with the item, so
+      // buying three of them is three gifts. Silently skipped when the shelf
+      // cannot cover it: nobody's order fails over a freebie.
+      if (takeStock(gift, quantity, { required: false })) {
+        selectedGift = { id: gift.id, name: gift.name, costPrice: money(gift.costPrice) };
+      }
+    }
+
     return {
       id: product.id,
       name: product.name,
@@ -1100,7 +1258,11 @@ async function priceCartLines(rawItems) {
       ...(selectedLength && { selectedLength }),
       ...(selectedBranding && { selectedBranding }),
       ...(brandingText && { brandingText }),
+      ...(selectedGift && { selectedGift: { id: selectedGift.id, name: selectedGift.name } }),
       ...embroidery,
+      // Carried out of the mapper so the gift can be appended to `items` as its
+      // own ₪0 line; stripped again before the order is written.
+      ...(selectedGift && { _gift: { ...selectedGift, quantity, forProduct: product.name } }),
     };
   });
 }
@@ -1214,7 +1376,24 @@ exports.createOrder = onCall({ cors: true }, async (request) => {
   const couponGrantedShipping = totals.freeShippingReason === "coupon";
 
   // ── Order lines, as stored ────────────────────────────────────────────────
-  const orderItems = lines.map(({ unitPrice, ...line }) => line);
+  const orderItems = lines.map(({ unitPrice, _gift, ...line }) => line);
+
+  // A product-granted gift ships alongside the line that earned it, so it gets
+  // its own ₪0 entry for whoever packs the box — carrying its cost price, the
+  // same way the threshold gift below does, so profit analytics stays honest.
+  for (const { _gift } of lines) {
+    if (!_gift) continue;
+    orderItems.push({
+      id: _gift.id,
+      name: _gift.name,
+      price: 0,
+      basePrice: 0,
+      costPrice: money(_gift.costPrice),
+      quantity: _gift.quantity,
+      isGift: true,
+      giftFor: _gift.forProduct,
+    });
+  }
 
   // The threshold gift ships with the order, so it has to appear in `items` for
   // whoever packs the box — at ₪0, carrying its cost so profit stays honest.
