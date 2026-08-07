@@ -5,7 +5,10 @@ import { getAuth, setPersistence, browserLocalPersistence, GoogleAuthProvider } 
 
 const firebaseConfig = {
   apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
-  authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN,
+  // Pinned to the custom domain rather than read from env: sign-in must run on the
+  // same origin as the app or mobile Safari drops the auth cookies. This value is
+  // public (it ships in the bundle), so there is nothing to keep in .env for it.
+  authDomain: "tony-amrami.com",
   databaseURL: import.meta.env.VITE_FIREBASE_DATABASE_URL,
   projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID,
   storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET,
