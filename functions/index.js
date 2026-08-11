@@ -18,6 +18,7 @@ const {
 const {
   availableStock,
   isSoldOut,
+  canOrder,
   stockMessage,
   giftChoices,
   resolveGift,
@@ -528,7 +529,165 @@ exports.onOrderPaid = onDocumentUpdated(
   }
 );
 
+// ── Shared: the order-status buttons on a Telegram order card ────────────────
+//
+// Lifted out of telegramWebhook because *two* functions need it. Telegram allows
+// exactly one webhook URL per bot token, so whichever function is registered is
+// the only one that receives button presses — and telegramVoiceBot is registered
+// now. Without this being shared, repointing the webhook would have silently
+// broken every order card already sitting in the admin's chat.
+//
+// Never throws: each path answers the callback query so the client's spinner
+// clears, and errors are logged rather than propagated to the webhook response.
+async function handleOrderStatusCallback(callbackQuery, BOT_TOKEN, ALLOWED_CHAT_ID) {
+  const { id: callbackQueryId, data: callbackData, message } = callbackQuery;
+  // A callback query is not guaranteed to carry its originating message (an
+  // inline-mode one does not). Reading through it unguarded threw, which turned
+  // into a 500 — and a 500 is exactly what makes Telegram redeliver the update.
+  if (!message?.chat) {
+    logger.warn("handleOrderStatusCallback: callback query without a message, ignoring");
+    await telegramApi(BOT_TOKEN, "answerCallbackQuery", { callback_query_id: callbackQueryId }).catch(() => {});
+    return;
+  }
+  const chatId = String(message.chat.id);
+  const messageId = message.message_id;
+
+  // Security: only accept button presses from the authorised chat
+  if (chatId !== ALLOWED_CHAT_ID) {
+    logger.warn(`Rejected callback from unauthorised chat: ${chatId}`);
+    await telegramApi(BOT_TOKEN, "answerCallbackQuery", {
+      callback_query_id: callbackQueryId,
+      text: "⛔ אין לך הרשאה לבצע פעולה זו!",
+      show_alert: true,
+    }).catch(() => {});
+    return;
+  }
+
+  if (typeof callbackData !== "string") return;
+
+  // ── status_paid ─────────────────────────────────────────────────────────────
+  if (callbackData.startsWith("status_paid:")) {
+    const orderId = callbackData.replace("status_paid:", "");
+    try {
+      await db.collection("orders").doc(orderId).update({
+        isPaid: true,
+        orderStatus: "Processing",
+        status: "בטיפול",
+        paid_at: new Date().toISOString(),
+      });
+      logger.info(`Order ${orderId} marked as paid`);
+
+      await telegramApi(BOT_TOKEN, "answerCallbackQuery", {
+        callback_query_id: callbackQueryId,
+        text: "✅ תשלום אושר!",
+      });
+
+      // Update message — remove paid button, keep the rest
+      await telegramApi(BOT_TOKEN, "editMessageReplyMarkup", {
+        chat_id: chatId,
+        message_id: messageId,
+        reply_markup: {
+          inline_keyboard: [
+            [
+              { text: "✅ שולם ✓", callback_data: "noop" },
+              { text: "🚚 נשלח",   callback_data: `status_shipped:${orderId}` },
+              { text: "📦 הושלם",  callback_data: `status_completed:${orderId}` },
+            ],
+          ],
+        },
+      }).catch(() => {}); // non-critical
+    } catch (err) {
+      logger.error("Error confirming payment:", err);
+      await telegramApi(BOT_TOKEN, "answerCallbackQuery", {
+        callback_query_id: callbackQueryId,
+        text: "שגיאה באישור תשלום ❌",
+        show_alert: true,
+      }).catch(() => {});
+    }
+    return;
+  }
+
+  // ── status_shipped ──────────────────────────────────────────────────────────
+  if (callbackData.startsWith("status_shipped:")) {
+    const orderId = callbackData.replace("status_shipped:", "");
+    try {
+      await db.collection("orders").doc(orderId).update({
+        orderStatus: "Shipped",
+        status: "נשלח",
+        shipped_at: new Date().toISOString(),
+      });
+      logger.info(`Order ${orderId} marked as shipped`);
+
+      await telegramApi(BOT_TOKEN, "answerCallbackQuery", {
+        callback_query_id: callbackQueryId,
+        text: "🚚 ההזמנה סומנה כנשלחה!",
+      });
+
+      await telegramApi(BOT_TOKEN, "editMessageReplyMarkup", {
+        chat_id: chatId,
+        message_id: messageId,
+        reply_markup: {
+          inline_keyboard: [
+            [
+              { text: "🚚 נשלח ✓",  callback_data: "noop" },
+              { text: "📦 הושלם",   callback_data: `status_completed:${orderId}` },
+            ],
+          ],
+        },
+      }).catch(() => {});
+    } catch (err) {
+      logger.error("Error marking as shipped:", err);
+      await telegramApi(BOT_TOKEN, "answerCallbackQuery", {
+        callback_query_id: callbackQueryId,
+        text: "שגיאה בעדכון ❌",
+        show_alert: true,
+      }).catch(() => {});
+    }
+    return;
+  }
+
+  // ── status_completed ────────────────────────────────────────────────────────
+  if (callbackData.startsWith("status_completed:")) {
+    const orderId = callbackData.replace("status_completed:", "");
+    try {
+      await db.collection("orders").doc(orderId).update({
+        status: "בוצע",
+        orderStatus: "Completed",
+        completed_at: new Date().toISOString(),
+      });
+      logger.info(`Order ${orderId} marked as completed`);
+
+      await telegramApi(BOT_TOKEN, "answerCallbackQuery", {
+        callback_query_id: callbackQueryId,
+        text: "📦 ההזמנה הושלמה!",
+      });
+
+      // Remove all buttons — order is fully complete
+      await telegramApi(BOT_TOKEN, "editMessageReplyMarkup", {
+        chat_id: chatId,
+        message_id: messageId,
+        reply_markup: { inline_keyboard: [] },
+      }).catch(() => {});
+    } catch (err) {
+      logger.error("Error completing order:", err);
+      await telegramApi(BOT_TOKEN, "answerCallbackQuery", {
+        callback_query_id: callbackQueryId,
+        text: "שגיאה בעדכון ההזמנה ❌",
+        show_alert: true,
+      }).catch(() => {});
+    }
+    return;
+  }
+
+  // Unknown callback / noop — just acknowledge to clear the spinner
+  await telegramApi(BOT_TOKEN, "answerCallbackQuery", { callback_query_id: callbackQueryId }).catch(() => {});
+}
+
 // ── Telegram Webhook — handles inline button callbacks ────────────────────────
+//
+// Superseded by telegramVoiceBot, which is what the bot's webhook now points at.
+// Kept deployed so that repointing back (`setWebhook` at this URL) restores the
+// old behaviour without a code change.
 exports.telegramWebhook = onRequest(
   { secrets: [telegramBotToken, telegramChatId, telegramWebhookSecret] },
   async (req, res) => {
@@ -556,151 +715,9 @@ exports.telegramWebhook = onRequest(
     }
 
     // ── Inline button callbacks ───────────────────────────────────────────────
-    if (!body.callback_query) {
-      res.status(200).send("OK");
-      return;
+    if (body.callback_query) {
+      await handleOrderStatusCallback(body.callback_query, BOT_TOKEN, ALLOWED_CHAT_ID);
     }
-
-    const { id: callbackQueryId, data: callbackData, message } = body.callback_query;
-    const chatId = String(message.chat.id);
-    const messageId = message.message_id;
-
-    // Security: only accept button presses from the authorised chat
-    if (chatId !== ALLOWED_CHAT_ID) {
-      logger.warn(`Rejected callback from unauthorised chat: ${chatId}`);
-      await telegramApi(BOT_TOKEN, "answerCallbackQuery", {
-        callback_query_id: callbackQueryId,
-        text: "⛔ אין לך הרשאה לבצע פעולה זו!",
-        show_alert: true,
-      }).catch(() => {});
-      res.status(200).send("OK");
-      return;
-    }
-
-    if (typeof callbackData !== "string") {
-      res.status(200).send("OK");
-      return;
-    }
-
-    // ── status_paid ───────────────────────────────────────────────────────────
-    if (callbackData.startsWith("status_paid:")) {
-      const orderId = callbackData.replace("status_paid:", "");
-      try {
-        await db.collection("orders").doc(orderId).update({
-          isPaid: true,
-          orderStatus: "Processing",
-          status: "בטיפול",
-          paid_at: new Date().toISOString(),
-        });
-        logger.info(`Order ${orderId} marked as paid`);
-
-        await telegramApi(BOT_TOKEN, "answerCallbackQuery", {
-          callback_query_id: callbackQueryId,
-          text: "✅ תשלום אושר!",
-        });
-
-        // Update message — remove paid button, keep the rest
-        await telegramApi(BOT_TOKEN, "editMessageReplyMarkup", {
-          chat_id: chatId,
-          message_id: messageId,
-          reply_markup: {
-            inline_keyboard: [
-              [
-                { text: "✅ שולם ✓", callback_data: "noop" },
-                { text: "🚚 נשלח",   callback_data: `status_shipped:${orderId}` },
-                { text: "📦 הושלם",  callback_data: `status_completed:${orderId}` },
-              ],
-            ],
-          },
-        }).catch(() => {}); // non-critical
-      } catch (err) {
-        logger.error("Error confirming payment:", err);
-        await telegramApi(BOT_TOKEN, "answerCallbackQuery", {
-          callback_query_id: callbackQueryId,
-          text: "שגיאה באישור תשלום ❌",
-          show_alert: true,
-        }).catch(() => {});
-      }
-      res.status(200).send("OK");
-      return;
-    }
-
-    // ── status_shipped ────────────────────────────────────────────────────────
-    if (callbackData.startsWith("status_shipped:")) {
-      const orderId = callbackData.replace("status_shipped:", "");
-      try {
-        await db.collection("orders").doc(orderId).update({
-          orderStatus: "Shipped",
-          status: "נשלח",
-          shipped_at: new Date().toISOString(),
-        });
-        logger.info(`Order ${orderId} marked as shipped`);
-
-        await telegramApi(BOT_TOKEN, "answerCallbackQuery", {
-          callback_query_id: callbackQueryId,
-          text: "🚚 ההזמנה סומנה כנשלחה!",
-        });
-
-        await telegramApi(BOT_TOKEN, "editMessageReplyMarkup", {
-          chat_id: chatId,
-          message_id: messageId,
-          reply_markup: {
-            inline_keyboard: [
-              [
-                { text: "🚚 נשלח ✓",  callback_data: "noop" },
-                { text: "📦 הושלם",   callback_data: `status_completed:${orderId}` },
-              ],
-            ],
-          },
-        }).catch(() => {});
-      } catch (err) {
-        logger.error("Error marking as shipped:", err);
-        await telegramApi(BOT_TOKEN, "answerCallbackQuery", {
-          callback_query_id: callbackQueryId,
-          text: "שגיאה בעדכון ❌",
-          show_alert: true,
-        }).catch(() => {});
-      }
-      res.status(200).send("OK");
-      return;
-    }
-
-    // ── status_completed ──────────────────────────────────────────────────────
-    if (callbackData.startsWith("status_completed:")) {
-      const orderId = callbackData.replace("status_completed:", "");
-      try {
-        await db.collection("orders").doc(orderId).update({
-          status: "בוצע",
-          orderStatus: "Completed",
-          completed_at: new Date().toISOString(),
-        });
-        logger.info(`Order ${orderId} marked as completed`);
-
-        await telegramApi(BOT_TOKEN, "answerCallbackQuery", {
-          callback_query_id: callbackQueryId,
-          text: "📦 ההזמנה הושלמה!",
-        });
-
-        // Remove all buttons — order is fully complete
-        await telegramApi(BOT_TOKEN, "editMessageReplyMarkup", {
-          chat_id: chatId,
-          message_id: messageId,
-          reply_markup: { inline_keyboard: [] },
-        }).catch(() => {});
-      } catch (err) {
-        logger.error("Error completing order:", err);
-        await telegramApi(BOT_TOKEN, "answerCallbackQuery", {
-          callback_query_id: callbackQueryId,
-          text: "שגיאה בעדכון ההזמנה ❌",
-          show_alert: true,
-        }).catch(() => {});
-      }
-      res.status(200).send("OK");
-      return;
-    }
-
-    // Unknown callback / noop — just acknowledge to clear the spinner
-    await telegramApi(BOT_TOKEN, "answerCallbackQuery", { callback_query_id: callbackQueryId }).catch(() => {});
     res.status(200).send("OK");
   }
 );
@@ -1772,6 +1789,475 @@ exports.growPaymentCallback = onRequest(
     } catch (err) {
       // Non-fatal — transaction still processes even if this fails
       logger.warn("approveTransaction call failed:", err?.message ?? err);
+    }
+
+    res.status(200).send("OK");
+  }
+);
+
+// ── Telegram voice & text assistant — dictate an order into Firestore ────────
+//
+// The admin takes orders by phone. This turns "תרשום הזמנה למיכל כהן,
+// אפס חמש שתיים…, שני נרות ומארז שוקולד, משלוח לרחוב הרצל 5" — spoken or typed —
+// into a real `orders` document.
+//
+// Two rules shape everything below:
+//
+//   1. **The model never sets a price.** Gemini is asked only to pick catalog
+//      *ids* and quantities; every ₪ is rebuilt here from the product documents
+//      via `effectivePrice`/`computeTotals`, exactly as `createOrder` does for
+//      the storefront. A hallucinated price can therefore never reach an order.
+//   2. **A half-understood order is refused, not guessed.** A missing phone, an
+//      unmatched product name — the bot says what it could not resolve and
+//      writes nothing. A wrong order placed silently is far worse than no order.
+//
+// The document lands unpaid (`status: "pending_payment"`), which is what keeps
+// `onOrderCreated` from firing a second Telegram card for it. The ✅ שולם button
+// on the reply flips `isPaid`, and `onOrderPaid` then runs the normal pipeline —
+// customer CRM, coupon count, stock decrement, full order card.
+
+// Telegram's Bot API refuses to serve files larger than this, so there is no
+// point streaming one in only to have Gemini reject it.
+const VOICE_BOT_MAX_AUDIO_BYTES = 20 * 1024 * 1024;
+// How much of the catalog is offered to the model as matchable ids. A boutique
+// catalog fits comfortably; the cap stops a runaway prompt if it ever does not.
+const VOICE_BOT_CATALOG_LIMIT = 400;
+// Dictated free text that gets stored on the order for the admin to re-read.
+const VOICE_BOT_MAX_TRANSCRIPT = 2000;
+
+/** Pull a Telegram-hosted file down as a Buffer. */
+async function fetchTelegramFile(botToken, fileId) {
+  const info = await telegramApi(botToken, "getFile", { file_id: fileId });
+  const filePath = info?.result?.file_path;
+  if (!filePath) throw new Error("getFile returned no file_path");
+
+  const declared = Number(info.result.file_size) || 0;
+  if (declared > VOICE_BOT_MAX_AUDIO_BYTES) {
+    throw new Error(`audio too large: ${declared} bytes`);
+  }
+
+  const response = await axios.get(
+    `https://api.telegram.org/file/bot${botToken}/${filePath}`,
+    { responseType: "arraybuffer", maxContentLength: VOICE_BOT_MAX_AUDIO_BYTES },
+  );
+  return Buffer.from(response.data);
+}
+
+/** Speech → Hebrew text. Returns the transcript, nothing else. */
+async function transcribeAudio(apiKey, audio, mimeType) {
+  const genAI = new GoogleGenerativeAI(apiKey);
+  const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
+  const result = await model.generateContent([
+    { inlineData: { mimeType: mimeType || "audio/ogg", data: audio.toString("base64") } },
+    {
+      text:
+        "תמלל את ההקלטה הזו בעברית, מילה במילה. " +
+        "מספרי טלפון שנאמרו במילים — כתוב אותם כספרות. " +
+        "החזר את התמלול בלבד, ללא הקדמה, ללא הסבר וללא סימני ציטוט.",
+    },
+  ]);
+  return result.response.text().trim();
+}
+
+/** Parse a model response that is supposed to be JSON.
+ *
+ *  `responseMimeType: "application/json"` makes this reliable, but a model that
+ *  wraps the object in a ```json fence anyway would otherwise take the whole
+ *  request down — so the fence is stripped before parsing. */
+function parseModelJson(raw) {
+  const cleaned = String(raw || "").trim().replace(/^```(?:json)?\s*/i, "").replace(/```$/, "").trim();
+  return JSON.parse(cleaned);
+}
+
+/** Turn dictated Hebrew into a structured order intent.
+ *
+ *  `catalog` is the live product list; the model may only choose ids from it,
+ *  which is what stops "שני נרות" becoming a product that does not exist. */
+async function extractOrderIntent(apiKey, text, catalog) {
+  const catalogLines = catalog
+    .map(p => `${p.id} | ${p.name}${p.category ? ` | ${p.category}` : ""}`)
+    .join("\n");
+
+  const genAI = new GoogleGenerativeAI(apiKey);
+  const model = genAI.getGenerativeModel({
+    model: "gemini-2.5-flash",
+    systemInstruction:
+      "אתה עוזר של חנות מתנות שממיר הכתבה בעברית להזמנה מובנית. " +
+      "אתה מחזיר JSON בלבד. אינך ממציא פרטים: מה שלא נאמר במפורש נשאר ריק. " +
+      "אסור לך להמציא מזהי מוצרים — מותר לבחור אך ורק מזהים מרשימת הקטלוג שניתנה לך. " +
+      "אינך קובע מחירים כלל.",
+    generationConfig: { responseMimeType: "application/json", temperature: 0 },
+  });
+
+  const result = await model.generateContent(
+`קטלוג המוצרים (מזהה | שם | קטגוריה):
+${catalogLines}
+
+ההכתבה של בעל החנות:
+"""
+${text}
+"""
+
+החזר JSON במבנה הבא בדיוק:
+{
+  "customer_name": "שם פרטי ומשפחה כפי שנאמר, או מחרוזת ריקה",
+  "customer_phone": "מספר נייד בפורמט 05XXXXXXXX, או מחרוזת ריקה",
+  "delivery_method": "delivery אם הוזכר משלוח או כתובת, אחרת pickup",
+  "shipping_address": "הכתובת המלאה למשלוח, או מחרוזת ריקה",
+  "dedication": "טקסט ההקדשה לכרטיס ברכה אם נאמר, אחרת מחרוזת ריקה",
+  "dedication_card_type": "printed אם נאמר כרטיס מודפס, אחרת digital",
+  "notes": "הערות נוספות להזמנה, אחרת מחרוזת ריקה",
+  "items": [
+    { "product_id": "מזהה מהקטלוג בלבד", "heard": "השם כפי שנאמר בהקלטה", "quantity": 1 }
+  ],
+  "unmatched_items": ["שם מוצר שנאמר אך לא נמצא בקטלוג"]
+}
+
+כללים:
+- התאם כל מוצר שנאמר למזהה מהקטלוג לפי משמעות השם, לא לפי התאמה מדויקת.
+- מוצר שנאמר ואין לו התאמה סבירה בקטלוג — הכנס אותו ל-unmatched_items ולא ל-items.
+- כמות שלא נאמרה במפורש היא 1.`
+  );
+
+  return parseModelJson(result.response.text());
+}
+
+/** Build the priced order lines from an extracted intent.
+ *
+ *  Mirrors the shape `createOrder` stores, so a bot-dictated order is
+ *  indistinguishable downstream from a storefront one. Throws nothing: it
+ *  reports what it could not resolve so the caller can refuse the whole order. */
+function buildOrderLines(intent, productsById) {
+  const lines = [];
+  const problems = [];
+
+  for (const raw of Array.isArray(intent.items) ? intent.items : []) {
+    const heard = String(raw?.heard || raw?.product_id || "פריט").slice(0, 100);
+    const product = productsById.get(String(raw?.product_id || ""));
+    if (!product) {
+      problems.push(`לא נמצא בקטלוג: ${heard}`);
+      continue;
+    }
+
+    const quantity = Math.floor(Number(raw?.quantity));
+    if (!Number.isFinite(quantity) || quantity < 1 || quantity > MAX_LINE_QUANTITY) {
+      problems.push(`כמות לא תקינה עבור ${product.name}`);
+      continue;
+    }
+
+    // Stock is checked but never silently reduced — the admin is on the phone
+    // with the customer and needs to hear "אזל" now, not discover it later.
+    if (!canOrder(product, quantity)) {
+      problems.push(stockMessage(product.name, availableStock(product)));
+      continue;
+    }
+
+    const pricing = effectivePrice(product);
+    lines.push({
+      id: product.id,
+      name: product.name,
+      price: pricing.final,
+      basePrice: pricing.final,
+      ...(pricing.isDiscounted && { listPrice: pricing.list }),
+      costPrice: money(product.costPrice),
+      quantity,
+      // computeTotals reads `unitPrice`; the stored line uses `price`.
+      unitPrice: pricing.final,
+    });
+  }
+
+  return { lines, problems };
+}
+
+exports.telegramVoiceBot = onRequest(
+  {
+    secrets: [telegramBotToken, telegramChatId, telegramWebhookSecret, geminiApiKey],
+    // Transcription plus extraction is two Gemini round-trips on a voice note.
+    timeoutSeconds: 180,
+    memory: "512MiB",
+  },
+  async (req, res) => {
+    if (req.method !== "POST") { res.status(405).send("Method Not Allowed"); return; }
+
+    // Same guard as telegramWebhook — the header Telegram echoes from setWebhook.
+    // Compared in constant time: this is a shared secret sitting on a public URL.
+    const incomingSecret = String(req.headers["x-telegram-bot-api-secret-token"] || "");
+    if (!timingSafeEqualStr(incomingSecret, telegramWebhookSecret.value())) {
+      logger.warn("telegramVoiceBot: rejected — invalid secret token");
+      res.status(403).send("Forbidden");
+      return;
+    }
+
+    const BOT_TOKEN = telegramBotToken.value();
+    const ALLOWED_CHAT_ID = String(telegramChatId.value());
+    const body = req.body || {};
+
+    // Button presses still belong to the order cards — this function is the
+    // registered webhook, so it is the one that has to answer them.
+    if (body.callback_query) {
+      // Always 200: an error here must not make Telegram redeliver the press and
+      // re-run the status update.
+      await handleOrderStatusCallback(body.callback_query, BOT_TOKEN, ALLOWED_CHAT_ID)
+        .catch(err => logger.error("telegramVoiceBot: callback failed", err?.message ?? err));
+      res.status(200).send("OK");
+      return;
+    }
+
+    const message = body.message || body.edited_message;
+    if (!message) { res.status(200).send("OK"); return; }
+
+    const chatId = String(message.chat?.id ?? "");
+    if (chatId !== ALLOWED_CHAT_ID) {
+      logger.warn(`telegramVoiceBot: rejected message from unauthorised chat ${chatId}`);
+      await telegramApi(BOT_TOKEN, "sendMessage", {
+        chat_id: chatId,
+        text: "⛔ הבוט הזה פרטי.",
+      }).catch(() => {});
+      res.status(200).send("OK");
+      return;
+    }
+
+    // ── Idempotency ───────────────────────────────────────────────────────────
+    // Transcription and extraction together can outrun Telegram's webhook
+    // timeout, and Telegram retries what it thinks failed. Without this, one
+    // dictated order becomes two documents. `create` fails if the id is taken,
+    // which is the whole check.
+    const updateId = String(body.update_id ?? "");
+    if (updateId) {
+      try {
+        await db.collection("telegram_updates").doc(updateId).create({
+          receivedAt: new Date().toISOString(),
+          expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
+        });
+      } catch {
+        logger.info(`telegramVoiceBot: update ${updateId} already handled, skipping`);
+        res.status(200).send("OK");
+        return;
+      }
+    }
+
+    // Every message here costs at least one Gemini call.
+    if (!(await allowRequest("voiceBot", chatId, 20, 60_000))) {
+      await telegramApi(BOT_TOKEN, "sendMessage", {
+        chat_id: chatId,
+        text: "⏳ יותר מדי בקשות. נסה שוב בעוד דקה.",
+      }).catch(() => {});
+      res.status(200).send("OK");
+      return;
+    }
+
+    const reply = (text, extra = {}) => telegramApi(BOT_TOKEN, "sendMessage", {
+      chat_id: chatId,
+      text,
+      parse_mode: "Markdown",
+      disable_web_page_preview: true,
+      ...extra,
+    }).catch(err => logger.error("telegramVoiceBot: sendMessage failed", err?.message ?? err));
+
+    const textIn = String(message.text || message.caption || "").trim();
+
+    if (/^\/(start|help)\b/.test(textIn)) {
+      await reply(
+        "🎙️ *עוזר ההזמנות של טוני*\n\n" +
+        "שלח הודעה קולית או טקסט עם פרטי ההזמנה — אני ארשום אותה במערכת.\n\n" +
+        "לדוגמה:\n" +
+        "_הזמנה למיכל כהן, 0521234567, שני נרות ריחניים ומארז שוקולד, משלוח לרחוב הרצל 5 תל אביב._\n\n" +
+        "צריך: שם מלא, טלפון, ומוצרים מהקטלוג. ההזמנה נרשמת כממתינה לתשלום — " +
+        "לחץ ✅ שולם כשקיבלת את הכסף."
+      );
+      res.status(200).send("OK");
+      return;
+    }
+
+    const voice = message.voice || message.audio;
+    if (!voice && !textIn) {
+      await reply("🤔 אני מבין הודעות קוליות וטקסט בלבד. שלח לי את פרטי ההזמנה.");
+      res.status(200).send("OK");
+      return;
+    }
+
+    const API_KEY = geminiApiKey.value();
+    if (!API_KEY) {
+      logger.error("telegramVoiceBot: GEMINI_API_KEY is empty or not bound");
+      await reply("⚠️ שגיאת הגדרה בשרת — מפתח ה-AI חסר.");
+      res.status(200).send("OK");
+      return;
+    }
+
+    try {
+      // ── 1. Get the words ────────────────────────────────────────────────────
+      let transcript = textIn;
+      if (voice) {
+        await telegramApi(BOT_TOKEN, "sendChatAction", { chat_id: chatId, action: "typing" })
+          .catch(() => {});
+        const audio = await fetchTelegramFile(BOT_TOKEN, voice.file_id);
+        transcript = await transcribeAudio(API_KEY, audio, voice.mime_type);
+        logger.info(`telegramVoiceBot: transcribed ${audio.length} bytes → ${transcript.length} chars`);
+        if (!transcript) {
+          await reply("🔇 לא הצלחתי לשמוע כלום בהקלטה. נסה שוב.");
+          res.status(200).send("OK");
+          return;
+        }
+      }
+
+      // ── 2. Read the catalog, then extract against it ────────────────────────
+      const productsSnap = await db.collection("products").limit(VOICE_BOT_CATALOG_LIMIT).get();
+      const products = productsSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+      if (products.length === 0) {
+        await reply("⚠️ אין מוצרים בקטלוג — לא ניתן לרשום הזמנה.");
+        res.status(200).send("OK");
+        return;
+      }
+      const productsById = new Map(products.map(p => [p.id, p]));
+
+      const intent = await extractOrderIntent(API_KEY, transcript, products);
+      logger.info(`telegramVoiceBot: extracted ${intent?.items?.length ?? 0} item(s)`);
+
+      // ── 3. Validate — refuse rather than guess ──────────────────────────────
+      const customerName = String(intent.customer_name || "").trim();
+      const customerPhone = normalizePhone(String(intent.customer_phone || "").trim());
+      const deliveryMethod = intent.delivery_method === "delivery" ? "delivery" : "pickup";
+      const shippingAddress = String(intent.shipping_address || "").trim().slice(0, 300);
+
+      const { lines, problems } = buildOrderLines(intent, productsById);
+      for (const name of Array.isArray(intent.unmatched_items) ? intent.unmatched_items : []) {
+        problems.push(`לא נמצא בקטלוג: ${String(name).slice(0, 100)}`);
+      }
+
+      const missing = [];
+      if (!isValidName(customerName)) missing.push("שם פרטי ומשפחה");
+      if (!isValidPhone(customerPhone)) missing.push("מספר נייד תקין (05XXXXXXXX)");
+      if (lines.length === 0) missing.push("לפחות מוצר אחד מהקטלוג");
+      if (deliveryMethod === "delivery" && !shippingAddress) missing.push("כתובת למשלוח");
+
+      if (missing.length > 0 || problems.length > 0) {
+        await reply(
+          `❌ *לא רשמתי את ההזמנה.*\n\n` +
+          `🎙️ *מה שהבנתי:*\n_${esc(transcript.slice(0, 500))}_\n\n` +
+          (missing.length ? `📋 *חסר:*\n${missing.map(m => `• ${esc(m)}`).join("\n")}\n\n` : "") +
+          (problems.length ? `⚠️ *בעיות:*\n${problems.map(p => `• ${esc(p)}`).join("\n")}\n\n` : "") +
+          `שלח שוב עם הפרטים המלאים.`
+        );
+        res.status(200).send("OK");
+        return;
+      }
+
+      // ── 4. Price it from the catalog, never from the model ──────────────────
+      const dedicationMessage = String(intent.dedication || "").trim().slice(0, 1000);
+      const dedicationCardType = intent.dedication_card_type === "printed" ? "printed" : "digital";
+      const cardCharged = dedicationMessage.length > 0 && dedicationCardType === "printed";
+
+      const settingsSnap = await db.collection("settings").doc("store").get();
+      const settings = settingsSnap.exists ? settingsSnap.data() : {};
+
+      let giftProduct = null;
+      if (settings.gift_product_id) {
+        giftProduct = productsById.get(settings.gift_product_id) || null;
+        if (!giftProduct) {
+          const giftSnap = await db.collection("products").doc(settings.gift_product_id).get();
+          if (giftSnap.exists) giftProduct = { id: giftSnap.id, ...giftSnap.data() };
+        }
+      }
+
+      const totals = computeTotals({
+        cart: lines,
+        settings,
+        coupon: null,          // dictated orders carry no coupon — apply it in the admin panel
+        deliveryMethod,
+        giftProduct,
+        cardCharged,
+      });
+
+      const orderItems = lines.map(({ unitPrice, ...line }) => line);
+
+      // The threshold gift ships with the order, so it appears in `items` for
+      // whoever packs the box — at ₪0, carrying its cost so profit stays honest.
+      if (totals.gift) {
+        orderItems.push({
+          id: totals.gift.id,
+          name: totals.gift.name,
+          price: 0,
+          basePrice: 0,
+          costPrice: money(totals.gift.costPrice),
+          quantity: 1,
+          isGift: true,
+        });
+      }
+
+      const orderRef = await db.collection("orders").add({
+        customer_name: customerName,
+        customer_phone: customerPhone,
+        delivery_method: deliveryMethod,
+        total_price: totals.total,
+        items: orderItems,
+        // Unpaid on arrival, which is also what stops onOrderCreated firing a
+        // second card for it. The ✅ שולם button below is what completes it.
+        status: "pending_payment",
+        orderStatus: "PendingPayment",
+        isPaid: false,
+        ...(deliveryMethod === "delivery" && { shippingAddress }),
+        created_at: new Date().toISOString(),
+        subtotal: totals.subtotal,
+        shipping_cost: totals.shippingCost,
+        free_shipping: totals.freeShipping,
+        ...(totals.cardCost > 0 && { card_cost: totals.cardCost }),
+        ...(totals.gift && { gift_item: { id: totals.gift.id, name: totals.gift.name } }),
+        ...(dedicationMessage && { dedication: { message: dedicationMessage, cardType: dedicationCardType } }),
+        ...(intent.notes && { customer_notes: String(intent.notes).trim().slice(0, 1000) }),
+        // Provenance — an order nobody typed should say where it came from, and
+        // the transcript is the only record of what was actually dictated.
+        source: voice ? "telegram_voice" : "telegram_text",
+        telegram_transcript: transcript.slice(0, VOICE_BOT_MAX_TRANSCRIPT),
+      });
+
+      logger.info(`telegramVoiceBot: created order ${orderRef.id}, total=${totals.total}`);
+
+      // ── 5. Report back ──────────────────────────────────────────────────────
+      const itemsList = orderItems
+        .map(i => i.isGift
+          ? `🎁 ${esc(i.name)} x${i.quantity} — מתנה`
+          : `• ${esc(i.name)} x${i.quantity} — ₪${(i.price * i.quantity).toFixed(2)}`)
+        .join("\n");
+
+      const breakdown = [
+        `🧾 סכום מוצרים: ₪${totals.subtotal.toFixed(2)}`,
+        deliveryMethod === "delivery"
+          ? (totals.freeShipping ? "🚚 משלוח: חינם" : `🚚 משלוח: ₪${totals.shippingCost.toFixed(2)}`)
+          : "",
+        totals.cardCost > 0 ? `🃏 כרטיס ברכה: ₪${totals.cardCost.toFixed(2)}` : "",
+      ].filter(Boolean).join("\n");
+
+      await reply(
+`✅ *ההזמנה נרשמה!*
+
+🎙️ *תמלול:*
+_${esc(transcript.slice(0, 400))}_
+
+👤 *שם:* ${esc(customerName)}
+📞 *טלפון:* ${esc(customerPhone)}
+${deliveryMethod === "delivery" ? `🚚 *משלוח:* ${esc(shippingAddress)}` : "📍 *איסוף עצמי*"}
+
+🛒 *פריטים:*
+${itemsList}
+
+${breakdown}
+💰 *סה"כ לתשלום: ₪${totals.total.toFixed(2)}*
+💳 *סטטוס:* ממתין לתשלום
+
+🆔 \`${orderRef.id}\``,
+        {
+          reply_markup: {
+            inline_keyboard: [[
+              { text: "✅ שולם",  callback_data: `status_paid:${orderRef.id}` },
+              { text: "🚚 נשלח",  callback_data: `status_shipped:${orderRef.id}` },
+              { text: "📦 הושלם", callback_data: `status_completed:${orderRef.id}` },
+            ]],
+          },
+        }
+      );
+    } catch (err) {
+      logger.error("telegramVoiceBot: failed", err?.message ?? err, { stack: err?.stack });
+      await reply("⚠️ משהו השתבש בעיבוד ההודעה. נסה שוב.");
     }
 
     res.status(200).send("OK");
